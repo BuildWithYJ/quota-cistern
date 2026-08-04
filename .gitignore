@@ -1,0 +1,10 @@
+# Local clone and scratch space, not part of this repository
+.private/
+
+# Build output
+target/
+
+# Editor and IDE
+.idea/
+.vscode/
+.DS_Store

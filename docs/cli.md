@@ -1,0 +1,691 @@
+# quota-cistern 0.1.0 — CLI specification
+
+[한국어](cli.ko.md)
+
+## 1. Global conventions
+
+### Common flags
+
+These apply to every command.
+
+| Flag | Value | Default | Description |
+| --- | --- | --- | --- |
+| `-o`, `--output` | `text` · `json` · `id` | `text` | Output format. `id` is valid only for identifier and list commands |
+| `-h`, `--help` | — | — | Prints usage to stdout and exits (code 0) |
+
+`cistern --version` prints the version. Running `cistern` with no subcommand, or with invalid arguments, prints usage to stderr and exits with code 2.
+
+### Exit codes
+
+| Code | Meaning | Description |
+| --- | --- | --- |
+| 0 | Success | — |
+| 1 | General failure | The operation was refused |
+| 2 | Usage error | Bad argument or flag |
+| 3 | Not found | No such session or task id |
+| 4 | State conflict | Operation not possible in the current state |
+| 5 | Core error | — |
+
+### Output format
+
+`json` prints the command's output fields as they are, `text` prints a human-readable layout, and `id` prints the identifier only. The output table in each command section defines the `json` fields. In `text`, fields with no value are shown in parentheses, such as `(none)` or `(pending)`.
+
+With `-o json`, stdout carries a single JSON object and nothing else. Logs and progress go to stderr. Errors in JSON form are printed to stdout as follows.
+
+```json
+{ "error": { "code": 4, "message": "session:1 is not running" } }
+```
+
+### Identifiers
+
+- Session: `session:<n>` (for example `session:1`)
+- Task: `task:<n>` (for example `task:1`)
+- Branch: `cistern/<taskid>`, created by the core for each task
+
+`<n>` is a monotonically increasing integer. Tasks and sessions have independent sequences, and numbers are never reused. The prefix may be omitted in command arguments.
+
+### States
+
+Task states:
+
+| State | Meaning |
+| --- | --- |
+| `Pending` | In the backlog, not yet assigned |
+| `Running` | Assigned to a session and executing |
+| `Completed` | Finished. Result kept on the branch |
+| `Interrupted` | Ended by budget hardlock or by the user. Partial work kept on the branch |
+| `Error` | Failed during execution. Partial work, if any, kept on the branch |
+
+Terminal states (`Completed`, `Interrupted`, `Error`) all leave a branch and enter the review queue. The disposition is recorded in `disposition`, separately from the task state.
+
+Task `reason`: `budget hardlock` · `vendor limit` · `task ceiling` · `interrupted` · the execution failure.
+
+`task ceiling` means the task consumed its own ceiling and stopped; the session continues. The user does not set this ceiling.
+
+Session states:
+
+| State | Meaning |
+| --- | --- |
+| `running` | The unattended loop is executing |
+| `stopped` | Ended |
+
+`stopped_reason`: `budget hardlock` · `vendor limit` · `observation unreadable` · `interrupted` · `all done` (every assigned task ended) · `error`.
+
+`budget hardlock` means the declared budget was spent, `vendor limit` means the vendor blocked execution at its own limit, and `observation unreadable` means usage could no longer be read.
+
+The tool never deletes or moves result branches. Pushing, merging, and cleanup are the user's own work.
+
+### List output
+
+List commands (`backlog`, `session ls`, `review ls`) succeed with code 0 even when empty. `text` prints nothing and `json` prints an empty array.
+
+## 2. Commands
+
+Commands follow the loop and fall into four groups — tasks and backlog, sessions and execution, observation, review and disposition — with configuration standing apart, before any run.
+
+### 2.1 Tasks and backlog
+
+#### `cistern task add`
+
+Adds a task to the backlog as `Pending`. It is not assigned to a session directly; which session picks it up is decided by the core when a session opens.
+
+```
+cistern task add --title <T> --instruction <I> [--branch <B>] [--after <task>] [--model <M>] [-o <fmt>]
+```
+
+**Arguments**
+
+| Name | Required | Form | Description |
+| --- | --- | --- | --- |
+| `--title <T>` | yes | string | Task title |
+| `--instruction <I>` | yes | string | Instruction for the agent. `-` reads from stdin |
+| `--branch <B>` | no | branch name | Base branch for the task. Defaults to `main` |
+| `--after <task>` | no | id | Predecessor task. The base branch becomes that task's result branch |
+| `--model <M>` | no | model name | Model for this task. Falls back to the session's `--model` |
+
+With `--after`, the task is not eligible for assignment until the predecessor reaches `Completed`; if the predecessor ends in any other terminal state, the task stays `Pending`. `--after` and `--branch` cannot both be given.
+
+**Output**
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | string | Task identifier |
+| `title` | string | Task title |
+| `base_branch` | string | Base branch |
+| `after` | string | Predecessor task, or null |
+| `model` | string | Model given for this task, or null |
+| `state` | enum | `Pending` on creation |
+
+**Exit codes**
+
+| Code | Condition |
+| --- | --- |
+| 0 | Success |
+| 2 | Argument error (missing `--title`, `--after` together with `--branch`, `--after` forming a cycle) |
+| 3 | The task named by `--after` does not exist |
+| 5 | Core error |
+
+**Example**
+
+```console
+$ cistern task add --title "refactor X" --instruction "tidy up src/utils"
+task:1 added to backlog
+  title:  refactor X
+  branch: main (base)
+```
+
+#### `cistern task rm`
+
+Removes a task from the backlog. Only `Pending` tasks that have not been assigned are eligible; finished tasks leave the review queue through `discard`.
+
+```
+cistern task rm <task> [-o <fmt>]
+```
+
+**Output**
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | string | Removed task |
+| `title` | string | Task title |
+
+**Exit codes**
+
+| Code | Condition |
+| --- | --- |
+| 0 | Success |
+| 3 | No such task |
+| 4 | The task is not `Pending` |
+| 5 | Core error |
+
+**Example**
+
+```console
+$ cistern task rm 3
+task:3 removed from backlog
+```
+
+#### `cistern backlog`
+
+Lists `Pending` tasks that have not been assigned yet.
+
+```
+cistern backlog [-o <fmt>]
+```
+
+**Output** — array of items
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | string | Task identifier |
+| `title` | string | Task title |
+| `base_branch` | string | Base branch |
+
+`json` prints `{ "backlog": [...] }` and `text` prints one item per line.
+
+**Exit codes**
+
+| Code | Condition |
+| --- | --- |
+| 0 | Success |
+| 5 | Core error |
+
+**Example**
+
+```console
+$ cistern backlog
+○ task:1  refactor X         base main
+○ task:2  add integration    base main
+○ task:3  update README      base main
+```
+
+#### `cistern task show`
+
+Prints the detail of one task.
+
+```
+cistern task show <task> [-o <fmt>]
+```
+
+**Output**
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | string | Task identifier |
+| `session` | string | Session it was assigned to, or null |
+| `state` | enum | Task state |
+| `title` | string | Task title |
+| `base_branch` | string | Base branch |
+| `after` | string | Predecessor task, or null |
+| `model` | string | Model the task ran on |
+| `branch` | string | Result branch, or null |
+| `reason` | string | Reason it ended, or null |
+| `commits` | array | Commits on the result branch, each with `sha`, `subject`, `added`, `removed`. Present only in terminal states, otherwise null |
+| `base_ahead` | int | Commits the base branch has gained since the task diverged. Computed at query time |
+| `worktree` | string | Path of the work area, or null once it has been cleaned up |
+| `disposition` | enum | `applied` · `discarded` · null while undisposed |
+
+**Exit codes**
+
+| Code | Condition |
+| --- | --- |
+| 0 | Success |
+| 3 | No such task |
+| 5 | Core error |
+
+**Example**
+
+```console
+$ cistern task show 2
+task:2  Interrupted
+  session:  session:1
+  title:    add tests
+  base:     main (2 commits ahead)
+  branch:   cistern/2
+  reason:   budget hardlock
+  worktree: (cleaned)
+  commits:
+    a1b2c3d  test: cover the boundary cases        +48 -2
+  disposition: (pending)
+```
+
+### 2.2 Sessions and execution
+
+#### `cistern run`
+
+Declares a budget and starts the session's unattended loop. It is non-blocking and returns at once.
+
+```
+cistern run --usage <N> --time <T> [--model <M>] [--follow] [-o <fmt>]
+```
+
+**Arguments**
+
+| Name | Required | Form | Example | Description |
+| --- | --- | --- | --- | --- |
+| `--usage <N>` | yes | percentage or token count | `50%` · `2M` | With `%`, a share of the configured plan; without it, an absolute token count |
+| `--time <T>` | yes | duration | `8h` · `2h30m` | Time limit |
+| `--model <M>` | no | model name | `opus` · `sonnet` | Default for tasks that name no model. Falls back to the vendor default |
+| `--follow` | no | flag | — | Streams progress instead of returning. Ctrl-C ends the stream only; the loop keeps running |
+
+On start the core assigns some of the backlog and runs those tasks in parallel. Assignment is dynamic: each time a task ends, the core decides from what that task actually consumed whether one more fits in the remaining budget, and tasks that are not assigned stay `Pending` in the backlog. A task whose predecessor has not reached `Completed` is not eligible.
+
+Tasks within a session run in parallel, but only one session runs at a time. A second `run` while a session is running is refused.
+
+`%` is converted against the configured plan's usage and ranges from 1 to 100. If no plan is configured the command exits with code 4. An absolute token count must be an integer and accepts the suffixes `K` (=1,000) and `M` (=1,000,000).
+
+The session stops automatically at whichever runs out first, usage or time. Consumption is reported in the unit that was declared: `%` for a percentage declaration, tokens for an absolute one.
+
+**Output**
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `session` | string | The session created and started |
+| `state` | enum | `running` |
+| `assigned` | int | Tasks assigned at start. Assignment is dynamic, so this grows afterwards |
+| `budget` | object | The declared budget (usage, time) |
+
+With `--follow`, progress events are streamed to stderr. Tasks run in parallel, so events interleave.
+
+**Exit codes**
+
+| Code | Condition |
+| --- | --- |
+| 0 | Started |
+| 1 | No task available to assign |
+| 2 | Malformed argument (for example `--time 8x`) |
+| 4 | Another session is running, or `%` was used with no plan configured |
+| 5 | Core error |
+
+**Example**
+
+```console
+$ cistern run --usage 50% --time 8h
+session:1 running (2 tasks assigned to start)
+  budget:  usage 50% · time 8h
+  observe: cistern trace <task> --follow
+  stop:    cistern interrupt
+```
+
+`--follow` prints the following to stderr. Assignment is dynamic, so `assigned` appears after the start as well.
+
+```
+[assigned]    2 tasks to start
+[running]     task:1
+[running]     task:2
+[completed]   task:1 → cistern/1
+[assigned]    task:3 (budget allows one more)
+[running]     task:3
+[interrupted] task:2 (budget hardlock)
+[stopped]     session:1 · budget hardlock · consumed 50% · time 3h12m
+```
+
+#### `cistern interrupt`
+
+Stops the running session. Only one session runs at a time, so no target is given; tasks still running end as `Interrupted`.
+
+```
+cistern interrupt [-o <fmt>]
+```
+
+**Output**
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `session` | string | The session that was stopped |
+| `state` | enum | `stopped` |
+| `interrupted_tasks` | array | Ids of tasks that ended as `Interrupted` |
+
+**Exit codes**
+
+| Code | Condition |
+| --- | --- |
+| 0 | Success |
+| 4 | No session is running |
+| 5 | Core error |
+
+**Example**
+
+```console
+$ cistern interrupt
+session:1 interrupted
+  task:2 → Interrupted
+  consumed 38% · time 2h05m
+```
+
+#### `cistern session ls`
+
+Lists sessions, newest first.
+
+```
+cistern session ls [--page <N>] [--limit <M>] [-o <fmt>]
+```
+
+**Arguments**
+
+| Name | Required | Form | Description |
+| --- | --- | --- | --- |
+| `--page <N>` | no | integer ≥1 | Page number. Defaults to 1 |
+| `--limit <M>` | no | integer | Items per page. Defaults to 20 |
+
+**Output** — array of items
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | string | Session identifier |
+| `state` | enum | Session state |
+| `consumed` | string | Consumption |
+| `task_count` | int | Number of tasks in the session |
+| `updated_at` | string | Last update |
+
+`json` prints `{ "page", "limit", "sessions": [...] }` and `text` prints one session per line.
+
+**Exit codes**
+
+| Code | Condition |
+| --- | --- |
+| 0 | Success |
+| 2 | Argument error (for example `--page 0`) |
+| 5 | Core error |
+
+**Example**
+
+```console
+$ cistern session ls
+session:3  running    usage 12%   2 tasks   just now
+session:1  stopped    usage 50%   3 tasks   3h ago
+```
+
+#### `cistern session show`
+
+Prints the detail of one session, including its task list.
+
+```
+cistern session show <session> [-o <fmt>]
+```
+
+**Output**
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `budget` | object | The declared budget (usage, time) |
+| `consumed` | object | Measured consumption (usage, time) |
+| `stopped_reason` | enum | Why it stopped, or null while running |
+| `resets_at` | string | When the vendor limit resets. Present only after `vendor limit` |
+| `updated_at` | string | Last update |
+| `tasks` | array | Tasks in the session, each with id, state, title, branch, reason |
+
+`text` shows `stopped_reason` in parentheses on the first line; while running it shows `running` and no reason.
+
+**Exit codes**
+
+| Code | Condition |
+| --- | --- |
+| 0 | Success |
+| 3 | No such session |
+| 5 | Core error |
+
+**Example**
+
+```console
+$ cistern session show 1
+session:1  stopped (budget hardlock)
+  budget:   usage 50% · time 8h
+  consumed: usage 50% · time 3h12m
+  tasks:
+    ✓  task:1  Completed    refactor X     → cistern/1
+    ⚠  task:2  Interrupted  add tests      → cistern/2  (budget hardlock)
+    ✕  task:4  Error        update docs    → cistern/4  (process died)
+```
+
+### 2.3 Observation
+
+#### `cistern trace`
+
+Reads a task's trace. While the task runs this returns the trace so far; after it ends, the stored trace.
+
+```
+cistern trace <task> [--follow] [--since <cursor>] [-o <fmt>]
+```
+
+**Arguments**
+
+| Name | Required | Form | Description |
+| --- | --- | --- | --- |
+| `<task>` | yes | id | Target task |
+| `--follow` | no | flag | Keeps printing new trace while the task runs, and ends by itself when the task ends |
+| `--since <cursor>` | no | cursor | Prints only what follows that point |
+
+The trace is the agent's own output, which the core stores append-only. This command returns the events so far and the next cursor.
+
+**Output**
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `events` | array | Trace events in time order |
+| `cursor` | string | Where to resume |
+| `done` | bool | True once the task is terminal and the trace can no longer grow |
+
+`text` prints one event per line, timestamp followed by content.
+
+**Exit codes**
+
+| Code | Condition |
+| --- | --- |
+| 0 | Success |
+| 3 | No such task |
+| 5 | Core error |
+
+**Example**
+
+```console
+$ cistern trace 1
+[23:05:12] read src/utils/*.ts
+[23:11:44] identified circular dep: index → legacy → graph
+[23:37:50] done · 3 files changed
+```
+
+#### `cistern diff`
+
+Prints what the task changed on its branch.
+
+```
+cistern diff <task> [--stat] [-o <fmt>]
+```
+
+**Arguments**
+
+| Name | Required | Form | Description |
+| --- | --- | --- | --- |
+| `<task>` | yes | id | Target task |
+| `--stat` | no | flag | Per-file summary only, files changed with insertions and deletions |
+
+**Output**
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `base` | string | Base branch |
+| `branch` | string | Result branch |
+| `files` | array | Per file: `path`, `added`, `removed` |
+| `patch` | string | Unified diff |
+
+`text` prints a standard unified diff, or the per-file summary with `--stat`. With no changes it prints `(no changes)`.
+
+**Exit codes**
+
+| Code | Condition |
+| --- | --- |
+| 0 | Success |
+| 1 | No change on the branch (empty diff) |
+| 3 | No such task |
+| 5 | Core error |
+
+**Example**
+
+```console
+$ cistern diff 1 --stat
+ src/utils/index.ts   | 12 +++---
+ src/utils/graph.ts   | 40 ++++++++++----
+ 2 files changed, 34 insertions(+), 18 deletions(-)
+```
+
+### 2.4 Review and disposition
+
+`review ls` lists what is waiting to be disposed of, and `apply` and `discard` dispose of it. Neither changes a branch.
+
+#### `cistern review ls`
+
+Lists tasks waiting for disposition across all sessions. `Completed`, `Interrupted`, and `Error` appear together.
+
+```
+cistern review ls [-o <fmt>]
+```
+
+**Output** — array of items
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | string | Task identifier |
+| `title` | string | Task title |
+| `session` | string | Session it came from |
+| `branch` | string | Result branch |
+| `state` | enum | Terminal state |
+| `commit_count` | int | Commits on the result branch |
+| `base_ahead` | int | Commits the base branch has gained since the task diverged |
+
+`json` prints `{ "review_queue": [...] }` and `text` prints one task per line.
+
+A disposed task leaves the queue. `base_ahead` is computed on every query.
+
+**Exit codes**
+
+| Code | Condition |
+| --- | --- |
+| 0 | Success |
+| 5 | Core error |
+
+**Example**
+
+```console
+$ cistern review ls
+✓  task:5  verify webhook signature   session:1  → cistern/5  Completed    3 commits
+⚠  task:6  test report generation     session:2  → cistern/6  Interrupted  1 commit · base +2
+```
+
+#### `cistern apply`
+
+Applies the result branch's changes to the user's working tree. It does not commit, and it does not move or delete any branch.
+
+```
+cistern apply <task> [-o <fmt>]
+```
+
+The range applied runs from where the base branch and the result branch diverged up to the result branch, the same range `diff` uses.
+
+The command is refused if the working tree has uncommitted changes, and if applying would conflict, nothing is applied. It reads from the branch, so it still works after the worktree has been cleaned up.
+
+**Output**
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `task` | string | The task disposed of |
+| `branch` | string | The result branch that was read |
+| `files` | array | Per applied file: `path`, `added`, `removed` |
+
+**Exit codes**
+
+| Code | Condition |
+| --- | --- |
+| 0 | Success |
+| 1 | Nothing to apply, or refused because of a conflict |
+| 3 | No such task |
+| 4 | The task has not ended, or the working tree has uncommitted changes |
+| 5 | Core error |
+
+**Example**
+
+```console
+$ cistern apply 5
+task:5 applied to working tree
+  src/webhook/verify.ts   +64 -3
+  src/webhook/index.ts     +8 -1
+  (nothing committed · review and commit in your own environment)
+```
+
+#### `cistern discard`
+
+Removes a task from the review queue. It changes neither the branch, the worktree, nor the task state.
+
+```
+cistern discard <task> [-o <fmt>]
+```
+
+The result branch stays, so a disposed task can still be read with `task show` and applied later.
+
+**Output**
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `task` | string | The task disposed of |
+| `branch` | string | The result branch, which stays |
+
+**Exit codes**
+
+| Code | Condition |
+| --- | --- |
+| 0 | Success |
+| 3 | No such task |
+| 4 | The task has not ended |
+| 5 | Core error |
+
+**Example**
+
+```console
+$ cistern discard 6
+task:6 discarded
+  branch cistern/6 is kept
+```
+
+### 2.5 Configuration
+
+#### `cistern config`
+
+Sets the vendor and the plan. The plan is what `--usage %` is measured against.
+
+```
+cistern config set <key> <value>
+cistern config get [<key>]
+```
+
+**Keys**
+
+| Key | Value | Description |
+| --- | --- | --- |
+| `vendor` | `claude` | The agent to run. 0.1.0 supports `claude` only |
+| `plan` | `pro` · `max-5x` · `max-20x` · `custom` | Subscription plan, the basis for `--usage %` |
+| `usage-limit` | token count | Absolute tokens that make up 100% when `plan` is `custom` |
+
+Configuration is stored in the user's home directory at `~/.config/cistern/config.toml`. The token counts behind the plan presets are approximate, so if an exact basis is needed, set `plan` to `custom` and give `usage-limit` directly.
+
+**Output**
+
+`set` prints the key and value it applied; `get` prints the current configuration, or a single value when given a key.
+
+**Exit codes**
+
+| Code | Condition |
+| --- | --- |
+| 0 | Success |
+| 2 | Unknown key or value |
+| 5 | Core error |
+
+**Example**
+
+```console
+$ cistern config set plan max-20x
+plan = max-20x
+
+$ cistern config get
+vendor: claude
+plan:   max-20x
+```
