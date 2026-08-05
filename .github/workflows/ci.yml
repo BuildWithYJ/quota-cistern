@@ -10,5 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # Without this the action sets -D warnings, which a local run does not.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
       - run: ./scripts/check.sh
