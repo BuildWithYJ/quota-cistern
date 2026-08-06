@@ -1,8 +1,18 @@
 //! The quota-cistern command line.
 //!
-//! Nothing runs here yet; the crate exists so the checks have something to act on.
+//! Only `--version` is implemented, so this only has to choose between it and
+//! the usage clap prints on its own.
 
-// Tests may panic to signal failure.
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+use std::process::ExitCode;
 
-fn main() {}
+mod cli;
+mod link;
+mod version;
+
+fn main() -> ExitCode {
+    let cli = cli::parse();
+    if cli.version {
+        return version::run();
+    }
+    ExitCode::SUCCESS
+}

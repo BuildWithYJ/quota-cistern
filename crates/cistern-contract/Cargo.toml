@@ -1,15 +1,17 @@
 [package]
-name = "cisternd"
-description = "quota-cistern daemon"
+name = "cistern-contract"
+description = "what a quota-cistern surface and the core agree on"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
-cistern-contract = { workspace = true }
-ctrlc = { workspace = true }
 interprocess = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
 serde_json = { workspace = true }
 
 [lints]

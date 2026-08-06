@@ -1,0 +1,29 @@
+//! What the command line accepts.
+//!
+//! `docs/cli.md` specifies it. Only what is implemented appears here.
+
+use clap::Parser;
+
+/// Budget-based workload scheduler for coding agents.
+#[derive(Debug, Parser)]
+#[command(
+    name = "cistern",
+    // clap would answer --version itself with the crate version. Ours has to
+    // reach the core, so it is an ordinary flag.
+    disable_version_flag = true,
+    // docs/cli.md: no subcommand prints usage and exits 2.
+    arg_required_else_help = true
+)]
+pub struct Cli {
+    /// Prints the version of this command and of the core it reaches.
+    #[arg(long)]
+    pub version: bool,
+}
+
+/// Reads the command line.
+///
+/// It stands between `main` and clap, so that swapping the parser touches only
+/// this file.
+pub fn parse() -> Cli {
+    Cli::parse()
+}
