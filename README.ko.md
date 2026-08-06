@@ -19,12 +19,40 @@ quota-cistern은 위임 가능한 실행을 잔여 사용량이 있을 때 처�
 
 ---
 
-## 문서
+## 사용법
 
-- [CLI 명세](docs/cli.ko.md) — 커맨드·플래그·종료 코드·JSON 출력
-- [변경 이력](CHANGELOG.md)
-- [기여 가이드](CONTRIBUTING.ko.md)
-- [행동 강령](CODE_OF_CONDUCT.ko.md)
-- [보안 정책](SECURITY.md)
-- [라이선스](LICENSE)
+작업은 제목과 에이전트에게 줄 지시문으로 이루어집니다.
 
+```console
+$ cistern task add --title "refactor utils" --instruction "tidy up src/utils"
+task:1 added to backlog
+```
+
+실행할 때는 할당량을 얼마나 쓸지와 얼마 동안 할지를 선언합니다. 명령은 바로 반환되고 세션은 계속 실행됩니다.
+
+```console
+$ cistern run --usage 50% --time 8h
+session:1 running (2 tasks assigned to start)
+  budget:  usage 50% · time 8h
+```
+
+작업의 결과와 무관하게 각자의 브랜치에 기록이 남습니다.
+
+```console
+$ cistern review ls
+✓  task:1  refactor utils  session:1  → cistern/1  Completed    3 commits
+⚠  task:3  update docs     session:1  → cistern/3  Interrupted  1 commit
+
+$ cistern apply 1
+$ cistern discard 3
+```
+
+`apply`는 작업의 변경을 작업 트리에 반영하고 `discard`는 목록에서 제외합니다. 어느 쪽도 커밋이나 push, 병합, 삭제를 하지 않습니다.
+
+명령과 플래그, 종료 코드는 [CLI 명세](docs/cli.ko.md)에 전부 있습니다.
+
+---
+
+## 기여
+
+초기 개발 단계이며 제안은 언제든 환영합니다. 개발 환경과 컨벤션, 코드 구성은 [CONTRIBUTING.ko.md](CONTRIBUTING.ko.md)에 있습니다.
