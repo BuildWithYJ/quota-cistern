@@ -18,25 +18,48 @@ All code work follows discussion. If you would like to contribute, please pick u
 
 ### Branch naming
 
-Use `<type>/<short-description>`. `<type>` matches the commit rule below, and the description is lowercase kebab-case. You may prefix the related issue number.
+Use `<type>/<short-description>`. `<type>` matches the commit rule below, and the description is lowercase kebab-case. Do not put the issue number in the branch name; the pull request links the issue.
 
 ```
 feat/budget-hardlock
 fix/session-race
 docs/cli-exit-codes
-feat/12-budget-hardlock   # issue #12
 ```
+
+A ruleset rejects a branch pushed to this repository whose name does not start with one of those types. A branch in your own fork is not covered, so name it by the same rule.
 
 > The `cistern/*` prefix is reserved for the result branches the tool creates for each task. Do not use it for contribution branches.
 
 ### Commit and PR titles
 
-Commit messages and PR titles follow [Conventional Commits](https://www.conventionalcommits.org/).
-`<type>` is one of `feat` · `fix` · `docs` · `refactor` · `test` · `chore` (for example `feat: …`, `fix: …`).
+A pull request title follows [Conventional Commits](https://www.conventionalcommits.org/).
+`<type>` is one of `feat` · `fix` · `docs` · `refactor` · `test` · `chore` (for example `feat: …`, `fix: …`). CI checks the title.
+
+Pull requests are squashed on merge, so the title becomes the commit message on `main`. The commit messages on your branch are not checked; write them for whoever reads the branch.
 
 ## Development environment
 
-Build and test steps will be added here once the stack is in place.
+The project is written in Rust, edition 2024. `rust-toolchain.toml` pins the toolchain, so `rustup` installs the right version and components on first build.
+
+```console
+$ cargo build
+$ cargo test
+$ ./scripts/check.sh
+```
+
+`scripts/check.sh` runs formatting, lints, tests, and a check that code files contain only ASCII. CI runs the same script, so a local run and a CI run cover the same ground. Every step runs even after one fails, so a single run reports all of them.
+
+### Conventions
+
+- Formatting follows rustfmt defaults. `cargo fmt` before you push.
+- Lints run at clippy's default level with warnings treated as errors.
+- API design follows the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/).
+- A doc comment states what an item does. An ordinary comment records why the code has the shape it has, which is what the next person needs in order to change it — in shell and workflow files as much as in Rust. A placeholder value says that it is one, and what would settle it.
+- `unwrap`, `expect`, `panic`, and `unsafe` are denied at the workspace level. Tests are exempt: they may panic to signal failure.
+- Comments, documentation, and commit messages are written in English.
+- Code files hold tab, newline, and printable ASCII only. Markdown is exempt, since prose uses characters outside that set and the `*.ko.md` files are Korean translations.
+
+`check.sh` does not enforce all of these. The API guidelines and the substance of a doc comment are read in review.
 
 ## Code of conduct
 

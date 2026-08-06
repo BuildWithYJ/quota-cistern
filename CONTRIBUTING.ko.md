@@ -18,27 +18,50 @@ quota-cistern은 초기 개발 단계입니다. 제안·논의는 언제든 환�
 
 ### 브랜치 네이밍
 
-`<type>/<간단한-설명>` 형식을 씁니다. `<type>`은 아래 커밋 규칙과 동일하게 맞추고 
-설명은 소문자 kebab-case로 적습니다. 관련 이슈가 있으면 번호를 앞에 붙일 수 있습니다.
+`<type>/<간단한-설명>` 형식을 씁니다. `<type>`은 아래 커밋 규칙과 동일하게 맞추고
+설명은 소문자 kebab-case로 적습니다. 이슈 번호는 브랜치 이름에 넣지 않습니다. 이슈는 풀 리퀘스트에서 연결합니다.
 
 ```
 feat/budget-hardlock
 fix/session-race
 docs/cli-exit-codes
-feat/12-budget-hardlock   # 이슈 #12
 ```
+
+이 저장소에 push하는 브랜치는 이름이 위 타입으로 시작하지 않으면 룰셋이 거부합니다. 포크한 저장소의 브랜치에는 적용되지 않으니 같은 규칙으로 이름을 지어 주세요.
 
 > `cistern/*` 접두어는 도구가 작업별로 생성하는 결과 브랜치용으로 예약되어 있으니
 > 기여 브랜치에는 쓰지 않습니다.
 
 ### 커밋 · PR 제목
 
-커밋 메시지와 PR 제목은 [Conventional Commits](https://www.conventionalcommits.org/)를 따릅니다.
-`<type>`은 `feat` · `fix` · `docs` · `refactor` · `test` · `chore`를 씁니다 (예: `feat: …`, `fix: …`).
+PR 제목은 [Conventional Commits](https://www.conventionalcommits.org/)를 따릅니다.
+`<type>`은 `feat` · `fix` · `docs` · `refactor` · `test` · `chore`를 씁니다 (예: `feat: …`, `fix: …`). CI가 제목을 검사합니다.
+
+PR은 squash로 병합하므로 제목이 `main`의 커밋 메시지가 됩니다. 브랜치의 커밋 메시지는 검사하지 않습니다. 브랜치를 읽을 사람을 위해 적어 주세요.
 
 ## 개발 환경
 
-빌드·테스트 절차는 기술 스택이 확정되면 이 문서에 추가합니다.
+Rust로 구현하며 에디션은 2024입니다. `rust-toolchain.toml`이 툴체인을 고정하므로 처음 빌드할 때 `rustup`이 해당 버전과 컴포넌트를 설치합니다.
+
+```console
+$ cargo build
+$ cargo test
+$ ./scripts/check.sh
+```
+
+`scripts/check.sh`는 포맷과 린트, 테스트, 그리고 코드 파일이 ASCII만 담고 있는지를 검사합니다. CI도 같은 스크립트를 호출하므로 로컬과 CI가 동일한 검사를 수행합니다. 한 단계가 실패해도 나머지를 계속 실행하므로 한 번에 실패한 단계를 모두 확인합니다.
+
+### 컨벤션
+
+- 포맷은 rustfmt 기본 설정을 따릅니다. push 전에 `cargo fmt`를 실행해 주세요.
+- 린트는 clippy 기본 수준을 적용하고 경고를 오류로 처리합니다.
+- API 설계는 [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/)를 따릅니다.
+- 문서 주석에는 그 항목이 무엇을 하는지 적습니다. 일반 주석에는 그 코드가 그 형태인 이유를 적습니다. 다음 사람이 고칠 때 필요한 내용입니다. Rust만이 아니라 셸과 워크플로 파일도 같습니다. 자리표시자는 자리표시자라는 사실과 무엇이 정해지면 바뀌는지를 함께 적습니다.
+- `unwrap`과 `expect`, `panic`, `unsafe`는 워크스페이스 단위로 금지합니다. 테스트는 예외이며 실패를 알리기 위해 패닉해도 됩니다.
+- 주석과 문서, 커밋 메시지는 영어로 작성합니다.
+- 코드 파일에는 탭과 개행, 출력 가능한 ASCII만 넣습니다. 마크다운은 예외입니다. 산문에는 그 밖의 문자가 필요하고 `*.ko.md`는 한국어 번역입니다.
+
+`check.sh`가 이 전부를 강제하지는 않습니다. API 가이드라인과 문서 주석의 내용은 리뷰에서 확인합니다.
 
 ## 행동 강령
 
