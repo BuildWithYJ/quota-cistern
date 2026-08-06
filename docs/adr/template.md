@@ -5,28 +5,30 @@ date: YYYY-MM-DD
 
 # NNNN. Title
 
-## Context and problem
+## Context
 
-The situation and its context. State facts only, without judgment.
-
-## Alternatives considered
-
-### Alternative A
-- Good, because …
-- Neutral, because …
-- Bad, because …
-
-### Alternative B
-- Good, because …
-- Neutral, because …
-- Bad, because …
+The situation, and what the next structure has to satisfy. State facts only, without judgment.
 
 ## Decision
 
-The alternative taken, and why.
+What we will do, in full sentences and active voice. Name what the rejected alternatives offered that we are giving up.
 
 ## Consequences
 
 - Good, because …
 - Neutral, because …
 - Bad, because …
+
+## Alternatives considered
+
+### Alternative A
+
+Rejected because …
+
+### Alternative B
+
+Rejected because …
+
+## References
+
+Specification sections, related ADRs, and the code where this decision lives.

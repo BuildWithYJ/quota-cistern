@@ -24,7 +24,7 @@ These apply to every command.
 | 2 | Usage error | Bad argument or flag |
 | 3 | Not found | No such session or task id |
 | 4 | State conflict | Operation not possible in the current state |
-| 5 | Core error | — |
+| 5 | Core error | The core is not running, its version does not match the surface's, or it failed while handling the request |
 
 ### Output format
 
