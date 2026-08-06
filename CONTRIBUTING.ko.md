@@ -18,23 +18,26 @@ quota-cistern은 초기 개발 단계입니다. 제안·논의는 언제든 환�
 
 ### 브랜치 네이밍
 
-`<type>/<간단한-설명>` 형식을 씁니다. `<type>`은 아래 커밋 규칙과 동일하게 맞추고 
-설명은 소문자 kebab-case로 적습니다. 관련 이슈가 있으면 번호를 앞에 붙일 수 있습니다.
+`<type>/<간단한-설명>` 형식을 씁니다. `<type>`은 아래 커밋 규칙과 동일하게 맞추고
+설명은 소문자 kebab-case로 적습니다. 이슈 번호는 브랜치 이름에 넣지 않습니다. 이슈는 풀 리퀘스트에서 연결합니다.
 
 ```
 feat/budget-hardlock
 fix/session-race
 docs/cli-exit-codes
-feat/12-budget-hardlock   # 이슈 #12
 ```
+
+이 저장소에 push하는 브랜치는 이름이 위 타입으로 시작하지 않으면 룰셋이 거부합니다. 포크한 저장소의 브랜치에는 적용되지 않으니 같은 규칙으로 이름을 지어 주세요.
 
 > `cistern/*` 접두어는 도구가 작업별로 생성하는 결과 브랜치용으로 예약되어 있으니
 > 기여 브랜치에는 쓰지 않습니다.
 
 ### 커밋 · PR 제목
 
-커밋 메시지와 PR 제목은 [Conventional Commits](https://www.conventionalcommits.org/)를 따릅니다.
-`<type>`은 `feat` · `fix` · `docs` · `refactor` · `test` · `chore`를 씁니다 (예: `feat: …`, `fix: …`).
+PR 제목은 [Conventional Commits](https://www.conventionalcommits.org/)를 따릅니다.
+`<type>`은 `feat` · `fix` · `docs` · `refactor` · `test` · `chore`를 씁니다 (예: `feat: …`, `fix: …`). CI가 제목을 검사합니다.
+
+PR은 squash로 병합하므로 제목이 `main`의 커밋 메시지가 됩니다. 브랜치의 커밋 메시지는 검사하지 않습니다. 브랜치를 읽을 사람을 위해 적어 주세요.
 
 ## 개발 환경
 

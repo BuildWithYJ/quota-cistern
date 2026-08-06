@@ -18,21 +18,24 @@ All code work follows discussion. If you would like to contribute, please pick u
 
 ### Branch naming
 
-Use `<type>/<short-description>`. `<type>` matches the commit rule below, and the description is lowercase kebab-case. You may prefix the related issue number.
+Use `<type>/<short-description>`. `<type>` matches the commit rule below, and the description is lowercase kebab-case. Do not put the issue number in the branch name; the pull request links the issue.
 
 ```
 feat/budget-hardlock
 fix/session-race
 docs/cli-exit-codes
-feat/12-budget-hardlock   # issue #12
 ```
+
+A ruleset rejects a branch pushed to this repository whose name does not start with one of those types. A branch in your own fork is not covered, so name it by the same rule.
 
 > The `cistern/*` prefix is reserved for the result branches the tool creates for each task. Do not use it for contribution branches.
 
 ### Commit and PR titles
 
-Commit messages and PR titles follow [Conventional Commits](https://www.conventionalcommits.org/).
-`<type>` is one of `feat` · `fix` · `docs` · `refactor` · `test` · `chore` (for example `feat: …`, `fix: …`).
+A pull request title follows [Conventional Commits](https://www.conventionalcommits.org/).
+`<type>` is one of `feat` · `fix` · `docs` · `refactor` · `test` · `chore` (for example `feat: …`, `fix: …`). CI checks the title.
+
+Pull requests are squashed on merge, so the title becomes the commit message on `main`. The commit messages on your branch are not checked; write them for whoever reads the branch.
 
 ## Development environment
 
