@@ -2,7 +2,7 @@
 //!
 //! `docs/cli.md` specifies it. Only what is implemented appears here.
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 /// Budget-based workload scheduler for coding agents.
 #[derive(Debug, Parser)]
@@ -18,6 +18,26 @@ pub struct Cli {
     /// Prints the version of this command and of the core it reaches.
     #[arg(long)]
     pub version: bool,
+
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Sets the vendor and the plan.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigCommand {
+    /// Stores a value under a key.
+    Set { key: String, value: String },
+    /// Prints one key, or the whole configuration when no key is given.
+    Get { key: Option<String> },
 }
 
 /// Reads the command line.

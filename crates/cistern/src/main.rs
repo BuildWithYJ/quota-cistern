@@ -1,11 +1,9 @@
 //! The quota-cistern command line.
-//!
-//! Only `--version` is implemented, so this only has to choose between it and
-//! the usage clap prints on its own.
 
 use std::process::ExitCode;
 
 mod cli;
+mod config;
 mod link;
 mod version;
 
@@ -14,5 +12,10 @@ fn main() -> ExitCode {
     if cli.version {
         return version::run();
     }
-    ExitCode::SUCCESS
+
+    match cli.command {
+        Some(cli::Command::Config { command }) => config::run(command),
+        // clap answers this on its own, since arg_required_else_help is set.
+        None => ExitCode::SUCCESS,
+    }
 }
