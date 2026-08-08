@@ -1,12 +1,20 @@
 [workspace]
 resolver = "3"
-members = ["crates/cisternd", "crates/cistern"]
+members = ["crates/cistern", "crates/cistern-contract", "crates/cisternd"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.0-dev"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/BuildWithYJ/quota-cistern"
+
+[workspace.dependencies]
+cistern-contract = { path = "crates/cistern-contract" }
+clap = { version = "4.6", features = ["derive"] }
+ctrlc = { version = "3.5", features = ["termination"] }
+interprocess = "2.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 # The core runs unattended, so a failure there loses usage that no re-run recovers.
 [workspace.lints.rust]
