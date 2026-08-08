@@ -35,7 +35,7 @@ A request is one line. A response is one or more lines, and the surface reads un
 | `type` | string | The command, in snake_case |
 | `params` | object | The command's arguments |
 
-`type` is the command name with spaces replaced by underscores: `task add` is `task_add`. What `params` holds is the argument table in that command's section of the CLI specification.
+`type` is the command name with spaces replaced by underscores: `task add` is `task_add`. What `params` holds is the argument table in that command's section of the CLI specification, together with what a surface supplies on the user's behalf. `task_add` carries `cwd`, the directory the command was run in, because the core runs as a daemon and its own working directory is not the user's.
 
 ## Response
 
