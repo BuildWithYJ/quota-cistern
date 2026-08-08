@@ -3,7 +3,7 @@
 use crate::core::{
     Applied, Refusal, View,
     domain::{Configuration, Key, Setting},
-    port::Settings,
+    port::{Settings, Stored},
 };
 
 /// Stores one setting.
@@ -25,7 +25,7 @@ pub fn set(settings: &impl Settings, key: &str, value: &str) -> Result<Applied, 
 
     let mut configuration = read(settings)?;
     configuration.apply(setting);
-    settings.store(&configuration.to_stored())?;
+    settings.store(&written(&configuration))?;
 
     Ok(Applied {
         key: parsed.to_string(),
@@ -58,19 +58,44 @@ pub fn get(settings: &impl Settings, key: Option<&str>) -> Result<View, Refusal>
 /// Reads the store and holds it to the same standard as an argument.
 ///
 /// A configuration file can be edited by hand, so what a store hands back is a
-/// claim rather than a fact.
+/// claim rather than a fact. The domain is given values it can take, never the
+/// text they were kept as, so reading them is this layer's work.
 fn read(settings: &impl Settings) -> Result<Configuration, Refusal> {
-    Configuration::from_stored(settings.load()?).map_err(|e| Refusal::BadValue {
-        key: e.key.to_string(),
-        value: e.value,
-    })
+    let stored = settings.load()?;
+    let held = [
+        (Key::Vendor, stored.vendor),
+        (Key::Plan, stored.plan),
+        (Key::UsageLimit, stored.usage_limit),
+    ];
+
+    let mut configuration = Configuration::default();
+    for (key, value) in held {
+        let Some(value) = value else { continue };
+        let Some(setting) = Setting::parse(key, &value) else {
+            return Err(Refusal::BadValue {
+                key: key.to_string(),
+                value,
+            });
+        };
+        configuration.apply(setting);
+    }
+    Ok(configuration)
+}
+
+/// Hands the configuration to a store as the text a user would have typed.
+fn written(configuration: &Configuration) -> Stored {
+    Stored {
+        vendor: configuration.value_of(Key::Vendor),
+        plan: configuration.value_of(Key::Plan),
+        usage_limit: configuration.value_of(Key::UsageLimit),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
 
-    use crate::core::port::{Stored, Unavailable};
+    use crate::core::port::Unavailable;
 
     use super::*;
 
@@ -187,6 +212,35 @@ mod tests {
             set(&settings, "vendor", "claude"),
             Err(Refusal::Unavailable { .. })
         ));
+    }
+
+    #[test]
+    fn what_goes_to_a_store_comes_back_the_same() {
+        let settings = Remembered::default();
+        set(&settings, "vendor", "claude").unwrap();
+        set(&settings, "plan", "max-20x").unwrap();
+        set(&settings, "usage-limit", "2000000").unwrap();
+
+        // A second reader over the same store is what a restarted core is.
+        let restarted = Remembered::holding(settings.stored.borrow().clone());
+        assert_eq!(get(&restarted, None), get(&settings, None));
+    }
+
+    /// A store hands over text whatever it kept the value as, so a number that
+    /// is not one this key takes is refused where every other value is.
+    #[test]
+    fn a_stored_value_of_another_type_is_refused_the_same_way() {
+        let settings = Remembered::holding(Stored {
+            usage_limit: Some("-1".to_owned()),
+            ..Default::default()
+        });
+        assert_eq!(
+            get(&settings, None),
+            Err(Refusal::BadValue {
+                key: "usage-limit".to_owned(),
+                value: "-1".to_owned()
+            })
+        );
     }
 
     #[test]

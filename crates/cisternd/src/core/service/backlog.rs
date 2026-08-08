@@ -2,8 +2,8 @@
 
 use crate::core::{
     Added, Detail, Listing, Refusal, Removed, Waiting,
-    domain::{Backlog, NotABacklog, RemovalRefused, Repository, TaskId},
-    port::{Repository as RepositoryPort, Tasks},
+    domain::{Backlog, NotABacklog, RemovalRefused, Repository, Restored, TaskId, TaskState},
+    port::{Repository as RepositoryPort, StoredBacklog, StoredTask, Tasks},
 };
 
 /// What `task add` was given.
@@ -61,7 +61,7 @@ pub fn add(
         given.model.map(str::to_owned),
         Repository::new(root),
     );
-    tasks.store(&backlog.to_stored())?;
+    tasks.store(&written(&backlog))?;
 
     let Some(registered) = backlog.find(id) else {
         return Err(Refusal::NoSuchTask { id: id.labelled() });
@@ -90,7 +90,7 @@ pub fn remove(tasks: &impl Tasks, id: &str) -> Result<Removed, Refusal> {
             id: parsed.labelled(),
         },
     })?;
-    tasks.store(&backlog.to_stored())?;
+    tasks.store(&written(&backlog))?;
 
     Ok(Removed {
         id: removed.id().labelled(),
@@ -155,16 +155,81 @@ fn identifier(id: &str) -> Result<TaskId, Refusal> {
 /// file, so a backlog that does not add up is a store this core cannot use
 /// rather than something the user typed wrong.
 fn read(tasks: &impl Tasks) -> Result<Backlog, Refusal> {
-    Backlog::from_stored(tasks.load()?).map_err(|e| Refusal::Unavailable {
+    let stored = tasks.load()?;
+    let next_id = stored_number("next_id", &stored.next_id)?;
+
+    let mut restored = Vec::with_capacity(stored.tasks.len());
+    for held in stored.tasks {
+        restored.push(restored_from(held)?);
+    }
+
+    Backlog::restore(next_id, restored).map_err(|e| Refusal::Unavailable {
         reason: unusable(&e),
     })
 }
 
+/// Reads one task as a store handed it over.
+///
+/// The domain is given values it can take, never the text they were kept as,
+/// so reading them is this layer's work.
+fn restored_from(held: StoredTask) -> Result<Restored, Refusal> {
+    Ok(Restored {
+        id: stored_id("id", &held.id)?,
+        title: held.title,
+        instruction: held.instruction,
+        branch: held.branch,
+        after: held
+            .after
+            .as_deref()
+            .map(|after| stored_id("after", after))
+            .transpose()?,
+        model: held.model,
+        repository: Repository::new(held.repository),
+        state: TaskState::parse(&held.state).ok_or_else(|| unreadable("state", &held.state))?,
+    })
+}
+
+/// Hands the backlog to a store as the text a user would have typed.
+fn written(backlog: &Backlog) -> StoredBacklog {
+    StoredBacklog {
+        next_id: backlog.next_id().to_string(),
+        tasks: backlog
+            .tasks()
+            .iter()
+            .map(|task| StoredTask {
+                id: task.id().to_string(),
+                title: task.title().to_owned(),
+                instruction: task.instruction().to_owned(),
+                branch: task.branch().map(str::to_owned),
+                after: task.after().map(|after| after.to_string()),
+                model: task.model().map(str::to_owned),
+                repository: task.repository().to_string(),
+                state: task.state().to_string(),
+            })
+            .collect(),
+    }
+}
+
+fn stored_id(field: &str, value: &str) -> Result<TaskId, Refusal> {
+    TaskId::parse(value).ok_or_else(|| unreadable(field, value))
+}
+
+fn stored_number(field: &str, value: &str) -> Result<u32, Refusal> {
+    value.parse().map_err(|_| unreadable(field, value))
+}
+
+/// A value the store holds that this core cannot read.
+///
+/// Unlike an argument, nobody is meant to write this file, so it fails as a
+/// store rather than as something typed wrong.
+fn unreadable(field: &str, value: &str) -> Refusal {
+    Refusal::Unavailable {
+        reason: format!("the backlog holds {value} where {field} belongs"),
+    }
+}
+
 fn unusable(e: &NotABacklog) -> String {
     match e {
-        NotABacklog::BadValue { field, value } => {
-            format!("the backlog holds {value} where {field} belongs")
-        }
         NotABacklog::RepeatedId { id } => format!("the backlog holds task:{id} twice"),
         NotABacklog::NoSuchPredecessor { task, after } => {
             format!("task:{task} waits for task:{after}, which the backlog does not hold")
@@ -385,6 +450,54 @@ mod tests {
     fn listing_an_empty_backlog_is_not_a_refusal() {
         let tasks = Remembered::default();
         assert_eq!(list(&tasks).unwrap().items, Vec::new());
+    }
+
+    #[test]
+    fn what_goes_to_a_store_comes_back_the_same() {
+        let tasks = Remembered::default();
+        let first = register(&tasks, "first");
+
+        let mut given = registering("second");
+        given.branch = Some("develop");
+        given.after = Some(&first.id);
+        given.model = Some("opus");
+        add(&tasks, &Somewhere::default(), given).unwrap();
+
+        // A second reader over the same store is what a restarted core is.
+        let restarted = Remembered {
+            stored: RefCell::new(tasks.stored.borrow().clone()),
+            ..Default::default()
+        };
+        assert_eq!(list(&restarted).unwrap(), list(&tasks).unwrap());
+        assert_eq!(show(&restarted, "2").unwrap(), show(&tasks, "2").unwrap());
+    }
+
+    /// A value the store holds that cannot be read is a store this core cannot
+    /// use, not something the user typed wrong.
+    #[test]
+    fn a_state_edited_into_the_store_is_refused_on_reading_it() {
+        let tasks = Remembered::default();
+        register(&tasks, "first");
+        tasks.stored.borrow_mut().tasks[0].state = "Sleeping".to_owned();
+
+        assert!(matches!(list(&tasks), Err(Refusal::Unavailable { .. })));
+    }
+
+    #[test]
+    fn an_identifier_edited_into_the_store_is_refused_on_reading_it() {
+        let tasks = Remembered::default();
+        register(&tasks, "first");
+        tasks.stored.borrow_mut().tasks[0].id = "first".to_owned();
+
+        assert!(matches!(list(&tasks), Err(Refusal::Unavailable { .. })));
+    }
+
+    #[test]
+    fn a_next_number_edited_into_the_store_is_refused_on_reading_it() {
+        let tasks = Remembered::default();
+        tasks.stored.borrow_mut().next_id = "soon".to_owned();
+
+        assert!(matches!(list(&tasks), Err(Refusal::Unavailable { .. })));
     }
 
     #[test]
