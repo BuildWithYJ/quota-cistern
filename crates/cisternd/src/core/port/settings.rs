@@ -1,7 +1,6 @@
-//! What the core needs from outside, in the core's own terms.
-//!
-//! A port says what is wanted, never how it is reached. No path, file format,
-//! or vendor name appears here.
+//! The configuration store, as the core asks for it.
+
+use super::Unavailable;
 
 /// The configuration as a store holds it: names and numbers, not entities.
 ///
@@ -29,19 +28,4 @@ pub trait Settings {
     /// The whole of it, so that merging one key into what is already there
     /// stays in the core and the implementation never learns the shape.
     fn store(&self, stored: &Stored) -> Result<(), Unavailable>;
-}
-
-/// The store could not be reached or could not be understood.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Unavailable {
-    /// What went wrong, in the words of whatever failed.
-    pub reason: String,
-}
-
-impl Unavailable {
-    pub fn new(reason: impl Into<String>) -> Self {
-        Unavailable {
-            reason: reason.into(),
-        }
-    }
 }

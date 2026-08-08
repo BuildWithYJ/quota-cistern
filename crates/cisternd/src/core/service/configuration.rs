@@ -1,6 +1,6 @@
 //! What `config set` and `config get` do.
 
-use super::{
+use crate::core::{
     Applied, Refusal, View,
     domain::{Configuration, Key, Setting},
     port::Settings,
@@ -70,10 +70,9 @@ fn read(settings: &impl Settings) -> Result<Configuration, Refusal> {
 mod tests {
     use std::cell::RefCell;
 
-    use super::{
-        super::port::{Stored, Unavailable},
-        *,
-    };
+    use crate::core::port::{Stored, Unavailable};
+
+    use super::*;
 
     /// A store held in memory, so the steps can be checked without a file.
     #[derive(Default)]

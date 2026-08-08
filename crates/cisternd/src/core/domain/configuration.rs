@@ -6,7 +6,7 @@
 
 use std::fmt::{self, Display};
 
-use super::port::Stored;
+use crate::core::port::Stored;
 
 /// The agent to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
