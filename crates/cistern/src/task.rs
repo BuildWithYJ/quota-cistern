@@ -6,10 +6,10 @@
 
 use std::{env, ffi::OsString, io::Read, process::ExitCode};
 
-use cistern_contract::{Response, code::CORE_ERROR, code::USAGE_ERROR};
+use cistern_contract::{Response, code::CORE_ERROR, code::USAGE_ERROR, exchange};
 use serde_json::Value;
 
-use crate::{cli::TaskCommand, link};
+use crate::cli::TaskCommand;
 
 /// The mark `docs/cli.md` puts beside a task waiting to be assigned.
 ///
@@ -85,7 +85,7 @@ fn read_instruction(given: &str) -> std::io::Result<String> {
 
 /// Asks the core and prints what came back.
 fn send(command: &str, params: Value, print: fn(&Value)) -> ExitCode {
-    match link::ask(command, params) {
+    match exchange::ask(command, params) {
         Ok(Response::Data(answer)) => {
             print(&answer.data);
             ExitCode::SUCCESS

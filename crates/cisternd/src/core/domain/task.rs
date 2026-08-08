@@ -6,8 +6,6 @@
 
 use std::fmt::{self, Display};
 
-use crate::core::port::{StoredBacklog, StoredTask};
-
 /// The branch a task starts from when it names neither a branch nor a
 /// predecessor.
 const DEFAULT_BRANCH: &str = "main";
@@ -58,6 +56,23 @@ pub struct Task {
     state: TaskState,
 }
 
+/// A task on its way back from a store, with every value already read.
+///
+/// The domain does not know what a store keeps or how it spells things, so
+/// whoever read it names the fields once here and the backlog checks them
+/// together.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Restored {
+    pub id: TaskId,
+    pub title: String,
+    pub instruction: String,
+    pub branch: Option<String>,
+    pub after: Option<TaskId>,
+    pub model: Option<String>,
+    pub repository: Repository,
+    pub state: TaskState,
+}
+
 /// Every task, and the number the next one will get.
 ///
 /// The next number is kept rather than derived. Taking the highest number
@@ -69,11 +84,12 @@ pub struct Backlog {
     tasks: Vec<Task>,
 }
 
-/// A store handed back something no backlog could be.
+/// A set of tasks that no backlog could be.
+///
+/// Each of these takes the whole set to see. A value that could not be read is
+/// not here, because reading one is not the domain's work.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotABacklog {
-    /// A field held a value its shape does not allow.
-    BadValue { field: String, value: String },
     /// Two tasks carry the same number.
     RepeatedId { id: TaskId },
     /// A task waits for one that is not there.
@@ -116,7 +132,9 @@ impl Display for TaskId {
 }
 
 impl TaskState {
-    fn parse(state: &str) -> Option<Self> {
+    /// Reads a state name. One spelling is read and written, so what a store
+    /// holds and what is printed cannot drift apart.
+    pub fn parse(state: &str) -> Option<Self> {
         match state {
             "Pending" => Some(TaskState::Pending),
             "Running" => Some(TaskState::Running),
@@ -128,8 +146,6 @@ impl TaskState {
     }
 }
 
-/// One spelling for what a store holds and what is printed, so the two cannot
-/// drift apart.
 impl Display for TaskState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -161,6 +177,18 @@ impl Task {
 
     pub fn title(&self) -> &str {
         &self.title
+    }
+
+    pub fn instruction(&self) -> &str {
+        &self.instruction
+    }
+
+    /// The branch that was named, if one was.
+    ///
+    /// [`Task::base_branch`] is where the task starts from, which is this only
+    /// when a branch was named.
+    pub fn branch(&self) -> Option<&str> {
+        self.branch.as_deref()
     }
 
     pub fn after(&self) -> Option<TaskId> {
@@ -221,6 +249,11 @@ impl Backlog {
 
     /// Takes a task out of the backlog.
     ///
+    /// Whatever waited for it now waits for what it waited for. Leaving those
+    /// alone would name a task that is not there, which is the one thing a
+    /// stored backlog may not do, so removing one would make a file this core
+    /// cannot read.
+    ///
     /// The next number is left where it is. A number that was handed out is
     /// spent whether or not the task it named is still here.
     pub fn remove(&mut self, id: TaskId) -> Result<Task, RemovalRefused> {
@@ -230,11 +263,28 @@ impl Backlog {
         if self.tasks[at].state != TaskState::Pending {
             return Err(RemovalRefused::NotPending);
         }
-        Ok(self.tasks.remove(at))
+
+        let removed = self.tasks.remove(at);
+        for waiting in &mut self.tasks {
+            if waiting.after == Some(id) {
+                waiting.after = removed.after;
+            }
+        }
+        Ok(removed)
     }
 
     pub fn find(&self, id: TaskId) -> Option<&Task> {
         self.tasks.iter().find(|task| task.id == id)
+    }
+
+    /// Every task, in the order they were registered.
+    pub fn tasks(&self) -> &[Task] {
+        &self.tasks
+    }
+
+    /// The number the next task will get.
+    pub fn next_id(&self) -> u32 {
+        self.next_id
     }
 
     /// Every task waiting to be assigned, in the order they were registered.
@@ -245,43 +295,32 @@ impl Backlog {
             .collect()
     }
 
-    /// Reads what a store handed back.
+    /// Rebuilds a backlog that was stored, and refuses one that does not add up.
     ///
-    /// A store holds text, not entities, and a backlog file can be edited by
-    /// hand, so what comes back is read the same way an argument is.
-    pub fn from_stored(stored: StoredBacklog) -> Result<Self, NotABacklog> {
-        let next_id = number("next_id", &stored.next_id)?;
-        let mut tasks = Vec::with_capacity(stored.tasks.len());
-        for held in stored.tasks {
-            tasks.push(task_from(held)?);
-        }
+    /// Every value has been read by the time it arrives here, so what is left
+    /// is what only the whole set can show: whether the numbers are distinct,
+    /// whether every predecessor is present, and whether following them ever
+    /// returns to where it started.
+    pub fn restore(next_id: u32, restored: Vec<Restored>) -> Result<Self, NotABacklog> {
+        let tasks = restored
+            .into_iter()
+            .map(|held| Task {
+                id: held.id,
+                title: held.title,
+                instruction: held.instruction,
+                branch: held.branch,
+                after: held.after,
+                model: held.model,
+                repository: held.repository,
+                state: held.state,
+            })
+            .collect();
 
         let backlog = Backlog { next_id, tasks };
         backlog.no_repeated_id()?;
         backlog.every_predecessor_exists()?;
         backlog.no_cycle()?;
         Ok(backlog)
-    }
-
-    /// Hands the backlog to a store as text.
-    pub fn to_stored(&self) -> StoredBacklog {
-        StoredBacklog {
-            next_id: self.next_id.to_string(),
-            tasks: self
-                .tasks
-                .iter()
-                .map(|task| StoredTask {
-                    id: task.id.to_string(),
-                    title: task.title.clone(),
-                    instruction: task.instruction.clone(),
-                    branch: task.branch.clone(),
-                    after: task.after.map(|after| after.to_string()),
-                    model: task.model.clone(),
-                    repository: task.repository.0.clone(),
-                    state: task.state.to_string(),
-                })
-                .collect(),
-        }
     }
 
     fn no_repeated_id(&self) -> Result<(), NotABacklog> {
@@ -331,62 +370,25 @@ impl Backlog {
     }
 }
 
-fn task_from(held: StoredTask) -> Result<Task, NotABacklog> {
-    Ok(Task {
-        id: identifier("id", &held.id)?,
-        title: held.title,
-        instruction: held.instruction,
-        branch: held.branch,
-        after: held
-            .after
-            .as_deref()
-            .map(|after| identifier("after", after))
-            .transpose()?,
-        model: held.model,
-        repository: Repository(held.repository),
-        state: TaskState::parse(&held.state).ok_or_else(|| NotABacklog::BadValue {
-            field: "state".to_owned(),
-            value: held.state.clone(),
-        })?,
-    })
-}
-
-fn identifier(field: &str, value: &str) -> Result<TaskId, NotABacklog> {
-    TaskId::parse(value).ok_or_else(|| NotABacklog::BadValue {
-        field: field.to_owned(),
-        value: value.to_owned(),
-    })
-}
-
-fn number(field: &str, value: &str) -> Result<u32, NotABacklog> {
-    value.parse().map_err(|_| NotABacklog::BadValue {
-        field: field.to_owned(),
-        value: value.to_owned(),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn held(id: &str, after: Option<&str>, state: &str) -> StoredTask {
-        StoredTask {
-            id: id.to_owned(),
+    fn held(id: &str, after: Option<&str>, state: &str) -> Restored {
+        Restored {
+            id: TaskId::parse(id).unwrap(),
             title: "a task".to_owned(),
             instruction: "do it".to_owned(),
             branch: None,
-            after: after.map(str::to_owned),
+            after: after.map(|after| TaskId::parse(after).unwrap()),
             model: None,
-            repository: "/work/api".to_owned(),
-            state: state.to_owned(),
+            repository: Repository::new("/work/api"),
+            state: TaskState::parse(state).unwrap(),
         }
     }
 
-    fn holding(tasks: Vec<StoredTask>) -> StoredBacklog {
-        StoredBacklog {
-            next_id: "9".to_owned(),
-            tasks,
-        }
+    fn holding(tasks: Vec<Restored>) -> Result<Backlog, NotABacklog> {
+        Backlog::restore(9, tasks)
     }
 
     fn registered(backlog: &mut Backlog, branch: Option<&str>, after: Option<TaskId>) -> TaskId {
@@ -413,6 +415,11 @@ mod tests {
         assert_eq!(id.labelled(), "task:3");
         // A branch name is built from the number alone.
         assert_eq!(id.to_string(), "3");
+    }
+
+    #[test]
+    fn a_state_outside_the_specification_is_not_a_state() {
+        assert_eq!(TaskState::parse("Sleeping"), None);
     }
 
     #[test]
@@ -475,6 +482,44 @@ mod tests {
     }
 
     #[test]
+    fn what_waited_for_a_removed_task_waits_for_what_that_one_waited_for() {
+        let mut backlog = Backlog::default();
+        let first = registered(&mut backlog, None, None);
+        let second = registered(&mut backlog, None, Some(first));
+        let third = registered(&mut backlog, None, Some(second));
+
+        backlog.remove(second).unwrap();
+        assert_eq!(backlog.find(third).unwrap().after(), Some(first));
+    }
+
+    /// The branch the removed task would have produced is never made, so what
+    /// waited for it starts from where that one would have.
+    #[test]
+    fn removing_the_first_leaves_what_waited_for_it_waiting_for_nothing() {
+        let mut backlog = Backlog::default();
+        let first = registered(&mut backlog, None, None);
+        let second = registered(&mut backlog, None, Some(first));
+
+        backlog.remove(first).unwrap();
+        let task = backlog.find(second).unwrap();
+        assert_eq!(task.after(), None);
+        assert_eq!(task.base_branch(), "main");
+    }
+
+    /// Two tasks may name the same predecessor, and both are rebound.
+    #[test]
+    fn everything_that_waited_for_a_removed_task_is_rebound() {
+        let mut backlog = Backlog::default();
+        let first = registered(&mut backlog, None, None);
+        let second = registered(&mut backlog, None, Some(first));
+        let third = registered(&mut backlog, None, Some(first));
+
+        backlog.remove(first).unwrap();
+        assert_eq!(backlog.find(second).unwrap().after(), None);
+        assert_eq!(backlog.find(third).unwrap().after(), None);
+    }
+
+    #[test]
     fn removing_a_task_nobody_registered_says_so() {
         let mut backlog = Backlog::default();
         let absent = TaskId::parse("7").unwrap();
@@ -485,7 +530,7 @@ mod tests {
     /// rule is what is being checked, not the path that reaches it.
     #[test]
     fn a_task_that_is_not_pending_is_not_removed() {
-        let mut backlog = Backlog::from_stored(holding(vec![held("1", None, "Running")])).unwrap();
+        let mut backlog = holding(vec![held("1", None, "Running")]).unwrap();
         let running = TaskId::parse("1").unwrap();
         assert_eq!(backlog.remove(running), Err(RemovalRefused::NotPending));
         assert!(backlog.find(running).is_some());
@@ -493,31 +538,25 @@ mod tests {
 
     #[test]
     fn only_pending_tasks_are_waiting() {
-        let backlog = Backlog::from_stored(holding(vec![
+        let backlog = holding(vec![
             held("1", None, "Pending"),
             held("2", None, "Completed"),
-        ]))
+        ])
         .unwrap();
         assert_eq!(backlog.pending().len(), 1);
     }
 
     #[test]
-    fn what_goes_to_a_store_comes_back_the_same() {
-        let mut backlog = Backlog::default();
-        registered(&mut backlog, Some("develop"), None);
-        let first = registered(&mut backlog, None, None);
-        registered(&mut backlog, None, Some(first));
-        assert_eq!(Backlog::from_stored(backlog.to_stored()), Ok(backlog));
+    fn a_restored_backlog_keeps_what_it_was_given() {
+        let backlog = holding(vec![held("1", None, "Pending")]).unwrap();
+        assert_eq!(backlog.next_id(), 9);
+        assert_eq!(backlog.tasks().len(), 1);
     }
 
     #[test]
-    fn an_empty_store_reads_as_a_backlog_nobody_has_added_to() {
-        let stored = StoredBacklog {
-            next_id: "1".to_owned(),
-            tasks: Vec::new(),
-        };
+    fn nothing_restored_is_a_backlog_nobody_has_added_to() {
         assert_eq!(
-            Backlog::from_stored(stored),
+            Backlog::restore(1, Vec::new()),
             Ok(Backlog {
                 next_id: 1,
                 tasks: Vec::new()
@@ -526,31 +565,9 @@ mod tests {
     }
 
     #[test]
-    fn a_stored_state_no_task_can_be_in_is_refused() {
-        let stored = holding(vec![held("1", None, "Sleeping")]);
+    fn one_number_twice_is_refused() {
         assert_eq!(
-            Backlog::from_stored(stored),
-            Err(NotABacklog::BadValue {
-                field: "state".to_owned(),
-                value: "Sleeping".to_owned()
-            })
-        );
-    }
-
-    #[test]
-    fn a_stored_identifier_that_is_not_a_number_is_refused() {
-        let stored = holding(vec![held("first", None, "Pending")]);
-        assert!(matches!(
-            Backlog::from_stored(stored),
-            Err(NotABacklog::BadValue { .. })
-        ));
-    }
-
-    #[test]
-    fn a_store_holding_one_number_twice_is_refused() {
-        let stored = holding(vec![held("1", None, "Pending"), held("1", None, "Pending")]);
-        assert_eq!(
-            Backlog::from_stored(stored),
+            holding(vec![held("1", None, "Pending"), held("1", None, "Pending")]),
             Err(NotABacklog::RepeatedId {
                 id: TaskId::parse("1").unwrap()
             })
@@ -558,10 +575,9 @@ mod tests {
     }
 
     #[test]
-    fn a_task_waiting_for_one_the_store_does_not_hold_is_refused() {
-        let stored = holding(vec![held("1", Some("7"), "Pending")]);
+    fn a_task_waiting_for_one_that_is_not_there_is_refused() {
         assert_eq!(
-            Backlog::from_stored(stored),
+            holding(vec![held("1", Some("7"), "Pending")]),
             Err(NotABacklog::NoSuchPredecessor {
                 task: TaskId::parse("1").unwrap(),
                 after: TaskId::parse("7").unwrap()
@@ -573,21 +589,19 @@ mod tests {
     /// already exists. A file edited by hand can, which is the only way here.
     #[test]
     fn two_tasks_waiting_for_each_other_are_refused() {
-        let stored = holding(vec![
-            held("1", Some("2"), "Pending"),
-            held("2", Some("1"), "Pending"),
-        ]);
         assert!(matches!(
-            Backlog::from_stored(stored),
+            holding(vec![
+                held("1", Some("2"), "Pending"),
+                held("2", Some("1"), "Pending"),
+            ]),
             Err(NotABacklog::Cycle { .. })
         ));
     }
 
     #[test]
     fn a_task_waiting_for_itself_is_refused() {
-        let stored = holding(vec![held("1", Some("1"), "Pending")]);
         assert_eq!(
-            Backlog::from_stored(stored),
+            holding(vec![held("1", Some("1"), "Pending")]),
             Err(NotABacklog::Cycle {
                 task: TaskId::parse("1").unwrap()
             })
@@ -596,11 +610,13 @@ mod tests {
 
     #[test]
     fn a_chain_that_ends_is_not_a_cycle() {
-        let stored = holding(vec![
-            held("1", None, "Pending"),
-            held("2", Some("1"), "Pending"),
-            held("3", Some("2"), "Pending"),
-        ]);
-        assert!(Backlog::from_stored(stored).is_ok());
+        assert!(
+            holding(vec![
+                held("1", None, "Pending"),
+                held("2", Some("1"), "Pending"),
+                held("3", Some("2"), "Pending"),
+            ])
+            .is_ok()
+        );
     }
 }

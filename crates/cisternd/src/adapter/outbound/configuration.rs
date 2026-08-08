@@ -12,10 +12,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::port::{Settings, Stored, Unavailable};
+use crate::core::port::outbound::{ConfigurationStore, StoredConfiguration, Unavailable};
 
 /// The configuration, kept as TOML at a path fixed when this is built.
-pub struct FileSettings {
+pub struct FileConfiguration {
     path: PathBuf,
 }
 
@@ -64,15 +64,15 @@ fn as_number(text: &str) -> toml::Value {
     }
 }
 
-impl FileSettings {
+impl FileConfiguration {
     /// Takes the path it is given. This is how a test reaches a temporary one.
     pub fn at(path: PathBuf) -> Self {
-        FileSettings { path }
+        FileConfiguration { path }
     }
 
     /// The path `docs/cli.md` names, or nothing when there is nowhere for it.
     pub fn in_config_home() -> Option<Self> {
-        path_of(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME")).map(FileSettings::at)
+        path_of(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME")).map(FileConfiguration::at)
     }
 
     fn failing(&self, e: impl std::fmt::Display) -> Unavailable {
@@ -92,17 +92,19 @@ fn path_of(config_home: Option<OsString>, home: Option<OsString>) -> Option<Path
     Some(base.join("cistern").join("config.toml"))
 }
 
-impl Settings for FileSettings {
-    fn load(&self) -> Result<Stored, Unavailable> {
+impl ConfigurationStore for FileConfiguration {
+    fn load(&self) -> Result<StoredConfiguration, Unavailable> {
         let written = match fs::read_to_string(&self.path) {
             Ok(written) => written,
             // Nothing stored yet. Any other read failure is worth saying.
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Stored::default()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Ok(StoredConfiguration::default());
+            }
             Err(e) => return Err(self.failing(e)),
         };
 
         let document: Document = toml::from_str(&written).map_err(|e| self.failing(e))?;
-        Ok(Stored {
+        Ok(StoredConfiguration {
             vendor: document.vendor.map(as_text),
             plan: document.plan.map(as_text),
             usage_limit: document.usage_limit.map(as_text),
@@ -115,7 +117,7 @@ impl Settings for FileSettings {
     /// leaves an empty one behind, and we would be the ones writing the file
     /// `load` then refuses. A rename within one filesystem is atomic, so a
     /// reader sees the old contents or the new ones and nothing between.
-    fn store(&self, stored: &Stored) -> Result<(), Unavailable> {
+    fn store(&self, stored: &StoredConfiguration) -> Result<(), Unavailable> {
         let document = Document {
             vendor: stored.vendor.clone().map(toml::Value::String),
             plan: stored.plan.clone().map(toml::Value::String),
@@ -153,14 +155,14 @@ mod tests {
         Some(OsString::from(s))
     }
 
-    fn in_a_temporary_directory() -> (TempDir, FileSettings) {
+    fn in_a_temporary_directory() -> (TempDir, FileConfiguration) {
         let dir = TempDir::new().unwrap();
-        let settings = FileSettings::at(dir.path().join("config.toml"));
+        let settings = FileConfiguration::at(dir.path().join("config.toml"));
         (dir, settings)
     }
 
-    fn a_plan() -> Stored {
-        Stored {
+    fn a_plan() -> StoredConfiguration {
+        StoredConfiguration {
             plan: Some("max-20x".to_owned()),
             ..Default::default()
         }
@@ -190,7 +192,7 @@ mod tests {
     #[test]
     fn nothing_stored_reads_as_nothing_set() {
         let (_dir, settings) = in_a_temporary_directory();
-        assert_eq!(settings.load(), Ok(Stored::default()));
+        assert_eq!(settings.load(), Ok(StoredConfiguration::default()));
     }
 
     #[test]
@@ -199,7 +201,7 @@ mod tests {
         settings.store(&a_plan()).unwrap();
 
         // A second reader over the same path is what a restarted core is.
-        let restarted = FileSettings::at(dir.path().join("config.toml"));
+        let restarted = FileConfiguration::at(dir.path().join("config.toml"));
         assert_eq!(restarted.load(), Ok(a_plan()));
     }
 
@@ -224,7 +226,7 @@ mod tests {
         fs::write(dir.path().join("config.toml"), "plan = \"max-40x\"\n").unwrap();
         assert_eq!(
             settings.load(),
-            Ok(Stored {
+            Ok(StoredConfiguration {
                 plan: Some("max-40x".to_owned()),
                 ..Default::default()
             })
@@ -243,7 +245,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             settings.load(),
-            Ok(Stored {
+            Ok(StoredConfiguration {
                 plan: Some("123".to_owned()),
                 usage_limit: Some("-1".to_owned()),
                 ..Default::default()

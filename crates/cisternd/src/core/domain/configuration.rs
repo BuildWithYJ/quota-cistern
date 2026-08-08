@@ -6,8 +6,6 @@
 
 use std::fmt::{self, Display};
 
-use crate::core::port::Stored;
-
 /// The agent to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Vendor {
@@ -52,13 +50,6 @@ pub struct Configuration {
     vendor: Option<Vendor>,
     plan: Option<Plan>,
     usage_limit: Option<u64>,
-}
-
-/// A value a store handed back that no key takes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NotAValue {
-    pub key: Key,
-    pub value: String,
 }
 
 impl Key {
@@ -133,37 +124,6 @@ impl Setting {
 }
 
 impl Configuration {
-    /// Reads what a store handed back.
-    ///
-    /// A store holds names, not entities, and a configuration file can be
-    /// edited by hand, so what comes back is read the same way an argument is.
-    pub fn from_stored(stored: Stored) -> Result<Self, NotAValue> {
-        let mut configuration = Configuration::default();
-        let named = [
-            (Key::Vendor, stored.vendor),
-            (Key::Plan, stored.plan),
-            (Key::UsageLimit, stored.usage_limit),
-        ];
-
-        for (key, value) in named {
-            let Some(value) = value else { continue };
-            match Setting::parse(key, &value) {
-                Some(setting) => configuration.apply(setting),
-                None => return Err(NotAValue { key, value }),
-            }
-        }
-        Ok(configuration)
-    }
-
-    /// Hands the configuration to a store as text.
-    pub fn to_stored(&self) -> Stored {
-        Stored {
-            vendor: self.vendor.map(|v| v.to_string()),
-            plan: self.plan.map(|p| p.to_string()),
-            usage_limit: self.usage_limit.map(|n| n.to_string()),
-        }
-    }
-
     /// Stores a setting, replacing whatever the key held.
     pub fn apply(&mut self, setting: Setting) {
         match setting {
@@ -245,54 +205,5 @@ mod tests {
         let mut config = Configuration::default();
         config.apply(Setting::Vendor(Vendor::Claude));
         assert_eq!(config.entries(), vec![(Key::Vendor, "claude".to_owned())]);
-    }
-
-    #[test]
-    fn what_goes_to_a_store_comes_back_the_same() {
-        let mut config = Configuration::default();
-        config.apply(Setting::Vendor(Vendor::Claude));
-        config.apply(Setting::Plan(Plan::Max20x));
-        config.apply(Setting::UsageLimit(2_000_000));
-        assert_eq!(Configuration::from_stored(config.to_stored()), Ok(config));
-    }
-
-    #[test]
-    fn a_stored_value_no_key_takes_is_refused_with_both() {
-        let stored = Stored {
-            plan: Some("max-40x".to_owned()),
-            ..Default::default()
-        };
-        assert_eq!(
-            Configuration::from_stored(stored),
-            Err(NotAValue {
-                key: Key::Plan,
-                value: "max-40x".to_owned()
-            })
-        );
-    }
-
-    /// A store hands over text whatever it kept the value as, so a number that
-    /// is not one this key takes is refused where every other value is.
-    #[test]
-    fn a_stored_value_of_another_type_is_refused_the_same_way() {
-        let stored = Stored {
-            usage_limit: Some("-1".to_owned()),
-            ..Default::default()
-        };
-        assert_eq!(
-            Configuration::from_stored(stored),
-            Err(NotAValue {
-                key: Key::UsageLimit,
-                value: "-1".to_owned()
-            })
-        );
-    }
-
-    #[test]
-    fn an_empty_store_reads_as_a_configuration_nobody_has_set() {
-        assert_eq!(
-            Configuration::from_stored(Stored::default()),
-            Ok(Configuration::default())
-        );
     }
 }

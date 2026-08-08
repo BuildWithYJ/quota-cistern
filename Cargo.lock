@@ -85,7 +85,6 @@ version = "0.1.0-dev"
 dependencies = [
  "cistern-contract",
  "clap",
- "interprocess",
  "serde_json",
 ]
 
@@ -96,6 +95,7 @@ dependencies = [
  "interprocess",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -104,7 +104,6 @@ version = "0.1.0-dev"
 dependencies = [
  "cistern-contract",
  "ctrlc",
- "interprocess",
  "serde",
  "serde_json",
  "tempfile",

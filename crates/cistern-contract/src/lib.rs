@@ -2,8 +2,12 @@
 //!
 //! `docs/ipc.md` records this format, and becomes its authority once a surface is not Rust.
 
+// Tests may panic to signal failure.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 pub mod address;
 pub mod code;
+pub mod exchange;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

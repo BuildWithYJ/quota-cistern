@@ -13,10 +13,10 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::core::port::{StoredBacklog, StoredTask, Tasks, Unavailable};
+use crate::core::port::outbound::{BacklogStore, StoredBacklog, StoredTask, Unavailable};
 
 /// The backlog, kept as JSON at a path fixed when this is built.
-pub struct FileTasks {
+pub struct FileBacklog {
     path: PathBuf,
 }
 
@@ -48,15 +48,15 @@ struct Entry {
     state: Value,
 }
 
-impl FileTasks {
+impl FileBacklog {
     /// Takes the path it is given. This is how a test reaches a temporary one.
     pub fn at(path: PathBuf) -> Self {
-        FileTasks { path }
+        FileBacklog { path }
     }
 
     /// The path `docs/cli.md` names, or nothing when there is nowhere for it.
     pub fn in_data_home() -> Option<Self> {
-        path_of(env::var_os("XDG_DATA_HOME"), env::var_os("HOME")).map(FileTasks::at)
+        path_of(env::var_os("XDG_DATA_HOME"), env::var_os("HOME")).map(FileBacklog::at)
     }
 
     fn failing(&self, e: impl std::fmt::Display) -> Unavailable {
@@ -118,7 +118,7 @@ fn as_value(text: Option<String>) -> Value {
     text.map_or(Value::Null, Value::String)
 }
 
-impl Tasks for FileTasks {
+impl BacklogStore for FileBacklog {
     fn load(&self) -> Result<StoredBacklog, Unavailable> {
         let written = match fs::read_to_string(&self.path) {
             Ok(written) => written,
@@ -200,9 +200,9 @@ mod tests {
         Some(OsString::from(s))
     }
 
-    fn in_a_temporary_directory() -> (TempDir, FileTasks) {
+    fn in_a_temporary_directory() -> (TempDir, FileBacklog) {
         let dir = TempDir::new().unwrap();
-        let tasks = FileTasks::at(dir.path().join("backlog.json"));
+        let tasks = FileBacklog::at(dir.path().join("backlog.json"));
         (dir, tasks)
     }
 
@@ -261,7 +261,7 @@ mod tests {
         tasks.store(&a_backlog()).unwrap();
 
         // A second reader over the same path is what a restarted core is.
-        let restarted = FileTasks::at(dir.path().join("backlog.json"));
+        let restarted = FileBacklog::at(dir.path().join("backlog.json"));
         assert_eq!(restarted.load(), Ok(a_backlog()));
     }
 

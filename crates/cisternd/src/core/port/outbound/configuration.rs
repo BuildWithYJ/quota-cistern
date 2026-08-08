@@ -9,24 +9,24 @@ use super::Unavailable;
 /// kept it as, so what comes back meets the same parse an argument does and a
 /// file edited by hand is refused the same way a bad argument is.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Stored {
+pub struct StoredConfiguration {
     pub vendor: Option<String>,
     pub plan: Option<String>,
     pub usage_limit: Option<String>,
 }
 
 /// Where the configuration is kept between runs.
-pub trait Settings {
+pub trait ConfigurationStore {
     /// Reads what is stored.
     ///
     /// Nothing stored is an empty configuration rather than a failure, since
     /// `config get` has to answer before anyone has set anything. Telling that
     /// apart from a store that cannot be read is the implementation's job.
-    fn load(&self) -> Result<Stored, Unavailable>;
+    fn load(&self) -> Result<StoredConfiguration, Unavailable>;
 
     /// Writes the whole configuration.
     ///
     /// The whole of it, so that merging one key into what is already there
     /// stays in the core and the implementation never learns the shape.
-    fn store(&self, stored: &Stored) -> Result<(), Unavailable>;
+    fn store(&self, stored: &StoredConfiguration) -> Result<(), Unavailable>;
 }

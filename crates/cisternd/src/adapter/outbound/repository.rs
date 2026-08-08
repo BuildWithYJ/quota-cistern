@@ -5,12 +5,12 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::core::port::{Repository, Unavailable};
+use crate::core::port::outbound::{RepositoryRoots, Unavailable};
 
 /// Finds the repository a directory sits in by looking for `.git` above it.
-pub struct GitRepository;
+pub struct GitRoots;
 
-impl Repository for GitRepository {
+impl RepositoryRoots for GitRoots {
     fn root_of(&self, from: &str) -> Result<Option<String>, Unavailable> {
         // Resolved first, so that what is stored does not depend on where the
         // surface happened to be when it built the request.
@@ -50,7 +50,7 @@ mod tests {
     }
 
     fn root_of(dir: &Path) -> Option<String> {
-        GitRepository.root_of(&dir.display().to_string()).unwrap()
+        GitRoots.root_of(&dir.display().to_string()).unwrap()
     }
 
     fn resolved(dir: &Path) -> String {
@@ -88,6 +88,6 @@ mod tests {
 
     #[test]
     fn a_place_that_is_not_there_is_a_failure_rather_than_an_answer() {
-        assert!(GitRepository.root_of("/no/such/place").is_err());
+        assert!(GitRoots.root_of("/no/such/place").is_err());
     }
 }

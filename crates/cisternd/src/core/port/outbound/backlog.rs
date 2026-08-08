@@ -30,7 +30,7 @@ pub struct StoredTask {
 }
 
 /// Where the backlog is kept between runs.
-pub trait Tasks {
+pub trait BacklogStore {
     /// Reads what is stored.
     ///
     /// Nothing stored is an empty backlog rather than a failure, since

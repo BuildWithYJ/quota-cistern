@@ -7,4 +7,4 @@ mod configuration;
 mod task;
 
 pub use configuration::{Configuration, Key, Setting};
-pub use task::{Backlog, NotABacklog, RemovalRefused, Repository, TaskId};
+pub use task::{Backlog, NotABacklog, RemovalRefused, Repository, Restored, TaskId, TaskState};
