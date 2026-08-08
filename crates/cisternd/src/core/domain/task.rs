@@ -249,6 +249,11 @@ impl Backlog {
 
     /// Takes a task out of the backlog.
     ///
+    /// Whatever waited for it now waits for what it waited for. Leaving those
+    /// alone would name a task that is not there, which is the one thing a
+    /// stored backlog may not do, so removing one would make a file this core
+    /// cannot read.
+    ///
     /// The next number is left where it is. A number that was handed out is
     /// spent whether or not the task it named is still here.
     pub fn remove(&mut self, id: TaskId) -> Result<Task, RemovalRefused> {
@@ -258,7 +263,14 @@ impl Backlog {
         if self.tasks[at].state != TaskState::Pending {
             return Err(RemovalRefused::NotPending);
         }
-        Ok(self.tasks.remove(at))
+
+        let removed = self.tasks.remove(at);
+        for waiting in &mut self.tasks {
+            if waiting.after == Some(id) {
+                waiting.after = removed.after;
+            }
+        }
+        Ok(removed)
     }
 
     pub fn find(&self, id: TaskId) -> Option<&Task> {
@@ -467,6 +479,44 @@ mod tests {
 
         let third = registered(&mut backlog, None, None);
         assert_ne!(third, second);
+    }
+
+    #[test]
+    fn what_waited_for_a_removed_task_waits_for_what_that_one_waited_for() {
+        let mut backlog = Backlog::default();
+        let first = registered(&mut backlog, None, None);
+        let second = registered(&mut backlog, None, Some(first));
+        let third = registered(&mut backlog, None, Some(second));
+
+        backlog.remove(second).unwrap();
+        assert_eq!(backlog.find(third).unwrap().after(), Some(first));
+    }
+
+    /// The branch the removed task would have produced is never made, so what
+    /// waited for it starts from where that one would have.
+    #[test]
+    fn removing_the_first_leaves_what_waited_for_it_waiting_for_nothing() {
+        let mut backlog = Backlog::default();
+        let first = registered(&mut backlog, None, None);
+        let second = registered(&mut backlog, None, Some(first));
+
+        backlog.remove(first).unwrap();
+        let task = backlog.find(second).unwrap();
+        assert_eq!(task.after(), None);
+        assert_eq!(task.base_branch(), "main");
+    }
+
+    /// Two tasks may name the same predecessor, and both are rebound.
+    #[test]
+    fn everything_that_waited_for_a_removed_task_is_rebound() {
+        let mut backlog = Backlog::default();
+        let first = registered(&mut backlog, None, None);
+        let second = registered(&mut backlog, None, Some(first));
+        let third = registered(&mut backlog, None, Some(first));
+
+        backlog.remove(first).unwrap();
+        assert_eq!(backlog.find(second).unwrap().after(), None);
+        assert_eq!(backlog.find(third).unwrap().after(), None);
     }
 
     #[test]

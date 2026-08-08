@@ -147,6 +147,8 @@ task:1 added to backlog
 
 Removes a task from the backlog. Only `Pending` tasks that have not been assigned are eligible; finished tasks leave the review queue through `discard`.
 
+A task that was waiting for the removed one waits for what that one was waiting for, and waits for nothing when it was first in the chain. Its base branch follows, since the branch the removed task would have produced is never made.
+
 ```
 cistern task rm <task> [-o <fmt>]
 ```

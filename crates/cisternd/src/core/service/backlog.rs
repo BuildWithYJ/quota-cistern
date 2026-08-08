@@ -408,6 +408,24 @@ mod tests {
         assert!(in_a_repository(&tasks).list().unwrap().items.is_empty());
     }
 
+    /// Removing a predecessor used to leave a file the core could not read,
+    /// so the next command refused with code 5 and nothing could be listed.
+    #[test]
+    fn the_backlog_is_still_readable_after_a_predecessor_is_removed() {
+        let tasks = Remembered::default();
+        let first = register(&tasks, "first");
+
+        let mut given = registering("second");
+        given.after = Some(&first.id);
+        in_a_repository(&tasks).add(given).unwrap();
+
+        in_a_repository(&tasks).remove(&first.id).unwrap();
+
+        let listing = in_a_repository(&tasks).list().unwrap();
+        assert_eq!(listing.items.len(), 1);
+        assert_eq!(listing.items[0].base_branch, "main");
+    }
+
     #[test]
     fn removing_a_task_nobody_registered_is_refused_as_missing() {
         let tasks = Remembered::default();
