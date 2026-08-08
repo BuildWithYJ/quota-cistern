@@ -3,7 +3,7 @@
 use crate::core::{
     Added, Detail, Listing, Refusal, Removed, Waiting,
     domain::{Backlog, NotABacklog, RemovalRefused, Repository, Restored, TaskId, TaskState},
-    port::{Repository as RepositoryPort, StoredBacklog, StoredTask, Tasks},
+    port::outbound::{BacklogStore, RepositoryRoots, StoredBacklog, StoredTask},
 };
 
 /// What `task add` was given.
@@ -24,8 +24,8 @@ pub struct Registration<'a> {
 
 /// Registers a task.
 pub fn add(
-    tasks: &impl Tasks,
-    repository: &impl RepositoryPort,
+    tasks: &impl BacklogStore,
+    repository: &impl RepositoryRoots,
     given: Registration<'_>,
 ) -> Result<Added, Refusal> {
     if given.title.trim().is_empty() {
@@ -78,7 +78,7 @@ pub fn add(
 }
 
 /// Takes a task out of the backlog.
-pub fn remove(tasks: &impl Tasks, id: &str) -> Result<Removed, Refusal> {
+pub fn remove(tasks: &impl BacklogStore, id: &str) -> Result<Removed, Refusal> {
     let parsed = identifier(id)?;
     let mut backlog = read(tasks)?;
 
@@ -99,7 +99,7 @@ pub fn remove(tasks: &impl Tasks, id: &str) -> Result<Removed, Refusal> {
 }
 
 /// Reads one task in full.
-pub fn show(tasks: &impl Tasks, id: &str) -> Result<Detail, Refusal> {
+pub fn show(tasks: &impl BacklogStore, id: &str) -> Result<Detail, Refusal> {
     let parsed = identifier(id)?;
     let backlog = read(tasks)?;
     let Some(task) = backlog.find(parsed) else {
@@ -126,7 +126,7 @@ pub fn show(tasks: &impl Tasks, id: &str) -> Result<Detail, Refusal> {
 }
 
 /// Lists the tasks waiting to be assigned.
-pub fn list(tasks: &impl Tasks) -> Result<Listing, Refusal> {
+pub fn list(tasks: &impl BacklogStore) -> Result<Listing, Refusal> {
     let backlog = read(tasks)?;
     Ok(Listing {
         items: backlog
@@ -154,7 +154,7 @@ fn identifier(id: &str) -> Result<TaskId, Refusal> {
 /// rather than a fact. Unlike the configuration, nobody is meant to write this
 /// file, so a backlog that does not add up is a store this core cannot use
 /// rather than something the user typed wrong.
-fn read(tasks: &impl Tasks) -> Result<Backlog, Refusal> {
+fn read(tasks: &impl BacklogStore) -> Result<Backlog, Refusal> {
     let stored = tasks.load()?;
     let next_id = stored_number("next_id", &stored.next_id)?;
 
@@ -242,7 +242,7 @@ fn unusable(e: &NotABacklog) -> String {
 mod tests {
     use std::cell::{Cell, RefCell};
 
-    use crate::core::port::{StoredBacklog, Unavailable};
+    use crate::core::port::outbound::{StoredBacklog, Unavailable};
 
     use super::*;
 
@@ -269,7 +269,7 @@ mod tests {
         }
     }
 
-    impl Tasks for Remembered {
+    impl BacklogStore for Remembered {
         fn load(&self) -> Result<StoredBacklog, Unavailable> {
             self.reads.set(self.reads.get() + 1);
             match self.broken {
@@ -297,7 +297,7 @@ mod tests {
         }
     }
 
-    impl RepositoryPort for Somewhere {
+    impl RepositoryRoots for Somewhere {
         fn root_of(&self, _from: &str) -> Result<Option<String>, Unavailable> {
             Ok(self.root.clone())
         }
@@ -519,7 +519,7 @@ mod tests {
         let tasks = Remembered::default();
         let mut held = tasks.stored.borrow().clone();
         held.tasks = vec![
-            crate::core::port::StoredTask {
+            crate::core::port::outbound::StoredTask {
                 id: "1".to_owned(),
                 title: "first".to_owned(),
                 instruction: "do it".to_owned(),
@@ -529,7 +529,7 @@ mod tests {
                 repository: "/work/api".to_owned(),
                 state: "Pending".to_owned(),
             },
-            crate::core::port::StoredTask {
+            crate::core::port::outbound::StoredTask {
                 id: "2".to_owned(),
                 title: "second".to_owned(),
                 instruction: "do it".to_owned(),

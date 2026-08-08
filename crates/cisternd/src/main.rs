@@ -21,13 +21,14 @@ fn main() -> ExitCode {
     }
 
     // Failing once here beats failing on every request that arrives.
-    let Some(settings) = adapter::settings::FileSettings::in_config_home() else {
+    let Some(settings) = adapter::outbound::configuration::FileConfiguration::in_config_home()
+    else {
         return quit("neither XDG_CONFIG_HOME nor HOME is set");
     };
-    let Some(tasks) = adapter::tasks::FileTasks::in_data_home() else {
+    let Some(tasks) = adapter::outbound::backlog::FileBacklog::in_data_home() else {
         return quit("neither XDG_DATA_HOME nor HOME is set");
     };
-    let repository = adapter::repository::GitRepository;
+    let repository = adapter::outbound::repository::GitRoots;
 
     let server = match exchange::listen() {
         Ok(server) => server,

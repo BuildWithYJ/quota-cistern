@@ -3,14 +3,14 @@
 use crate::core::{
     Applied, Refusal, View,
     domain::{Configuration, Key, Setting},
-    port::{Settings, Stored},
+    port::outbound::{ConfigurationStore, StoredConfiguration},
 };
 
 /// Stores one setting.
 ///
 /// The value is read before the store is, so a value that was never valid
 /// cannot leave a half-written configuration behind.
-pub fn set(settings: &impl Settings, key: &str, value: &str) -> Result<Applied, Refusal> {
+pub fn set(settings: &impl ConfigurationStore, key: &str, value: &str) -> Result<Applied, Refusal> {
     let Some(parsed) = Key::parse(key) else {
         return Err(Refusal::UnknownKey {
             key: key.to_owned(),
@@ -34,7 +34,7 @@ pub fn set(settings: &impl Settings, key: &str, value: &str) -> Result<Applied, 
 }
 
 /// Reads one key, or the whole configuration when no key is named.
-pub fn get(settings: &impl Settings, key: Option<&str>) -> Result<View, Refusal> {
+pub fn get(settings: &impl ConfigurationStore, key: Option<&str>) -> Result<View, Refusal> {
     let Some(key) = key else {
         let entries = read(settings)?
             .entries()
@@ -60,7 +60,7 @@ pub fn get(settings: &impl Settings, key: Option<&str>) -> Result<View, Refusal>
 /// A configuration file can be edited by hand, so what a store hands back is a
 /// claim rather than a fact. The domain is given values it can take, never the
 /// text they were kept as, so reading them is this layer's work.
-fn read(settings: &impl Settings) -> Result<Configuration, Refusal> {
+fn read(settings: &impl ConfigurationStore) -> Result<Configuration, Refusal> {
     let stored = settings.load()?;
     let held = [
         (Key::Vendor, stored.vendor),
@@ -83,8 +83,8 @@ fn read(settings: &impl Settings) -> Result<Configuration, Refusal> {
 }
 
 /// Hands the configuration to a store as the text a user would have typed.
-fn written(configuration: &Configuration) -> Stored {
-    Stored {
+fn written(configuration: &Configuration) -> StoredConfiguration {
+    StoredConfiguration {
         vendor: configuration.value_of(Key::Vendor),
         plan: configuration.value_of(Key::Plan),
         usage_limit: configuration.value_of(Key::UsageLimit),
@@ -95,21 +95,21 @@ fn written(configuration: &Configuration) -> Stored {
 mod tests {
     use std::cell::RefCell;
 
-    use crate::core::port::Unavailable;
+    use crate::core::port::outbound::Unavailable;
 
     use super::*;
 
     /// A store held in memory, so the steps can be checked without a file.
     #[derive(Default)]
     struct Remembered {
-        stored: RefCell<Stored>,
+        stored: RefCell<StoredConfiguration>,
         /// Makes every read fail, standing in for a store that is there but
         /// cannot be understood.
         broken: bool,
     }
 
     impl Remembered {
-        fn holding(stored: Stored) -> Self {
+        fn holding(stored: StoredConfiguration) -> Self {
             Remembered {
                 stored: RefCell::new(stored),
                 broken: false,
@@ -117,15 +117,15 @@ mod tests {
         }
     }
 
-    impl Settings for Remembered {
-        fn load(&self) -> Result<Stored, Unavailable> {
+    impl ConfigurationStore for Remembered {
+        fn load(&self) -> Result<StoredConfiguration, Unavailable> {
             match self.broken {
                 true => Err(Unavailable::new("not valid TOML")),
                 false => Ok(self.stored.borrow().clone()),
             }
         }
 
-        fn store(&self, stored: &Stored) -> Result<(), Unavailable> {
+        fn store(&self, stored: &StoredConfiguration) -> Result<(), Unavailable> {
             *self.stored.borrow_mut() = stored.clone();
             Ok(())
         }
@@ -230,7 +230,7 @@ mod tests {
     /// is not one this key takes is refused where every other value is.
     #[test]
     fn a_stored_value_of_another_type_is_refused_the_same_way() {
-        let settings = Remembered::holding(Stored {
+        let settings = Remembered::holding(StoredConfiguration {
             usage_limit: Some("-1".to_owned()),
             ..Default::default()
         });
@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn a_value_edited_into_the_store_by_hand_is_refused_too() {
-        let settings = Remembered::holding(Stored {
+        let settings = Remembered::holding(StoredConfiguration {
             plan: Some("max-40x".to_owned()),
             ..Default::default()
         });

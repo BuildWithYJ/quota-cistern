@@ -7,7 +7,7 @@ mod domain;
 pub mod port;
 pub mod service;
 
-use port::Unavailable;
+use port::outbound::Unavailable;
 
 /// A setting that was stored.
 #[derive(Debug, Clone, PartialEq, Eq)]

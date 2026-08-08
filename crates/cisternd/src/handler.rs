@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::core::{
     Added, Applied, Detail, Listing, Refusal, Removed, View,
-    port::{Repository, Settings, Tasks},
+    port::outbound::{BacklogStore, ConfigurationStore, RepositoryRoots},
     service::{self, Registration},
 };
 
@@ -25,9 +25,9 @@ use crate::core::{
 /// Both depend on the envelope alone, so `cistern_contract::exchange` settles
 /// them before this is reached.
 pub fn respond(
-    settings: &impl Settings,
-    tasks: &impl Tasks,
-    repository: &impl Repository,
+    settings: &impl ConfigurationStore,
+    tasks: &impl BacklogStore,
+    repository: &impl RepositoryRoots,
     request: Request,
 ) -> Response {
     match request.command.as_str() {
@@ -211,7 +211,7 @@ mod tests {
 
     use cistern_contract::VERSION;
 
-    use crate::core::port::{StoredBacklog, Unavailable};
+    use crate::core::port::outbound::{StoredBacklog, Unavailable};
 
     use super::*;
 
@@ -244,15 +244,18 @@ mod tests {
 
     #[derive(Default)]
     struct RememberedSettings {
-        stored: RefCell<crate::core::port::Stored>,
+        stored: RefCell<crate::core::port::outbound::StoredConfiguration>,
     }
 
-    impl Settings for RememberedSettings {
-        fn load(&self) -> Result<crate::core::port::Stored, Unavailable> {
+    impl ConfigurationStore for RememberedSettings {
+        fn load(&self) -> Result<crate::core::port::outbound::StoredConfiguration, Unavailable> {
             Ok(self.stored.borrow().clone())
         }
 
-        fn store(&self, stored: &crate::core::port::Stored) -> Result<(), Unavailable> {
+        fn store(
+            &self,
+            stored: &crate::core::port::outbound::StoredConfiguration,
+        ) -> Result<(), Unavailable> {
             *self.stored.borrow_mut() = stored.clone();
             Ok(())
         }
@@ -273,7 +276,7 @@ mod tests {
         }
     }
 
-    impl Tasks for RememberedTasks {
+    impl BacklogStore for RememberedTasks {
         fn load(&self) -> Result<StoredBacklog, Unavailable> {
             Ok(self.stored.borrow().clone())
         }
@@ -290,7 +293,7 @@ mod tests {
         root: Option<String>,
     }
 
-    impl Repository for Somewhere {
+    impl RepositoryRoots for Somewhere {
         fn root_of(&self, _from: &str) -> Result<Option<String>, Unavailable> {
             Ok(self.root.clone())
         }
