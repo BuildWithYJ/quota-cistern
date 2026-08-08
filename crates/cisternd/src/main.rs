@@ -21,13 +21,18 @@ fn main() -> ExitCode {
     let Some(settings) = adapter::settings::FileSettings::in_config_home() else {
         return quit("neither XDG_CONFIG_HOME nor HOME is set");
     };
+    let Some(tasks) = adapter::tasks::FileTasks::in_data_home() else {
+        return quit("neither XDG_DATA_HOME nor HOME is set");
+    };
+    let repository = adapter::repository::GitRepository;
 
     let listener = match adapter::socket::listen() {
         Ok(listener) => listener,
         Err(e) => return quit(e),
     };
 
-    match adapter::socket::serve(listener, |request| handler::respond(&settings, request)) {
+    let answer = |request| handler::respond(&settings, &tasks, &repository, request);
+    match adapter::socket::serve(listener, answer) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => quit(e),
     }

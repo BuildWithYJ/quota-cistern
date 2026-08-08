@@ -28,7 +28,7 @@ These apply to every command.
 
 ### Output format
 
-`json` prints the command's output fields as they are, `text` prints a human-readable layout, and `id` prints the identifier only. The output table in each command section defines the `json` fields. In `text`, fields with no value are shown in parentheses, such as `(none)` or `(pending)`.
+`json` prints the command's output fields as they are, `text` prints a human-readable layout, and `id` prints the identifier only. The output table in each command section defines the `json` fields. In `text`, a value that is absent is shown in parentheses, such as `(none)` or `(pending)`, whether it stands as a labelled field or as the whole output.
 
 With `-o json`, stdout carries a single JSON object and nothing else. Logs and progress go to stderr. Errors in JSON form are printed to stdout as follows.
 
@@ -85,6 +85,10 @@ Commands follow the loop and fall into four groups — tasks and backlog, sessio
 
 ### 2.1 Tasks and backlog
 
+A task records the repository it was added from. The core takes it from the directory the command was run in, walking up to the repository root, and refuses the command when there is no repository there.
+
+The backlog is stored at `$XDG_DATA_HOME/cistern/backlog.json`, or `~/.local/share/cistern/backlog.json` when that variable is unset.
+
 #### `cistern task add`
 
 Adds a task to the backlog as `Pending`. It is not assigned to a session directly; which session picks it up is decided by the core when a session opens.
@@ -99,11 +103,13 @@ cistern task add --title <T> --instruction <I> [--branch <B>] [--after <task>] [
 | --- | --- | --- | --- |
 | `--title <T>` | yes | string | Task title |
 | `--instruction <I>` | yes | string | Instruction for the agent. `-` reads from stdin |
-| `--branch <B>` | no | branch name | Base branch for the task. Defaults to `main` |
-| `--after <task>` | no | id | Predecessor task. The base branch becomes that task's result branch |
+| `--branch <B>` | no | branch name | Branch the task starts from. Defaults to `main`, or to the predecessor's result branch when `--after` is given |
+| `--after <task>` | no | id | Predecessor task. This task is not assigned until that one completes |
 | `--model <M>` | no | model name | Model for this task. Falls back to the session's `--model` |
 
-With `--after`, the task is not eligible for assignment until the predecessor reaches `Completed`; if the predecessor ends in any other terminal state, the task stays `Pending`. `--after` and `--branch` cannot both be given.
+The two may be given together. The task then waits for its predecessor and starts from the branch that was named.
+
+With `--after`, the task is not eligible for assignment until the predecessor reaches `Completed`; if the predecessor ends in any other terminal state, the task stays `Pending`.
 
 **Output**
 
@@ -114,6 +120,7 @@ With `--after`, the task is not eligible for assignment until the predecessor re
 | `base_branch` | string | Base branch |
 | `after` | string | Predecessor task, or null |
 | `model` | string | Model given for this task, or null |
+| `repository` | string | Repository the task was added from |
 | `state` | enum | `Pending` on creation |
 
 **Exit codes**
@@ -121,8 +128,9 @@ With `--after`, the task is not eligible for assignment until the predecessor re
 | Code | Condition |
 | --- | --- |
 | 0 | Success |
-| 2 | Argument error (missing `--title`, `--after` together with `--branch`, `--after` forming a cycle) |
+| 2 | Argument error (missing `--title`) |
 | 3 | The task named by `--after` does not exist |
+| 4 | The command was not run inside a repository |
 | 5 | Core error |
 
 **Example**
@@ -132,6 +140,7 @@ $ cistern task add --title "refactor X" --instruction "tidy up src/utils"
 task:1 added to backlog
   title:  refactor X
   branch: main (base)
+  repo:   ~/work/api
 ```
 
 #### `cistern task rm`
@@ -218,6 +227,7 @@ cistern task show <task> [-o <fmt>]
 | `base_branch` | string | Base branch |
 | `after` | string | Predecessor task, or null |
 | `model` | string | Model the task ran on |
+| `repository` | string | Repository the task was added from. Shown with the home directory as `~` |
 | `branch` | string | Result branch, or null |
 | `reason` | string | Reason it ended, or null |
 | `commits` | array | Commits on the result branch, each with `sha`, `subject`, `added`, `removed`. Present only in terminal states, otherwise null |
@@ -241,6 +251,8 @@ task:2  Interrupted
   session:  session:1
   title:    add tests
   base:     main (2 commits ahead)
+  after:    (none)
+  repo:     ~/work/api
   branch:   cistern/2
   reason:   budget hardlock
   worktree: (cleaned)
@@ -574,7 +586,7 @@ $ cistern review ls
 
 #### `cistern apply`
 
-Applies the result branch's changes to the user's working tree. It does not commit, and it does not move or delete any branch.
+Applies the result branch's changes to the working tree of the repository the task was added from. It does not commit, and it does not move or delete any branch.
 
 ```
 cistern apply <task> [-o <fmt>]
@@ -665,7 +677,7 @@ cistern config get [<key>]
 | `plan` | `pro` · `max-5x` · `max-20x` · `custom` | Subscription plan, the basis for `--usage %` |
 | `usage-limit` | token count | Absolute tokens that make up 100% when `plan` is `custom` |
 
-Configuration is stored in the user's home directory at `~/.config/cistern/config.toml`. The token counts behind the plan presets are approximate, so if an exact basis is needed, set `plan` to `custom` and give `usage-limit` directly.
+Configuration is stored at `$XDG_CONFIG_HOME/cistern/config.toml`, or `~/.config/cistern/config.toml` when that variable is unset. The token counts behind the plan presets are approximate, so if an exact basis is needed, set `plan` to `custom` and give `usage-limit` directly.
 
 **Output**
 

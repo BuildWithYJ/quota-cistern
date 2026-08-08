@@ -32,7 +32,7 @@
 
 ### 출력 형식
 
-`json`은 커맨드의 출력 필드를 그대로, `text`는 사람이 읽는 레이아웃으로, `id`는 식별자만 출력한다. 각 커맨드 절의 출력 표가 `json`의 필드를 정의하며, `text`는 값이 없는 필드를 `(none)`·`(pending)`처럼 괄호로 표시한다.
+`json`은 커맨드의 출력 필드를 그대로, `text`는 사람이 읽는 레이아웃으로, `id`는 식별자만 출력한다. 각 커맨드 절의 출력 표가 `json`의 필드를 정의하며, `text`는 값이 없으면 `(none)`·`(pending)`처럼 괄호로 표시한다. 라벨이 붙은 필드든 출력 전체든 같다.
 
 `-o json`이면 stdout에 단일 JSON 객체만 출력한다. 로그·진행 표시는 전부 stderr로 출력한다. 에러도 JSON일 때는 stdout에 다음 형태로 출력한다.
 
@@ -93,6 +93,10 @@
 
 ### 2.1 작업 · 백로그
 
+작업은 어느 저장소에서 등록됐는지를 기록한다. 코어는 커맨드를 실행한 디렉터리에서 위로 올라가며 저장소 루트를 찾고, 저장소가 아니면 커맨드를 거부한다.
+
+백로그는 `$XDG_DATA_HOME/cistern/backlog.json`에 저장한다. 그 변수가 없으면 `~/.local/share/cistern/backlog.json`이다.
+
 #### `cistern task add`
 
 작업을 백로그에 `Pending`으로 등록한다. 세션에 직접 배정하지 않으며, 어느 세션에 편성될지는 세션을 열 때 코어가 정한다.
@@ -108,12 +112,14 @@ cistern task add --title <T> --instruction <I> [--branch <B>] [--after <task>] [
 | ------------------- | --- | ----- | ------------------------------- |
 | `--title <T>`       | 예   | 문자열   | 작업 제목                           |
 | `--instruction <I>` | 예   | 문자열   | 에이전트 지시. `-`이면 stdin에서 읽음       |
-| `--branch <B>`      | 아니오 | 브랜치명  | 작업 기준 브랜치. 기본 `main`            |
-| `--after <task>`    | 아니오 | ID    | 선행 작업. 기준 브랜치가 그 작업의 결과 브랜치가 된다 |
+| `--branch <B>`      | 아니오 | 브랜치명  | 작업이 시작할 브랜치. 기본 `main`이고, `--after`를 주면 선행 작업의 결과 브랜치 |
+| `--after <task>`    | 아니오 | ID    | 선행 작업. 그 작업이 끝나기 전에는 편성되지 않는다 |
 | `--model <M>`       | 아니오 | 모델 이름 | 이 작업에 쓸 모델. 생략하면 세션의 `--model`  |
 
 
-`--after`를 주면 선행 작업이 `Completed`가 될 때까지 편성 대상이 아니며, 다른 종료 상태로 끝나면 `Pending`으로 남는다. `--branch`와 함께 줄 수 없다.
+둘을 함께 줄 수 있다. 그때 작업은 선행 작업을 기다리되 지정한 브랜치에서 시작한다.
+
+`--after`를 주면 선행 작업이 `Completed`가 될 때까지 편성 대상이 아니며, 다른 종료 상태로 끝나면 `Pending`으로 남는다.
 
 **출력**
 
@@ -125,18 +131,20 @@ cistern task add --title <T> --instruction <I> [--branch <B>] [--after <task>] [
 | `base_branch` | string | 기준 브랜치           |
 | `after`       | string | 선행 작업. 없으면 null  |
 | `model`       | string | 지정한 모델. 없으면 null |
+| `repository`  | string | 작업을 등록한 저장소       |
 | `state`       | enum   | 생성 직후 `Pending`  |
 
 
 **종료 코드**
 
 
-| 코드  | 조건                                                                      |
-| --- | ----------------------------------------------------------------------- |
-| 0   | 성공                                                                      |
-| 2   | 인자 오류 (예: `--title` 누락, `--after`와 `--branch`를 함께 줌, `--after`가 순환을 만듦) |
-| 3   | `--after`가 가리키는 작업 없음                                                   |
-| 5   | 코어 오류                                                                   |
+| 코드  | 조건                          |
+| --- | --------------------------- |
+| 0   | 성공                          |
+| 2   | 인자 오류 (예: `--title` 누락)     |
+| 3   | `--after`가 가리키는 작업 없음       |
+| 4   | 저장소 안에서 실행하지 않음             |
+| 5   | 코어 오류                       |
 
 
 **예시**
@@ -146,6 +154,7 @@ $ cistern task add --title "리팩터 X" --instruction "src/utils 정리"
 task:1 added to backlog
   title:  리팩터 X
   branch: main (base)
+  repo:   ~/work/api
 ```
 
 #### `cistern task rm`
@@ -241,6 +250,7 @@ cistern task show <task> [-o <fmt>]
 | `base_branch` | string | 기준 브랜치                                                                         |
 | `after`       | string | 선행 작업. 없으면 null                                                                |
 | `model`       | string | 실행에 쓴 모델                                                                       |
+| `repository`  | string | 작업을 등록한 저장소. 홈 디렉터리는 `~`로 표시                                                   |
 | `branch`      | string | 결과 브랜치. 없으면 null                                                               |
 | `reason`      | string | 종료 사유. 없으면 null                                                                |
 | `commits`     | array  | 결과 브랜치의 커밋. 각 항목은 `sha`·`subject`·`added`·`removed`. 종료 상태에서만 값이 있고 그 밖에는 null |
@@ -267,6 +277,8 @@ task:2  Interrupted
   session:  session:1
   title:    테스트 추가
   base:     main (2 commits ahead)
+  after:    (none)
+  repo:     ~/work/api
   branch:   cistern/2
   reason:   budget hardlock
   worktree: (cleaned)
@@ -640,7 +652,7 @@ $ cistern review ls
 
 #### `cistern apply`
 
-결과 브랜치의 변경을 사용자의 작업 트리에 적용한다. 커밋하지 않으며 브랜치를 옮기거나 지우지
+결과 브랜치의 변경을 작업을 등록한 저장소의 작업 트리에 적용한다. 커밋하지 않으며 브랜치를 옮기거나 지우지
 않는다.
 
 ```
@@ -744,7 +756,7 @@ cistern config get [<key>]
 | `usage-limit` | 토큰 수                                    | `plan custom`일 때 100%에 해당하는 절대 토큰 수 |
 
 
-설정은 사용자 홈의 config 파일에 저장한다. 경로는 `~/.config/cistern/config.toml`이다. 플랜 프리셋의 기준 토큰 수는 근사값이므로, 정확한 기준이 필요하면 `plan`을 `custom`으로 두고 `usage-limit`으로 직접 지정한다.
+설정은 `$XDG_CONFIG_HOME/cistern/config.toml`에 저장한다. 그 변수가 없으면 `~/.config/cistern/config.toml`이다. 플랜 프리셋의 기준 토큰 수는 근사값이므로, 정확한 기준이 필요하면 `plan`을 `custom`으로 두고 `usage-limit`으로 직접 지정한다.
 
 **출력**
 
