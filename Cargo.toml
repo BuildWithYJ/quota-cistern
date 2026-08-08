@@ -15,6 +15,8 @@ ctrlc = { version = "3.5", features = ["termination"] }
 interprocess = "2.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+tempfile = "3.27"
+toml = "1.1"
 
 # The core runs unattended, so a failure there loses usage that no re-run recovers.
 [workspace.lints.rust]
