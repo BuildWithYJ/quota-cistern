@@ -67,7 +67,7 @@ mod tests {
 
     use cistern_contract::code::USAGE_ERROR;
 
-    use crate::adapter::inbound::tests::{asked, data, failure};
+    use super::super::tests::{asked, data, failure};
     use crate::core::port::inbound::Refusal;
 
     use super::*;
