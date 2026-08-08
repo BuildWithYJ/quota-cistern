@@ -1,7 +1,8 @@
 //! The edges of the core.
 //!
-//! `outbound` is what the core requires of the outside. A port is written in
-//! the core's own terms: no path, file format, or vendor name appears here.
+//! `inbound` is what the core offers, and `outbound` is what it requires of
+//! the outside. A port is written in the core's own terms either way: no path,
+//! file format, or vendor name appears here.
 //!
 //! A port trait has to stay usable behind `dyn`, which rules out returning
 //! `impl Trait` from one. Nothing needs it while a service takes the ports it
@@ -11,4 +12,5 @@
 //! the start costs nothing; adopting it later would mean designing a trait
 //! twice.
 
+pub mod inbound;
 pub mod outbound;

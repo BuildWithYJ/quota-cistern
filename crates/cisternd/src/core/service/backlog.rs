@@ -1,144 +1,141 @@
 //! What `task add`, `task rm`, `task show`, and `backlog` do.
 
 use crate::core::{
-    Added, Detail, Listing, Refusal, Removed, Waiting,
     domain::{Backlog, NotABacklog, RemovalRefused, Repository, Restored, TaskId, TaskState},
-    port::outbound::{BacklogStore, RepositoryRoots, StoredBacklog, StoredTask},
+    port::{
+        inbound::{
+            Added, BacklogUseCase, Detail, Listing, Refusal, Registration, Removed, Waiting,
+        },
+        outbound::{BacklogStore, RepositoryRoots, StoredBacklog, StoredTask},
+    },
 };
 
-/// What `task add` was given.
+/// The commands over the backlog, and what they need from outside.
 ///
-/// The arguments arrive together because they are read together, and a
-/// parameter list of this length is harder to call correctly than a value with
-/// named fields.
-pub struct Registration<'a> {
-    /// Where the surface was run. The core runs as a daemon, so it cannot read
-    /// this from its own process.
-    pub cwd: &'a str,
-    pub title: &'a str,
-    pub instruction: &'a str,
-    pub branch: Option<&'a str>,
-    pub after: Option<&'a str>,
-    pub model: Option<&'a str>,
+/// It holds the ports these commands use and no others, so that a command over
+/// the configuration cannot reach the backlog store through it.
+pub struct BacklogService<'a> {
+    store: &'a dyn BacklogStore,
+    roots: &'a dyn RepositoryRoots,
 }
 
-/// Registers a task.
-pub fn add(
-    tasks: &impl BacklogStore,
-    repository: &impl RepositoryRoots,
-    given: Registration<'_>,
-) -> Result<Added, Refusal> {
-    if given.title.trim().is_empty() {
-        return Err(Refusal::BadValue {
-            key: "title".to_owned(),
-            value: given.title.to_owned(),
-        });
+impl<'a> BacklogService<'a> {
+    pub fn new(store: &'a dyn BacklogStore, roots: &'a dyn RepositoryRoots) -> Self {
+        BacklogService { store, roots }
     }
-    let after = given.after.map(identifier).transpose()?;
+}
 
-    // Asked before the backlog is read, since a command run outside a
-    // repository is refused whatever the backlog holds.
-    let Some(root) = repository.root_of(given.cwd)? else {
-        return Err(Refusal::NotARepository {
-            at: given.cwd.to_owned(),
-        });
-    };
+impl BacklogUseCase for BacklogService<'_> {
+    fn add(&self, given: Registration<'_>) -> Result<Added, Refusal> {
+        if given.title.trim().is_empty() {
+            return Err(Refusal::BadValue {
+                key: "title".to_owned(),
+                value: given.title.to_owned(),
+            });
+        }
+        let after = given.after.map(identifier).transpose()?;
 
-    let mut backlog = read(tasks)?;
-    if let Some(after) = after
-        && backlog.find(after).is_none()
-    {
-        return Err(Refusal::NoSuchTask {
-            id: after.labelled(),
-        });
+        // Asked before the backlog is read, since a command run outside a
+        // repository is refused whatever the backlog holds.
+        let Some(root) = self.roots.root_of(given.cwd)? else {
+            return Err(Refusal::NotARepository {
+                at: given.cwd.to_owned(),
+            });
+        };
+
+        let mut backlog = read(self.store)?;
+        if let Some(after) = after
+            && backlog.find(after).is_none()
+        {
+            return Err(Refusal::NoSuchTask {
+                id: after.labelled(),
+            });
+        }
+
+        let id = backlog.add(
+            given.title.to_owned(),
+            given.instruction.to_owned(),
+            given.branch.map(str::to_owned),
+            after,
+            given.model.map(str::to_owned),
+            Repository::new(root),
+        );
+        self.store.store(&written(&backlog))?;
+
+        let Some(registered) = backlog.find(id) else {
+            return Err(Refusal::NoSuchTask { id: id.labelled() });
+        };
+        Ok(Added {
+            id: registered.id().labelled(),
+            title: registered.title().to_owned(),
+            base_branch: registered.base_branch(),
+            after: registered.after().map(|after| after.labelled()),
+            model: registered.model().map(str::to_owned),
+            repository: registered.repository().to_string(),
+            state: registered.state().to_string(),
+        })
     }
 
-    let id = backlog.add(
-        given.title.to_owned(),
-        given.instruction.to_owned(),
-        given.branch.map(str::to_owned),
-        after,
-        given.model.map(str::to_owned),
-        Repository::new(root),
-    );
-    tasks.store(&written(&backlog))?;
+    fn remove(&self, id: &str) -> Result<Removed, Refusal> {
+        let parsed = identifier(id)?;
+        let mut backlog = read(self.store)?;
 
-    let Some(registered) = backlog.find(id) else {
-        return Err(Refusal::NoSuchTask { id: id.labelled() });
-    };
-    Ok(Added {
-        id: registered.id().labelled(),
-        title: registered.title().to_owned(),
-        base_branch: registered.base_branch(),
-        after: registered.after().map(|after| after.labelled()),
-        model: registered.model().map(str::to_owned),
-        repository: registered.repository().to_string(),
-        state: registered.state().to_string(),
-    })
-}
+        let removed = backlog.remove(parsed).map_err(|why| match why {
+            RemovalRefused::NoSuchTask => Refusal::NoSuchTask {
+                id: parsed.labelled(),
+            },
+            RemovalRefused::NotPending => Refusal::NotPending {
+                id: parsed.labelled(),
+            },
+        })?;
+        self.store.store(&written(&backlog))?;
 
-/// Takes a task out of the backlog.
-pub fn remove(tasks: &impl BacklogStore, id: &str) -> Result<Removed, Refusal> {
-    let parsed = identifier(id)?;
-    let mut backlog = read(tasks)?;
+        Ok(Removed {
+            id: removed.id().labelled(),
+            title: removed.title().to_owned(),
+        })
+    }
 
-    let removed = backlog.remove(parsed).map_err(|why| match why {
-        RemovalRefused::NoSuchTask => Refusal::NoSuchTask {
-            id: parsed.labelled(),
-        },
-        RemovalRefused::NotPending => Refusal::NotPending {
-            id: parsed.labelled(),
-        },
-    })?;
-    tasks.store(&written(&backlog))?;
+    fn show(&self, id: &str) -> Result<Detail, Refusal> {
+        let parsed = identifier(id)?;
+        let backlog = read(self.store)?;
+        let Some(task) = backlog.find(parsed) else {
+            return Err(Refusal::NoSuchTask {
+                id: parsed.labelled(),
+            });
+        };
 
-    Ok(Removed {
-        id: removed.id().labelled(),
-        title: removed.title().to_owned(),
-    })
-}
+        Ok(Detail {
+            id: task.id().labelled(),
+            // Filled in once something assigns and runs a task.
+            session: None,
+            state: task.state().to_string(),
+            title: task.title().to_owned(),
+            base_branch: task.base_branch(),
+            after: task.after().map(|after| after.labelled()),
+            model: task.model().map(str::to_owned),
+            repository: task.repository().to_string(),
+            branch: None,
+            reason: None,
+            worktree: None,
+            disposition: None,
+        })
+    }
 
-/// Reads one task in full.
-pub fn show(tasks: &impl BacklogStore, id: &str) -> Result<Detail, Refusal> {
-    let parsed = identifier(id)?;
-    let backlog = read(tasks)?;
-    let Some(task) = backlog.find(parsed) else {
-        return Err(Refusal::NoSuchTask {
-            id: parsed.labelled(),
-        });
-    };
-
-    Ok(Detail {
-        id: task.id().labelled(),
-        // Filled in once something assigns and runs a task.
-        session: None,
-        state: task.state().to_string(),
-        title: task.title().to_owned(),
-        base_branch: task.base_branch(),
-        after: task.after().map(|after| after.labelled()),
-        model: task.model().map(str::to_owned),
-        repository: task.repository().to_string(),
-        branch: None,
-        reason: None,
-        worktree: None,
-        disposition: None,
-    })
-}
-
-/// Lists the tasks waiting to be assigned.
-pub fn list(tasks: &impl BacklogStore) -> Result<Listing, Refusal> {
-    let backlog = read(tasks)?;
-    Ok(Listing {
-        items: backlog
-            .pending()
-            .into_iter()
-            .map(|task| Waiting {
-                id: task.id().labelled(),
-                title: task.title().to_owned(),
-                base_branch: task.base_branch(),
-            })
-            .collect(),
-    })
+    fn list(&self) -> Result<Listing, Refusal> {
+        let backlog = read(self.store)?;
+        Ok(Listing {
+            items: backlog
+                .pending()
+                .into_iter()
+                .map(|task| Waiting {
+                    id: task.id().labelled(),
+                    title: task.title().to_owned(),
+                    base_branch: task.base_branch(),
+                })
+                .collect(),
+        })
+    }
 }
 
 fn identifier(id: &str) -> Result<TaskId, Refusal> {
@@ -154,7 +151,7 @@ fn identifier(id: &str) -> Result<TaskId, Refusal> {
 /// rather than a fact. Unlike the configuration, nobody is meant to write this
 /// file, so a backlog that does not add up is a store this core cannot use
 /// rather than something the user typed wrong.
-fn read(tasks: &impl BacklogStore) -> Result<Backlog, Refusal> {
+fn read(tasks: &dyn BacklogStore) -> Result<Backlog, Refusal> {
     let stored = tasks.load()?;
     let next_id = stored_number("next_id", &stored.next_id)?;
 
@@ -286,25 +283,26 @@ mod tests {
 
     /// Answers with one root, or with none for anywhere outside a repository.
     struct Somewhere {
-        root: Option<String>,
-    }
-
-    impl Default for Somewhere {
-        fn default() -> Self {
-            Somewhere {
-                root: Some("/work/api".to_owned()),
-            }
-        }
+        root: Option<&'static str>,
     }
 
     impl RepositoryRoots for Somewhere {
         fn root_of(&self, _from: &str) -> Result<Option<String>, Unavailable> {
-            Ok(self.root.clone())
+            Ok(self.root.map(str::to_owned))
         }
     }
 
-    fn nowhere() -> Somewhere {
-        Somewhere { root: None }
+    static IN_A_REPOSITORY: Somewhere = Somewhere {
+        root: Some("/work/api"),
+    };
+    static NOWHERE: Somewhere = Somewhere { root: None };
+
+    fn in_a_repository(tasks: &Remembered) -> BacklogService<'_> {
+        BacklogService::new(tasks, &IN_A_REPOSITORY)
+    }
+
+    fn outside_one(tasks: &Remembered) -> BacklogService<'_> {
+        BacklogService::new(tasks, &NOWHERE)
     }
 
     fn registering(title: &str) -> Registration<'_> {
@@ -319,7 +317,7 @@ mod tests {
     }
 
     fn register(tasks: &Remembered, title: &str) -> Added {
-        add(tasks, &Somewhere::default(), registering(title)).unwrap()
+        in_a_repository(tasks).add(registering(title)).unwrap()
     }
 
     #[test]
@@ -328,7 +326,7 @@ mod tests {
         let added = register(&tasks, "refactor X");
 
         assert_eq!(added.state, "Pending");
-        let listing = list(&tasks).unwrap();
+        let listing = in_a_repository(&tasks).list().unwrap();
         assert_eq!(listing.items.len(), 1);
         assert_eq!(listing.items[0].id, added.id);
     }
@@ -338,7 +336,7 @@ mod tests {
         let tasks = Remembered::default();
         let added = register(&tasks, "refactor X");
 
-        let detail = show(&tasks, &added.id).unwrap();
+        let detail = in_a_repository(&tasks).show(&added.id).unwrap();
         assert_eq!(detail.title, "refactor X");
         assert_eq!(detail.base_branch, "main");
         assert_eq!(detail.repository, "/work/api");
@@ -353,13 +351,13 @@ mod tests {
         let tasks = Remembered::default();
         let added = register(&tasks, "refactor X");
         let bare = added.id.trim_start_matches("task:").to_owned();
-        assert_eq!(show(&tasks, &bare).unwrap().id, added.id);
+        assert_eq!(in_a_repository(&tasks).show(&bare).unwrap().id, added.id);
     }
 
     #[test]
     fn a_title_of_nothing_is_refused() {
         let tasks = Remembered::default();
-        let outcome = add(&tasks, &Somewhere::default(), registering("   "));
+        let outcome = in_a_repository(&tasks).add(registering("   "));
         assert!(matches!(outcome, Err(Refusal::BadValue { .. })));
     }
 
@@ -369,7 +367,7 @@ mod tests {
         let mut given = registering("second");
         given.after = Some("7");
         assert_eq!(
-            add(&tasks, &Somewhere::default(), given),
+            in_a_repository(&tasks).add(given),
             Err(Refusal::NoSuchTask {
                 id: "task:7".to_owned()
             })
@@ -383,7 +381,7 @@ mod tests {
 
         let mut given = registering("second");
         given.after = Some(&first.id);
-        let second = add(&tasks, &Somewhere::default(), given).unwrap();
+        let second = in_a_repository(&tasks).add(given).unwrap();
 
         assert_eq!(second.after, Some(first.id.clone()));
         assert_eq!(second.base_branch, "cistern/1");
@@ -394,7 +392,7 @@ mod tests {
     #[test]
     fn registering_outside_a_repository_is_refused_without_reading_the_backlog() {
         let tasks = Remembered::default();
-        let outcome = add(&tasks, &nowhere(), registering("refactor X"));
+        let outcome = outside_one(&tasks).add(registering("refactor X"));
 
         assert!(matches!(outcome, Err(Refusal::NotARepository { .. })));
         assert_eq!(tasks.reads.get(), 0);
@@ -405,16 +403,16 @@ mod tests {
         let tasks = Remembered::default();
         let added = register(&tasks, "refactor X");
 
-        let removed = remove(&tasks, &added.id).unwrap();
+        let removed = in_a_repository(&tasks).remove(&added.id).unwrap();
         assert_eq!(removed.title, "refactor X");
-        assert!(list(&tasks).unwrap().items.is_empty());
+        assert!(in_a_repository(&tasks).list().unwrap().items.is_empty());
     }
 
     #[test]
     fn removing_a_task_nobody_registered_is_refused_as_missing() {
         let tasks = Remembered::default();
         assert_eq!(
-            remove(&tasks, "7"),
+            in_a_repository(&tasks).remove("7"),
             Err(Refusal::NoSuchTask {
                 id: "task:7".to_owned()
             })
@@ -424,14 +422,17 @@ mod tests {
     #[test]
     fn showing_a_task_nobody_registered_is_refused_as_missing() {
         let tasks = Remembered::default();
-        assert!(matches!(show(&tasks, "7"), Err(Refusal::NoSuchTask { .. })));
+        assert!(matches!(
+            in_a_repository(&tasks).show("7"),
+            Err(Refusal::NoSuchTask { .. })
+        ));
     }
 
     #[test]
     fn an_identifier_that_is_not_a_number_is_an_argument_error() {
         let tasks = Remembered::default();
         assert!(matches!(
-            show(&tasks, "seven"),
+            in_a_repository(&tasks).show("seven"),
             Err(Refusal::BadValue { .. })
         ));
     }
@@ -440,7 +441,7 @@ mod tests {
     fn the_number_of_a_removed_task_is_not_handed_out_again() {
         let tasks = Remembered::default();
         let first = register(&tasks, "first");
-        remove(&tasks, &first.id).unwrap();
+        in_a_repository(&tasks).remove(&first.id).unwrap();
 
         let second = register(&tasks, "second");
         assert_ne!(second.id, first.id);
@@ -449,7 +450,7 @@ mod tests {
     #[test]
     fn listing_an_empty_backlog_is_not_a_refusal() {
         let tasks = Remembered::default();
-        assert_eq!(list(&tasks).unwrap().items, Vec::new());
+        assert_eq!(in_a_repository(&tasks).list().unwrap().items, Vec::new());
     }
 
     #[test]
@@ -461,15 +462,21 @@ mod tests {
         given.branch = Some("develop");
         given.after = Some(&first.id);
         given.model = Some("opus");
-        add(&tasks, &Somewhere::default(), given).unwrap();
+        in_a_repository(&tasks).add(given).unwrap();
 
         // A second reader over the same store is what a restarted core is.
         let restarted = Remembered {
             stored: RefCell::new(tasks.stored.borrow().clone()),
             ..Default::default()
         };
-        assert_eq!(list(&restarted).unwrap(), list(&tasks).unwrap());
-        assert_eq!(show(&restarted, "2").unwrap(), show(&tasks, "2").unwrap());
+        assert_eq!(
+            in_a_repository(&restarted).list().unwrap(),
+            in_a_repository(&tasks).list().unwrap()
+        );
+        assert_eq!(
+            in_a_repository(&restarted).show("2").unwrap(),
+            in_a_repository(&tasks).show("2").unwrap()
+        );
     }
 
     /// A value the store holds that cannot be read is a store this core cannot
@@ -480,7 +487,10 @@ mod tests {
         register(&tasks, "first");
         tasks.stored.borrow_mut().tasks[0].state = "Sleeping".to_owned();
 
-        assert!(matches!(list(&tasks), Err(Refusal::Unavailable { .. })));
+        assert!(matches!(
+            in_a_repository(&tasks).list(),
+            Err(Refusal::Unavailable { .. })
+        ));
     }
 
     #[test]
@@ -489,7 +499,10 @@ mod tests {
         register(&tasks, "first");
         tasks.stored.borrow_mut().tasks[0].id = "first".to_owned();
 
-        assert!(matches!(list(&tasks), Err(Refusal::Unavailable { .. })));
+        assert!(matches!(
+            in_a_repository(&tasks).list(),
+            Err(Refusal::Unavailable { .. })
+        ));
     }
 
     #[test]
@@ -497,7 +510,10 @@ mod tests {
         let tasks = Remembered::default();
         tasks.stored.borrow_mut().next_id = "soon".to_owned();
 
-        assert!(matches!(list(&tasks), Err(Refusal::Unavailable { .. })));
+        assert!(matches!(
+            in_a_repository(&tasks).list(),
+            Err(Refusal::Unavailable { .. })
+        ));
     }
 
     #[test]
@@ -507,7 +523,7 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(
-            add(&tasks, &Somewhere::default(), registering("refactor X")),
+            in_a_repository(&tasks).add(registering("refactor X")),
             Err(Refusal::Unavailable { .. })
         ));
     }
@@ -542,6 +558,9 @@ mod tests {
         ];
         *tasks.stored.borrow_mut() = held;
 
-        assert!(matches!(list(&tasks), Err(Refusal::Unavailable { .. })));
+        assert!(matches!(
+            in_a_repository(&tasks).list(),
+            Err(Refusal::Unavailable { .. })
+        ));
     }
 }

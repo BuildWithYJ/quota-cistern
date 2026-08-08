@@ -4,4 +4,5 @@
 //! that touches no port is not an adapter however technical it is, and lives in
 //! `platform` instead.
 
+pub mod inbound;
 pub mod outbound;
