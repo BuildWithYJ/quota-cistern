@@ -9,7 +9,6 @@ repository.workspace = true
 [dependencies]
 cistern-contract = { workspace = true }
 ctrlc = { workspace = true }
-interprocess = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }

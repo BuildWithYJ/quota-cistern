@@ -8,12 +8,15 @@
 
 use std::{fmt::Display, process::ExitCode};
 
+use cistern_contract::exchange;
+
 mod adapter;
 mod core;
 mod handler;
+mod platform;
 
 fn main() -> ExitCode {
-    if let Err(e) = adapter::socket::remove_on_signal() {
+    if let Err(e) = platform::signal::remove_on_signal() {
         return quit(e);
     }
 
@@ -26,16 +29,13 @@ fn main() -> ExitCode {
     };
     let repository = adapter::repository::GitRepository;
 
-    let listener = match adapter::socket::listen() {
-        Ok(listener) => listener,
+    let server = match exchange::listen() {
+        Ok(server) => server,
         Err(e) => return quit(e),
     };
 
     let answer = |request| handler::respond(&settings, &tasks, &repository, request);
-    match adapter::socket::serve(listener, answer) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => quit(e),
-    }
+    platform::serve::serve(&server, answer)
 }
 
 /// Says why the daemon is stopping, and stops.

@@ -4,7 +4,7 @@
 //! what is implemented appears here.
 
 use cistern_contract::{
-    Answer, Failure, Request, Response, VERSION,
+    Answer, Failure, Request, Response,
     code::{CORE_ERROR, NOT_FOUND, STATE_CONFLICT, USAGE_ERROR},
 };
 use serde_json::Value;
@@ -20,43 +20,17 @@ use crate::core::{
 /// Every port a command may need arrives here, since this is where a request
 /// is routed to one. Gathering them into a single value is a change of its own
 /// and is not made here.
+///
+/// A request of another version never arrives, and neither does `core_version`.
+/// Both depend on the envelope alone, so `cistern_contract::exchange` settles
+/// them before this is reached.
 pub fn respond(
     settings: &impl Settings,
     tasks: &impl Tasks,
     repository: &impl Repository,
     request: Request,
 ) -> Response {
-    match refuse_other_versions(&request) {
-        Some(refusal) => refusal,
-        None => dispatch(settings, tasks, repository, request),
-    }
-}
-
-/// A daemon outlives the install that replaced it, so a surface can be newer
-/// than the core it reached. `core_version` is exempt: it is how a surface
-/// finds out which side is behind.
-fn refuse_other_versions(request: &Request) -> Option<Response> {
-    if request.command == "core_version" || request.version == VERSION {
-        return None;
-    }
-    let message = format!("core is {VERSION}, surface is {}", request.version);
-    let both = serde_json::json!({ "core": VERSION, "surface": request.version });
-    Some(Response::Error(
-        Failure::new(CORE_ERROR, message).with_data(both),
-    ))
-}
-
-fn dispatch(
-    settings: &impl Settings,
-    tasks: &impl Tasks,
-    repository: &impl Repository,
-    request: Request,
-) -> Response {
     match request.command.as_str() {
-        "core_version" => Response::Data(Answer {
-            command: request.command,
-            data: serde_json::json!({ "version": VERSION }),
-        }),
         "config_set" => {
             let outcome = match (text(&request, "key"), text(&request, "value")) {
                 (Some(key), Some(value)) => service::set(settings, key, value).map(said),
@@ -235,6 +209,8 @@ fn shown(view: View) -> Value {
 mod tests {
     use std::cell::RefCell;
 
+    use cistern_contract::VERSION;
+
     use crate::core::port::{StoredBacklog, Unavailable};
 
     use super::*;
@@ -344,32 +320,6 @@ mod tests {
             Response::Data(answer) => answer.data,
             Response::Error(failure) => panic!("expected an answer, got {failure:?}"),
         }
-    }
-
-    #[test]
-    fn the_core_answers_with_its_own_version() {
-        let response = Fakes::default().answer(asked("core_version", Value::Null));
-        assert_eq!(data(response), serde_json::json!({ "version": VERSION }));
-    }
-
-    #[test]
-    fn a_surface_of_another_version_can_still_ask_which_core_this_is() {
-        let mut request = asked("core_version", Value::Null);
-        request.version = "0.0.1".to_owned();
-        let response = Fakes::default().answer(request);
-        assert!(matches!(response, Response::Data(_)));
-    }
-
-    #[test]
-    fn another_version_is_refused_with_both_versions() {
-        let mut request = asked("config_get", serde_json::json!({}));
-        request.version = "0.0.1".to_owned();
-        let refusal = failure(Fakes::default().answer(request));
-        assert_eq!(refusal.code, CORE_ERROR);
-        assert_eq!(
-            refusal.data,
-            Some(serde_json::json!({ "core": VERSION, "surface": "0.0.1" }))
-        );
     }
 
     #[test]

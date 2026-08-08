@@ -5,9 +5,7 @@
 
 use std::process::ExitCode;
 
-use cistern_contract::{Response, VERSION, code::CORE_ERROR};
-
-use crate::link;
+use cistern_contract::{Response, VERSION, code::CORE_ERROR, exchange};
 
 /// What came back when the core was asked for its version.
 #[derive(Debug, PartialEq, Eq)]
@@ -43,7 +41,7 @@ fn interpret(response: std::io::Result<Response>) -> Core {
 pub fn run() -> ExitCode {
     println!("cistern {VERSION}");
 
-    match interpret(link::ask("core_version", serde_json::json!({}))) {
+    match interpret(exchange::ask("core_version", serde_json::json!({}))) {
         Core::Version(core) if core == VERSION => succeed(&core),
         Core::Version(core) => fail(
             &core,
