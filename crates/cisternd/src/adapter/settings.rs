@@ -21,17 +21,47 @@ pub struct FileSettings {
 
 /// The file, as TOML sees it.
 ///
-/// It stands apart from the port's type because the key spelling and the
-/// absent-field rules belong to the format, not to what is being stored.
+/// It stands apart from the port's type because the key spelling, the
+/// absent-field rules, and which TOML type a value is written as all belong to
+/// the format, not to what is being stored.
+///
+/// A value is held as whatever TOML found rather than as what the key is
+/// supposed to take. Which values a key takes is the core's to decide, so a
+/// file holding the wrong sort of one reaches it and is refused there.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Document {
     #[serde(skip_serializing_if = "Option::is_none")]
-    vendor: Option<String>,
+    vendor: Option<toml::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    plan: Option<String>,
+    plan: Option<toml::Value>,
     #[serde(rename = "usage-limit", skip_serializing_if = "Option::is_none")]
-    usage_limit: Option<u64>,
+    usage_limit: Option<toml::Value>,
+}
+
+/// The text a user would have typed for what TOML holds.
+///
+/// A string keeps its contents; everything else is rendered as the file writes
+/// it, so a number, a boolean, and a table all reach the core as something it
+/// can read and refuse.
+fn as_text(value: toml::Value) -> String {
+    match value {
+        toml::Value::String(text) => text,
+        other => other.to_string(),
+    }
+}
+
+/// A number as the file holds one.
+///
+/// What the file looks like is this module's business, so `usage-limit` goes
+/// back as a TOML integer rather than as the text the core handed over. Text
+/// that is not one is written as it stands, since the core refuses such a
+/// value long before it reaches here.
+fn as_number(text: &str) -> toml::Value {
+    match text.parse::<i64>() {
+        Ok(number) => toml::Value::Integer(number),
+        Err(_) => toml::Value::String(text.to_owned()),
+    }
 }
 
 impl FileSettings {
@@ -73,9 +103,9 @@ impl Settings for FileSettings {
 
         let document: Document = toml::from_str(&written).map_err(|e| self.failing(e))?;
         Ok(Stored {
-            vendor: document.vendor,
-            plan: document.plan,
-            usage_limit: document.usage_limit,
+            vendor: document.vendor.map(as_text),
+            plan: document.plan.map(as_text),
+            usage_limit: document.usage_limit.map(as_text),
         })
     }
 
@@ -87,9 +117,9 @@ impl Settings for FileSettings {
     /// reader sees the old contents or the new ones and nothing between.
     fn store(&self, stored: &Stored) -> Result<(), Unavailable> {
         let document = Document {
-            vendor: stored.vendor.clone(),
-            plan: stored.plan.clone(),
-            usage_limit: stored.usage_limit,
+            vendor: stored.vendor.clone().map(toml::Value::String),
+            plan: stored.plan.clone().map(toml::Value::String),
+            usage_limit: stored.usage_limit.as_deref().map(as_number),
         };
         let written = toml::to_string(&document).map_err(|e| self.failing(e))?;
 
@@ -198,6 +228,44 @@ mod tests {
                 plan: Some("max-40x".to_owned()),
                 ..Default::default()
             })
+        );
+    }
+
+    /// A file can hold a TOML type the key does not take. Refusing that is the
+    /// core's, so it has to arrive rather than fail on the way.
+    #[test]
+    fn a_value_of_another_type_reads_as_the_text_it_was_written_as() {
+        let (dir, settings) = in_a_temporary_directory();
+        fs::write(
+            dir.path().join("config.toml"),
+            "plan = 123\nusage-limit = -1\n",
+        )
+        .unwrap();
+        assert_eq!(
+            settings.load(),
+            Ok(Stored {
+                plan: Some("123".to_owned()),
+                usage_limit: Some("-1".to_owned()),
+                ..Default::default()
+            })
+        );
+    }
+
+    /// A number crosses the port as text and goes back as a number, so the
+    /// file stays TOML a user would have written by hand.
+    #[test]
+    fn a_usage_limit_goes_back_into_the_file_as_a_number() {
+        let (dir, settings) = in_a_temporary_directory();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "usage-limit = 2000000\n").unwrap();
+
+        let stored = settings.load().unwrap();
+        assert_eq!(stored.usage_limit, Some("2000000".to_owned()));
+
+        settings.store(&stored).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "usage-limit = 2000000\n"
         );
     }
 

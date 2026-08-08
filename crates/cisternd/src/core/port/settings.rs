@@ -2,16 +2,17 @@
 
 use super::Unavailable;
 
-/// The configuration as a store holds it: names and numbers, not entities.
+/// The configuration as a store holds it: text, not entities.
 ///
-/// A store cannot name an entity, and the core would not trust it to. What
-/// comes back is read again on the way in, so a file edited by hand is refused
-/// the same way a bad argument is.
+/// A store cannot name an entity, and the core would not trust it to. Every
+/// key crosses as the text a user would have typed for it, whatever a store
+/// kept it as, so what comes back meets the same parse an argument does and a
+/// file edited by hand is refused the same way a bad argument is.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Stored {
     pub vendor: Option<String>,
     pub plan: Option<String>,
-    pub usage_limit: Option<u64>,
+    pub usage_limit: Option<String>,
 }
 
 /// Where the configuration is kept between runs.

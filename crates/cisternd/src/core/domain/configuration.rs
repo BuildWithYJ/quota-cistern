@@ -142,10 +142,7 @@ impl Configuration {
         let named = [
             (Key::Vendor, stored.vendor),
             (Key::Plan, stored.plan),
-            (
-                Key::UsageLimit,
-                stored.usage_limit.map(|limit| limit.to_string()),
-            ),
+            (Key::UsageLimit, stored.usage_limit),
         ];
 
         for (key, value) in named {
@@ -158,12 +155,12 @@ impl Configuration {
         Ok(configuration)
     }
 
-    /// Hands the configuration to a store as names and numbers.
+    /// Hands the configuration to a store as text.
     pub fn to_stored(&self) -> Stored {
         Stored {
             vendor: self.vendor.map(|v| v.to_string()),
             plan: self.plan.map(|p| p.to_string()),
-            usage_limit: self.usage_limit,
+            usage_limit: self.usage_limit.map(|n| n.to_string()),
         }
     }
 
@@ -270,6 +267,23 @@ mod tests {
             Err(NotAValue {
                 key: Key::Plan,
                 value: "max-40x".to_owned()
+            })
+        );
+    }
+
+    /// A store hands over text whatever it kept the value as, so a number that
+    /// is not one this key takes is refused where every other value is.
+    #[test]
+    fn a_stored_value_of_another_type_is_refused_the_same_way() {
+        let stored = Stored {
+            usage_limit: Some("-1".to_owned()),
+            ..Default::default()
+        };
+        assert_eq!(
+            Configuration::from_stored(stored),
+            Err(NotAValue {
+                key: Key::UsageLimit,
+                value: "-1".to_owned()
             })
         );
     }
