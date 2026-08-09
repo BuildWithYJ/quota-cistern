@@ -1171,6 +1171,30 @@ mod tests {
         assert_eq!(tasks.first().state, "Error");
     }
 
+    /// The other half of the hardlock: a session that has spent the tokens it
+    /// declared stops, whether or not its time is up.
+    #[test]
+    fn a_session_that_spent_what_it_declared_stops_and_says_so() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+        let areas = Areas::default();
+        let agent = Standing::finishing();
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+
+        // The stand-in agent reports far more than this budget allows, so the
+        // first task spends the whole of it.
+        execution.run(declaring("1000", "8h")).unwrap();
+        let assigned = execution.carry_on("task:1").unwrap();
+
+        assert!(assigned.is_empty());
+        let session = sessions.load().sessions[0].clone();
+        assert_eq!(session.state, "stopped");
+        assert_eq!(session.stopped_reason.as_deref(), Some("budget hardlock"));
+        // The second task was never assigned, so it is still waiting.
+        assert_eq!(tasks.load().unwrap().tasks[1].state, "Pending");
+    }
+
     /// A session that has run as long as it declared stops, and whatever it
     /// still had running ends where it got to.
     #[test]
