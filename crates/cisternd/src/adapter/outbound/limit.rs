@@ -102,11 +102,13 @@ impl ClaudeLimit {
             reader: self.at.join("status-line.sh"),
             settings: self.at.join("settings.json"),
             written: self.at.join("status-lines.jsonl"),
+            screen: self.at.join("screen.txt"),
         };
         let failing = |e: std::io::Error| Unavailable::new(format!("{}: {e}", self.at.display()));
 
         fs::create_dir_all(&held.work).map_err(failing)?;
         let _ = fs::remove_file(&held.written);
+        let _ = fs::remove_file(&held.screen);
         write_runnable(
             &held.reader,
             &format!(
@@ -134,6 +136,8 @@ struct Held {
     reader: PathBuf,
     settings: PathBuf,
     written: PathBuf,
+    /// Where the screen is kept when nothing was read off it.
+    screen: PathBuf,
 }
 
 fn write_runnable(at: &Path, content: &str) -> Result<(), std::io::Error> {
@@ -181,7 +185,7 @@ impl Limit for ClaudeLimit {
             }
         });
 
-        let found = watch(&arriving, &mut typing, &self.invocation, &held.written);
+        let found = watch(&arriving, &mut typing, &self.invocation, &held);
 
         let _ = running.kill();
         let _ = running.wait();
@@ -199,8 +203,9 @@ fn watch(
     arriving: &Receiver<Vec<u8>>,
     typing: &mut Box<dyn std::io::Write + Send>,
     invocation: &Invocation,
-    written: &Path,
+    held: &Held,
 ) -> Result<Reading, Unavailable> {
+    let written = &held.written;
     let started = Instant::now();
     let mut seen = Vec::new();
     let mut trusted = false;
@@ -230,8 +235,14 @@ fn watch(
         }
     }
 
-    kept(written)
-        .ok_or_else(|| Unavailable::new("the vendor's status line said nothing about its limit"))
+    // What the session put on the screen, for when nothing came back.
+    let _ = fs::write(&held.screen, &seen);
+    kept(written).ok_or_else(|| {
+        Unavailable::new(format!(
+            "the vendor's status line said nothing about its limit; the screen is at {}",
+            held.screen.display()
+        ))
+    })
 }
 
 /// What the screen says, with the control characters and the spacing between
