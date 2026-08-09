@@ -6,10 +6,12 @@
 mod backlog;
 mod configuration;
 mod repository;
+mod session;
 
 pub use backlog::{BacklogStore, StoredBacklog, StoredTask};
 pub use configuration::{ConfigurationStore, StoredConfiguration};
 pub use repository::RepositoryRoots;
+pub use session::{SessionStore, StoredSession, StoredSessions};
 
 /// The outside could not be reached or could not be understood.
 #[derive(Debug, Clone, PartialEq, Eq)]

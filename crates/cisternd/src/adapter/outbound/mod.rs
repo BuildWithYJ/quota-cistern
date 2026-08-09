@@ -3,3 +3,4 @@
 pub mod backlog;
 pub mod configuration;
 pub mod repository;
+pub mod session;

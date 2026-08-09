@@ -15,7 +15,7 @@ mod core;
 mod platform;
 
 use adapter::{inbound, outbound};
-use core::service::{BacklogService, ConfigurationService};
+use core::service::{BacklogService, ConfigurationService, ExecutionService};
 
 fn main() -> ExitCode {
     if let Err(e) = platform::signal::remove_on_signal() {
@@ -30,10 +30,14 @@ fn main() -> ExitCode {
     let Some(backlog_store) = outbound::backlog::FileBacklog::in_data_home() else {
         return quit("neither XDG_DATA_HOME nor HOME is set");
     };
+    let Some(session_store) = outbound::session::FileSessions::in_data_home() else {
+        return quit("neither XDG_DATA_HOME nor HOME is set");
+    };
     let roots = outbound::repository::GitRoots;
 
     let configuration = ConfigurationService::new(&configuration_store);
     let backlog = BacklogService::new(&backlog_store, &roots);
+    let execution = ExecutionService::new(&session_store, &configuration_store);
 
     let server = match exchange::listen() {
         Ok(server) => server,
@@ -46,6 +50,7 @@ fn main() -> ExitCode {
     let answer = |request| {
         inbound::configuration::respond(&configuration, request)
             .or_else(|request| inbound::backlog::respond(&backlog, request))
+            .or_else(|request| inbound::execution::respond(&execution, request))
             .unwrap_or_else(inbound::unknown)
     };
     platform::serve::serve(&server, answer)
