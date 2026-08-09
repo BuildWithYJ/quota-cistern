@@ -16,7 +16,7 @@ pub struct StoredConfiguration {
 }
 
 /// Where the configuration is kept between runs.
-pub trait ConfigurationStore {
+pub trait ConfigurationStore: Sync {
     /// Reads what is stored.
     ///
     /// Nothing stored is an empty configuration rather than a failure, since

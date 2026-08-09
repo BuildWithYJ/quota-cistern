@@ -265,6 +265,10 @@ task:2  Interrupted
 
 ### 2.2 Sessions and execution
 
+Sessions are stored at `$XDG_DATA_HOME/cistern/sessions.json`, or `~/.local/share/cistern/sessions.json` when `XDG_DATA_HOME` is unset.
+
+A task runs in a checkout of its own, made with `git worktree` under `$XDG_DATA_HOME/cistern/worktrees`.
+
 #### `cistern run`
 
 Declares a budget and starts the session's unattended loop. It is non-blocking and returns at once.

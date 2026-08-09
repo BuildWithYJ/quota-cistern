@@ -9,9 +9,11 @@
 
 mod backlog;
 mod configuration;
+mod execution;
 
 pub use backlog::{Added, BacklogUseCase, Detail, Listing, Registration, Removed, Waiting};
 pub use configuration::{Applied, ConfigurationUseCase, View};
+pub use execution::{Declaration, Declared, ExecutionUseCase, Started};
 
 use super::outbound::Unavailable;
 
@@ -32,6 +34,13 @@ pub enum Refusal {
     NotPending { id: String },
     /// The command was run somewhere that belongs to no repository.
     NotARepository { at: String },
+    /// A session is running, and section 2.2 allows one at a time.
+    AlreadyRunning { id: String },
+    /// A share of the plan was declared and no plan is configured to measure
+    /// it against.
+    NoPlanConfigured,
+    /// Nothing in the backlog may start.
+    NothingToAssign,
     /// The store could not be reached or could not be understood.
     Unavailable { reason: String },
 }

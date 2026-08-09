@@ -3,7 +3,7 @@
 use super::Unavailable;
 
 /// Answers which repository a directory sits in.
-pub trait RepositoryRoots {
+pub trait RepositoryRoots: Sync {
     /// The repository the given place belongs to, or nothing when it belongs
     /// to none.
     ///

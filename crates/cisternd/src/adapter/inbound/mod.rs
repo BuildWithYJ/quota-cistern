@@ -9,10 +9,11 @@
 
 pub mod backlog;
 pub mod configuration;
+pub mod execution;
 
 use cistern_contract::{
     Answer, Failure, Request, Response,
-    code::{CORE_ERROR, NOT_FOUND, STATE_CONFLICT, USAGE_ERROR},
+    code::{CORE_ERROR, GENERAL_FAILURE, NOT_FOUND, STATE_CONFLICT, USAGE_ERROR},
 };
 use serde_json::Value;
 
@@ -54,7 +55,11 @@ fn code_for(refusal: &Refusal) -> u8 {
     match refusal {
         Refusal::UnknownKey { .. } | Refusal::BadValue { .. } => USAGE_ERROR,
         Refusal::NoSuchTask { .. } => NOT_FOUND,
-        Refusal::NotPending { .. } | Refusal::NotARepository { .. } => STATE_CONFLICT,
+        Refusal::NothingToAssign => GENERAL_FAILURE,
+        Refusal::NotPending { .. }
+        | Refusal::NotARepository { .. }
+        | Refusal::AlreadyRunning { .. }
+        | Refusal::NoPlanConfigured => STATE_CONFLICT,
         Refusal::Unavailable { .. } => CORE_ERROR,
     }
 }
@@ -66,6 +71,11 @@ fn message_for(refusal: &Refusal) -> String {
         Refusal::NoSuchTask { id } => format!("{id} does not exist"),
         Refusal::NotPending { id } => format!("{id} is not pending"),
         Refusal::NotARepository { at } => format!("{at} is not inside a repository"),
+        Refusal::AlreadyRunning { id } => format!("{id} is already running"),
+        Refusal::NoPlanConfigured => {
+            "no plan is configured, so a share of one cannot be measured".to_owned()
+        }
+        Refusal::NothingToAssign => "no task is waiting that may start".to_owned(),
         Refusal::Unavailable { reason } => format!("the store cannot be read: {reason}"),
     }
 }

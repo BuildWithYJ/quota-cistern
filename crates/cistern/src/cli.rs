@@ -37,6 +37,18 @@ pub enum Command {
     },
     /// Lists the tasks waiting to be assigned.
     Backlog,
+    /// Declares a budget and starts the session's unattended loop.
+    Run {
+        /// A share of the configured plan, or a count of tokens.
+        #[arg(long)]
+        usage: String,
+        /// How long the session may run.
+        #[arg(long)]
+        time: String,
+        /// Default model for tasks that name none.
+        #[arg(long)]
+        model: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]

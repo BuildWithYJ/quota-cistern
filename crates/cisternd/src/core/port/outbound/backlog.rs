@@ -27,10 +27,16 @@ pub struct StoredTask {
     pub model: Option<String>,
     pub repository: String,
     pub state: String,
+    /// The session that assigned it, once one has.
+    pub session: Option<String>,
+    /// Where it is being worked on, once a work area was made.
+    pub worktree: Option<String>,
+    /// Why it ended as it did, for a task that did not simply finish.
+    pub reason: Option<String>,
 }
 
 /// Where the backlog is kept between runs.
-pub trait BacklogStore {
+pub trait BacklogStore: Sync {
     /// Reads what is stored.
     ///
     /// Nothing stored is an empty backlog rather than a failure, since
@@ -38,9 +44,18 @@ pub trait BacklogStore {
     /// that apart from a store that cannot be read is the implementation's job.
     fn load(&self) -> Result<StoredBacklog, Unavailable>;
 
-    /// Writes the whole backlog.
+    /// Reads what is stored, hands it to `change`, and writes back what
+    /// `change` left behind.
     ///
-    /// The whole of it, so that adding one task stays in the core and the
+    /// Reading and writing are one call rather than two because two tasks
+    /// ending at the same moment would otherwise each write over what the other
+    /// recorded. Keeping them apart is the implementation's, and the core never
+    /// holds whatever does it.
+    ///
+    /// `change` answers whether it changed anything. Nothing is written when it
+    /// did not, so a refusal leaves the store as it was. The change is handed
+    /// the whole backlog, so adding one task stays in the core and the
     /// implementation never learns the shape.
-    fn store(&self, backlog: &StoredBacklog) -> Result<(), Unavailable>;
+    fn update(&self, change: &mut dyn FnMut(&mut StoredBacklog) -> bool)
+    -> Result<(), Unavailable>;
 }

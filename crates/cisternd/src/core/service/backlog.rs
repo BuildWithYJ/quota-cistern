@@ -1,7 +1,9 @@
 //! What `task add`, `task rm`, `task show`, and `backlog` do.
 
 use crate::core::{
-    domain::{Backlog, NotABacklog, RemovalRefused, Repository, Restored, TaskId, TaskState},
+    domain::{
+        Backlog, NotABacklog, RemovalRefused, Repository, Restored, SessionId, TaskId, TaskState,
+    },
     port::{
         inbound::{
             Added, BacklogUseCase, Detail, Listing, Refusal, Registration, Removed, Waiting,
@@ -43,81 +45,81 @@ impl BacklogUseCase for BacklogService<'_> {
             });
         };
 
-        let mut backlog = read(self.store)?;
-        if let Some(after) = after
-            && backlog.find(after).is_none()
-        {
-            return Err(Refusal::NoSuchTask {
-                id: after.labelled(),
-            });
-        }
+        change(self.store, |backlog| {
+            if let Some(after) = after
+                && backlog.find(after).is_none()
+            {
+                return Err(Refusal::NoSuchTask {
+                    id: after.labelled(),
+                });
+            }
 
-        let id = backlog.add(
-            given.title.to_owned(),
-            given.instruction.to_owned(),
-            given.branch.map(str::to_owned),
-            after,
-            given.model.map(str::to_owned),
-            Repository::new(root),
-        );
-        self.store.store(&written(&backlog))?;
+            let id = backlog.add(
+                given.title.to_owned(),
+                given.instruction.to_owned(),
+                given.branch.map(str::to_owned),
+                after,
+                given.model.map(str::to_owned),
+                Repository::new(root),
+            );
 
-        let Some(registered) = backlog.find(id) else {
-            return Err(Refusal::NoSuchTask { id: id.labelled() });
-        };
-        Ok(Added {
-            id: registered.id().labelled(),
-            title: registered.title().to_owned(),
-            base_branch: registered.base_branch(),
-            after: registered.after().map(|after| after.labelled()),
-            model: registered.model().map(str::to_owned),
-            repository: registered.repository().to_string(),
-            state: registered.state().to_string(),
+            let Some(registered) = backlog.find(id) else {
+                return Err(Refusal::NoSuchTask { id: id.labelled() });
+            };
+            Ok(Added {
+                id: registered.id().labelled(),
+                title: registered.title().to_owned(),
+                base_branch: registered.base_branch(),
+                after: registered.after().map(|after| after.labelled()),
+                model: registered.model().map(str::to_owned),
+                repository: registered.repository().to_string(),
+                state: registered.state().to_string(),
+            })
         })
     }
 
     fn remove(&self, id: &str) -> Result<Removed, Refusal> {
-        let parsed = identifier(id)?;
-        let mut backlog = read(self.store)?;
+        let wanted = identifier(id)?;
 
-        let removed = backlog.remove(parsed).map_err(|why| match why {
-            RemovalRefused::NoSuchTask => Refusal::NoSuchTask {
-                id: parsed.labelled(),
-            },
-            RemovalRefused::NotPending => Refusal::NotPending {
-                id: parsed.labelled(),
-            },
-        })?;
-        self.store.store(&written(&backlog))?;
+        change(self.store, |backlog| {
+            let removed = backlog.remove(wanted).map_err(|why| match why {
+                RemovalRefused::NoSuchTask => Refusal::NoSuchTask {
+                    id: wanted.labelled(),
+                },
+                RemovalRefused::NotPending => Refusal::NotPending {
+                    id: wanted.labelled(),
+                },
+            })?;
 
-        Ok(Removed {
-            id: removed.id().labelled(),
-            title: removed.title().to_owned(),
+            Ok(Removed {
+                id: removed.id().labelled(),
+                title: removed.title().to_owned(),
+            })
         })
     }
 
     fn show(&self, id: &str) -> Result<Detail, Refusal> {
-        let parsed = identifier(id)?;
+        let wanted = identifier(id)?;
         let backlog = read(self.store)?;
-        let Some(task) = backlog.find(parsed) else {
+        let Some(task) = backlog.find(wanted) else {
             return Err(Refusal::NoSuchTask {
-                id: parsed.labelled(),
+                id: wanted.labelled(),
             });
         };
 
         Ok(Detail {
             id: task.id().labelled(),
-            // Filled in once something assigns and runs a task.
-            session: None,
+            session: task.session().map(|id| id.labelled()),
             state: task.state().to_string(),
             title: task.title().to_owned(),
             base_branch: task.base_branch(),
             after: task.after().map(|after| after.labelled()),
             model: task.model().map(str::to_owned),
             repository: task.repository().to_string(),
-            branch: None,
-            reason: None,
-            worktree: None,
+            branch: task.result_branch(),
+            reason: task.reason().map(str::to_owned),
+            worktree: task.worktree().map(str::to_owned),
+            // Nothing disposes of a result yet.
             disposition: None,
         })
     }
@@ -151,8 +153,12 @@ fn identifier(id: &str) -> Result<TaskId, Refusal> {
 /// rather than a fact. Unlike the configuration, nobody is meant to write this
 /// file, so a backlog that does not add up is a store this core cannot use
 /// rather than something the user typed wrong.
-fn read(tasks: &dyn BacklogStore) -> Result<Backlog, Refusal> {
-    let stored = tasks.load()?;
+pub(super) fn read(tasks: &dyn BacklogStore) -> Result<Backlog, Refusal> {
+    read_from(tasks.load()?)
+}
+
+/// Reads the backlog a store handed over. Held to the standard `read` names.
+fn read_from(stored: StoredBacklog) -> Result<Backlog, Refusal> {
     let next_id = stored_number("next_id", &stored.next_id)?;
 
     let mut restored = Vec::with_capacity(stored.tasks.len());
@@ -162,6 +168,52 @@ fn read(tasks: &dyn BacklogStore) -> Result<Backlog, Refusal> {
 
     Backlog::restore(next_id, restored).map_err(|e| Refusal::Unavailable {
         reason: unusable(&e),
+    })
+}
+
+/// Reads the backlog, changes it, and writes it back as one step.
+///
+/// `service::execution` uses this too: one store has one reader, so the two
+/// services cannot come to disagree about what a stored task means.
+///
+/// The answer travels out in a value this holds rather than out of the port,
+/// because a port that returned a refusal would have to name what one is, and
+/// that word belongs to the other edge.
+pub(super) fn change<T>(
+    tasks: &dyn BacklogStore,
+    with: impl FnOnce(&mut Backlog) -> Result<T, Refusal>,
+) -> Result<T, Refusal> {
+    let mut with = Some(with);
+    let mut answer = None;
+
+    tasks.update(&mut |stored| {
+        // A store that ran the change twice would apply it twice. Taking it
+        // leaves the second call nothing to run and nothing to write.
+        let Some(with) = with.take() else {
+            return false;
+        };
+
+        let done = read_from(stored.clone()).and_then(|mut backlog| {
+            let got = with(&mut backlog)?;
+            Ok((got, backlog))
+        });
+        match done {
+            Ok((got, backlog)) => {
+                *stored = written(&backlog);
+                answer = Some(Ok(got));
+                true
+            }
+            Err(e) => {
+                answer = Some(Err(e));
+                false
+            }
+        }
+    })?;
+
+    answer.unwrap_or_else(|| {
+        Err(Refusal::Unavailable {
+            reason: "the store did not run the change it was given".to_owned(),
+        })
     })
 }
 
@@ -183,6 +235,13 @@ fn restored_from(held: StoredTask) -> Result<Restored, Refusal> {
         model: held.model,
         repository: Repository::new(held.repository),
         state: TaskState::parse(&held.state).ok_or_else(|| unreadable("state", &held.state))?,
+        session: held
+            .session
+            .as_deref()
+            .map(|id| SessionId::parse(id).ok_or_else(|| unreadable("session", id)))
+            .transpose()?,
+        worktree: held.worktree,
+        reason: held.reason,
     })
 }
 
@@ -202,6 +261,9 @@ fn written(backlog: &Backlog) -> StoredBacklog {
                 model: task.model().map(str::to_owned),
                 repository: task.repository().to_string(),
                 state: task.state().to_string(),
+                session: task.session().map(|id| id.to_string()),
+                worktree: task.worktree().map(str::to_owned),
+                reason: task.reason().map(str::to_owned),
             })
             .collect(),
     }
@@ -237,7 +299,10 @@ fn unusable(e: &NotABacklog) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::{Cell, RefCell};
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     use crate::core::port::outbound::{StoredBacklog, Unavailable};
 
@@ -245,38 +310,51 @@ mod tests {
 
     /// A backlog held in memory, so the steps can be checked without a file.
     struct Remembered {
-        stored: RefCell<StoredBacklog>,
+        stored: Mutex<StoredBacklog>,
         /// Makes every read fail, standing in for a store that is there but
         /// cannot be understood.
         broken: bool,
         /// Counts reads, so a test can show that one never happened.
-        reads: Cell<usize>,
+        reads: AtomicUsize,
     }
 
     impl Default for Remembered {
         fn default() -> Self {
             Remembered {
-                stored: RefCell::new(StoredBacklog {
+                stored: Mutex::new(StoredBacklog {
                     next_id: "1".to_owned(),
                     tasks: Vec::new(),
                 }),
                 broken: false,
-                reads: Cell::new(0),
+                reads: AtomicUsize::new(0),
             }
         }
     }
 
     impl BacklogStore for Remembered {
         fn load(&self) -> Result<StoredBacklog, Unavailable> {
-            self.reads.set(self.reads.get() + 1);
+            self.reads.fetch_add(1, Ordering::Relaxed);
             match self.broken {
                 true => Err(Unavailable::new("not valid JSON")),
-                false => Ok(self.stored.borrow().clone()),
+                false => Ok(self.stored.lock().unwrap().clone()),
             }
         }
 
-        fn store(&self, backlog: &StoredBacklog) -> Result<(), Unavailable> {
-            *self.stored.borrow_mut() = backlog.clone();
+        fn update(
+            &self,
+            change: &mut dyn FnMut(&mut StoredBacklog) -> bool,
+        ) -> Result<(), Unavailable> {
+            // The lock is held across the read and the write, which is what
+            // the port promises.
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            if self.broken {
+                return Err(Unavailable::new("not valid JSON"));
+            }
+            let mut held = self.stored.lock().unwrap();
+            let mut backlog = held.clone();
+            if change(&mut backlog) {
+                *held = backlog;
+            }
             Ok(())
         }
     }
@@ -395,7 +473,7 @@ mod tests {
         let outcome = outside_one(&tasks).add(registering("refactor X"));
 
         assert!(matches!(outcome, Err(Refusal::NotARepository { .. })));
-        assert_eq!(tasks.reads.get(), 0);
+        assert_eq!(tasks.reads.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -484,7 +562,7 @@ mod tests {
 
         // A second reader over the same store is what a restarted core is.
         let restarted = Remembered {
-            stored: RefCell::new(tasks.stored.borrow().clone()),
+            stored: Mutex::new(tasks.stored.lock().unwrap().clone()),
             ..Default::default()
         };
         assert_eq!(
@@ -503,7 +581,7 @@ mod tests {
     fn a_state_edited_into_the_store_is_refused_on_reading_it() {
         let tasks = Remembered::default();
         register(&tasks, "first");
-        tasks.stored.borrow_mut().tasks[0].state = "Sleeping".to_owned();
+        tasks.stored.lock().unwrap().tasks[0].state = "Sleeping".to_owned();
 
         assert!(matches!(
             in_a_repository(&tasks).list(),
@@ -515,7 +593,7 @@ mod tests {
     fn an_identifier_edited_into_the_store_is_refused_on_reading_it() {
         let tasks = Remembered::default();
         register(&tasks, "first");
-        tasks.stored.borrow_mut().tasks[0].id = "first".to_owned();
+        tasks.stored.lock().unwrap().tasks[0].id = "first".to_owned();
 
         assert!(matches!(
             in_a_repository(&tasks).list(),
@@ -526,7 +604,7 @@ mod tests {
     #[test]
     fn a_next_number_edited_into_the_store_is_refused_on_reading_it() {
         let tasks = Remembered::default();
-        tasks.stored.borrow_mut().next_id = "soon".to_owned();
+        tasks.stored.lock().unwrap().next_id = "soon".to_owned();
 
         assert!(matches!(
             in_a_repository(&tasks).list(),
@@ -551,9 +629,12 @@ mod tests {
     #[test]
     fn a_cycle_edited_into_the_store_is_refused_on_reading_it() {
         let tasks = Remembered::default();
-        let mut held = tasks.stored.borrow().clone();
+        let mut held = tasks.stored.lock().unwrap().clone();
         held.tasks = vec![
             crate::core::port::outbound::StoredTask {
+                session: None,
+                worktree: None,
+                reason: None,
                 id: "1".to_owned(),
                 title: "first".to_owned(),
                 instruction: "do it".to_owned(),
@@ -564,6 +645,9 @@ mod tests {
                 state: "Pending".to_owned(),
             },
             crate::core::port::outbound::StoredTask {
+                session: None,
+                worktree: None,
+                reason: None,
                 id: "2".to_owned(),
                 title: "second".to_owned(),
                 instruction: "do it".to_owned(),
@@ -574,7 +658,7 @@ mod tests {
                 state: "Pending".to_owned(),
             },
         ];
-        *tasks.stored.borrow_mut() = held;
+        *tasks.stored.lock().unwrap() = held;
 
         assert!(matches!(
             in_a_repository(&tasks).list(),

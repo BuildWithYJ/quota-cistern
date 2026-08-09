@@ -2,14 +2,24 @@
 //!
 //! One file per outside. `Unavailable` stands here rather than in one of them,
 //! because reaching something outside is what all of them do.
+//!
+//! Every one of these is safe to share between threads. A task runs beside the
+//! commands a user is still typing, so more than one thread reaches the same
+//! outside at once.
 
+mod agent;
 mod backlog;
 mod configuration;
 mod repository;
+mod session;
+mod worktree;
 
+pub use agent::{Agent, Ended, Work};
 pub use backlog::{BacklogStore, StoredBacklog, StoredTask};
 pub use configuration::{ConfigurationStore, StoredConfiguration};
 pub use repository::RepositoryRoots;
+pub use session::{SessionStore, StoredSession, StoredSessions};
+pub use worktree::{Cut, Worktrees};
 
 /// The outside could not be reached or could not be understood.
 #[derive(Debug, Clone, PartialEq, Eq)]
