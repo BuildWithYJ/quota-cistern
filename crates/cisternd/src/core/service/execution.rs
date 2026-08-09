@@ -329,9 +329,13 @@ mod tests {
             &self,
             change: &mut dyn FnMut(&mut StoredSessions) -> bool,
         ) -> Result<(), Unavailable> {
-            let mut sessions = self.load();
+            // The lock is held across the read and the write, which is what
+            // the port promises. A fake that let go between them would allow
+            // the very thing the real store is written to prevent.
+            let mut held = self.stored.lock().unwrap();
+            let mut sessions = held.clone();
             if change(&mut sessions) {
-                *self.stored.lock().unwrap() = sessions;
+                *held = sessions;
             }
             Ok(())
         }
@@ -366,9 +370,10 @@ mod tests {
             &self,
             change: &mut dyn FnMut(&mut StoredBacklog) -> bool,
         ) -> Result<(), Unavailable> {
-            let mut tasks = self.load()?;
+            let mut held = self.stored.lock().unwrap();
+            let mut tasks = held.clone();
             if change(&mut tasks) {
-                *self.stored.lock().unwrap() = tasks;
+                *held = tasks;
             }
             Ok(())
         }

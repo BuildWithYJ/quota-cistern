@@ -344,9 +344,16 @@ mod tests {
             &self,
             change: &mut dyn FnMut(&mut StoredBacklog) -> bool,
         ) -> Result<(), Unavailable> {
-            let mut backlog = self.load()?;
+            // The lock is held across the read and the write, which is what
+            // the port promises.
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            if self.broken {
+                return Err(Unavailable::new("not valid JSON"));
+            }
+            let mut held = self.stored.lock().unwrap();
+            let mut backlog = held.clone();
             if change(&mut backlog) {
-                *self.stored.lock().unwrap() = backlog;
+                *held = backlog;
             }
             Ok(())
         }
