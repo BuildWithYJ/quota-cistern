@@ -26,7 +26,7 @@ An adapter has a port on one side and something outside on the other. Code that 
 
 An inbound adapter turns an envelope into a use case call and the answer back into an envelope. Which exit code a refusal becomes is decided here; the core never names one.
 
-An outbound adapter is where a vendor's field names, a file format, and a git invocation belong. None of them cross back into the core.
+An outbound adapter is where a vendor's field names, a file format, and a git invocation belong. None of them cross back into the core, and `cisternd/tests/architecture.rs` checks the field names.
 
 ## Platform
 
