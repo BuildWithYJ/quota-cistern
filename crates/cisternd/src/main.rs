@@ -41,7 +41,10 @@ fn main() -> ExitCode {
         return quit("neither XDG_DATA_HOME nor HOME is set");
     };
     let roots = outbound::repository::GitRoots;
-    let agent = outbound::agent::ClaudeAgent::new();
+    let agent = match outbound::agent::ClaudeAgent::new() {
+        Ok(agent) => agent,
+        Err(e) => return quit(e.reason),
+    };
 
     let configuration = ConfigurationService::new(&configuration_store);
     let backlog = BacklogService::new(&backlog_store, &roots);

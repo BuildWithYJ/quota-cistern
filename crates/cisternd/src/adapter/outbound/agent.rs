@@ -9,22 +9,14 @@ use serde::Deserialize;
 
 use crate::core::port::outbound::{Agent, Ended, Unavailable, Work};
 
-/// The vendor agent `docs/cli.md` section 2.5 names.
-const PROGRAM: &str = "claude";
-
-/// When the agent has finished, in the words its own evaluator judges.
+/// How the agent is invoked, and what it is told it is finished.
 ///
-/// The agent decides on its own when it is done, and nothing checks that
-/// judgement. Stating the end as a condition puts a second model between the
-/// agent and its own claim: after every turn it reads what the agent has
-/// shown and says whether this holds, and the agent works again when it does
-/// not. The condition has to be something the agent's own output can show,
-/// which is why it names what git would report rather than what was asked for.
-///
-/// The task's instruction follows this. The command has to lead the prompt or
-/// it is read as ordinary text and nothing gates anything.
-const FINISHED: &str = "/goal The task described below is finished, its result is \
-committed on the current branch, and git status reports a clean tree.";
+/// Both are read at the moment this is built rather than on every task, and
+/// both travel in the binary. What they hold is content: a sentence a person
+/// will tune and a list of arguments a person will read when a run behaves
+/// wrongly. What is left in this file is what happens to the answer.
+const INVOCATION: &str = include_str!("claude.json");
+const GOAL: &str = include_str!("claude-goal.txt");
 
 /// How many turns one task may take before it is cut off.
 ///
@@ -39,17 +31,75 @@ const TURNS: &str = "200";
 /// agent counts against is its own estimate.
 const SPEND: &str = "20";
 
+/// The format the answer arrives in.
+///
+/// This stands here rather than beside the other arguments because [`said`]
+/// reads that one format. Two places holding one agreement is two places to
+/// forget.
+const FORMAT: [&str; 2] = ["--output-format", "json"];
+
 /// Runs the agent as a child process and waits for it.
 pub struct ClaudeAgent {
     program: String,
+    /// The arguments as they were written, with the places still in them.
+    args: Vec<Vec<String>>,
+    goal: String,
+}
+
+/// The invocation as its file holds it.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Invocation {
+    /// What the file says about itself. Read by people, not by this.
+    #[serde(rename = "_", default)]
+    _about: Vec<String>,
+    program: String,
+    args: Vec<Vec<String>>,
 }
 
 impl ClaudeAgent {
-    pub fn new() -> Self {
-        ClaudeAgent {
-            program: PROGRAM.to_owned(),
-        }
+    /// Reads how the agent is invoked.
+    ///
+    /// Failing here stops the daemon starting, which beats failing on every
+    /// task that arrives. The file travels in the binary, so this can only
+    /// fail on a build nobody should have made, and a test says so.
+    pub fn new() -> Result<Self, Unavailable> {
+        let read: Invocation = serde_json::from_str(INVOCATION)
+            .map_err(|e| Unavailable::new(format!("claude.json: {e}")))?;
+
+        Ok(ClaudeAgent {
+            program: read.program,
+            args: read.args,
+            goal: GOAL.trim().to_owned(),
+        })
     }
+
+    /// The arguments with every place filled, and every group that holds an
+    /// empty one dropped.
+    ///
+    /// A task that named no model loses `--model` along with the value, which
+    /// is why the file groups a flag with what follows it.
+    fn arguments(&self, filling: &[(&str, &str)]) -> Vec<String> {
+        let mut given = Vec::with_capacity(self.args.len() * 2);
+
+        for group in &self.args {
+            let filled: Vec<String> = group.iter().map(|token| fill(token, filling)).collect();
+            if filled.iter().any(String::is_empty) {
+                continue;
+            }
+            given.extend(filled);
+        }
+        given
+    }
+}
+
+/// One argument with `{name}` replaced by what was given for it.
+fn fill(token: &str, filling: &[(&str, &str)]) -> String {
+    let mut written = token.to_owned();
+    for (name, value) in filling {
+        written = written.replace(&format!("{{{name}}}"), value);
+    }
+    written
 }
 
 /// What the agent answers with, of which this reads only how it ended.
@@ -69,25 +119,19 @@ impl Agent for ClaudeAgent {
         let mut running = Command::new(&self.program);
         running
             .current_dir(work.at)
-            // Nobody is there to answer, so a prompt would hold the task open
-            // until the session ended. What limits the damage is the work area
-            // and the branch, which belong to this task alone.
-            .args(["--permission-mode", "bypassPermissions"])
-            // Read as one object at the end. Reading usage out of it and
-            // keeping it as a trace are their own issues.
-            .args(["--output-format", "json"])
-            .args(["--max-turns", TURNS])
-            .args(["--max-budget-usd", SPEND])
-            .args(["-p", &format!("{FINISHED}\n\n{}", work.instruction)])
+            .args(self.arguments(&[
+                ("goal", &self.goal),
+                ("instruction", work.instruction),
+                ("model", work.model.unwrap_or_default()),
+                ("turns", TURNS),
+                ("spend", SPEND),
+            ]))
+            .args(FORMAT)
             // A child that inherited this could read what a surface is sending
             // the core, and would wait on it forever if it tried.
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-
-        if let Some(model) = work.model {
-            running.args(["--model", model]);
-        }
 
         // Both pipes are read while the child writes, so a child that writes
         // more than a pipe holds carries on rather than stopping where it is.
@@ -190,9 +234,9 @@ mod tests {
         .unwrap();
         fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
 
-        ClaudeAgent {
-            program: program.display().to_string(),
-        }
+        let mut standing = ClaudeAgent::new().unwrap();
+        standing.program = program.display().to_string();
+        standing
     }
 
     fn prompt(held: &TempDir) -> String {
@@ -318,14 +362,55 @@ mod tests {
         assert_eq!(ended.reason.as_deref(), Some("I could not build it"));
     }
 
+    /// The file travels in the binary, so a build that broke it would fail
+    /// every task. This is what keeps that from reaching one.
+    #[test]
+    fn the_invocation_that_ships_is_readable_and_holds_the_places_it_must() {
+        let agent = ClaudeAgent::new().unwrap();
+        assert_eq!(agent.program, "claude");
+        assert!(agent.goal.starts_with("/goal "), "{}", agent.goal);
+
+        let written: String = agent.args.iter().flatten().cloned().collect();
+        for place in ["{goal}", "{instruction}", "{model}", "{turns}", "{spend}"] {
+            assert!(written.contains(place), "{place} is not in claude.json");
+        }
+    }
+
+    /// A group holding a place nobody filled goes whole, so a task that named
+    /// no model does not hand the agent a flag with nothing after it.
+    #[test]
+    fn a_place_nobody_filled_takes_its_flag_with_it() {
+        let agent = ClaudeAgent::new().unwrap();
+
+        let named = agent.arguments(&[
+            ("goal", "g"),
+            ("instruction", "i"),
+            ("model", "haiku"),
+            ("turns", "1"),
+            ("spend", "2"),
+        ]);
+        assert!(named.contains(&"--model".to_owned()));
+        assert!(named.contains(&"haiku".to_owned()));
+
+        let unnamed = agent.arguments(&[
+            ("goal", "g"),
+            ("instruction", "i"),
+            ("model", ""),
+            ("turns", "1"),
+            ("spend", "2"),
+        ]);
+        assert!(!unnamed.contains(&"--model".to_owned()), "{unnamed:?}");
+        assert!(unnamed.contains(&"--max-turns".to_owned()), "{unnamed:?}");
+    }
+
     #[test]
     fn a_program_that_is_not_installed_fails_rather_than_answering() {
         let held = TempDir::new().unwrap();
-        let refused = ClaudeAgent {
-            program: "no-such-agent-anywhere".to_owned(),
-        }
-        .work(working(&held.path().display().to_string(), "exit 0"))
-        .unwrap_err();
+        let mut nowhere = ClaudeAgent::new().unwrap();
+        nowhere.program = "no-such-agent-anywhere".to_owned();
+        let refused = nowhere
+            .work(working(&held.path().display().to_string(), "exit 0"))
+            .unwrap_err();
 
         assert!(
             refused.reason.contains("no-such-agent-anywhere"),
