@@ -14,8 +14,8 @@ mod repository;
 mod session;
 mod worktree;
 
-pub use agent::{Agent, Ended, Work};
-pub use backlog::{BacklogStore, StoredBacklog, StoredTask};
+pub use agent::{Agent, Ended, Observed, Spent, Work};
+pub use backlog::{BacklogStore, StoredBacklog, StoredConsumption, StoredTask};
 pub use configuration::{ConfigurationStore, StoredConfiguration};
 pub use repository::RepositoryRoots;
 pub use session::{SessionStore, StoredSession, StoredSessions};

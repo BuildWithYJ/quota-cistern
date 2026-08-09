@@ -14,7 +14,9 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::core::port::outbound::{BacklogStore, StoredBacklog, StoredTask, Unavailable};
+use crate::core::port::outbound::{
+    BacklogStore, StoredBacklog, StoredConsumption, StoredTask, Unavailable,
+};
 
 /// The backlog, kept as JSON at a path fixed when this is built.
 pub struct FileBacklog {
@@ -56,6 +58,25 @@ struct Entry {
     worktree: Value,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     reason: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    consumed: Option<Counted>,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    unreadable: Value,
+}
+
+/// What a task consumed, as the file holds it.
+///
+/// An object of its own rather than five fields beside the others, so that a
+/// task that never ran carries no counts at all and a reader can see which of
+/// the three states a task is in without comparing five keys.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Counted {
+    input: Value,
+    output: Value,
+    cache_written: Value,
+    cache_read: Value,
+    cost: Value,
 }
 
 impl FileBacklog {
@@ -163,6 +184,14 @@ impl FileBacklog {
                     session: as_optional(entry.session),
                     worktree: as_optional(entry.worktree),
                     reason: as_optional(entry.reason),
+                    consumed: entry.consumed.map(|counted| StoredConsumption {
+                        input: as_text(counted.input),
+                        output: as_text(counted.output),
+                        cache_written: as_text(counted.cache_written),
+                        cache_read: as_text(counted.cache_read),
+                        cost: as_text(counted.cost),
+                    }),
+                    unreadable: as_optional(entry.unreadable),
                 })
                 .collect(),
         })
@@ -188,6 +217,14 @@ impl FileBacklog {
                     session: task.session.as_deref().map_or(Value::Null, as_number),
                     worktree: as_value(task.worktree.clone()),
                     reason: as_value(task.reason.clone()),
+                    consumed: task.consumed.as_ref().map(|counted| Counted {
+                        input: as_number(&counted.input),
+                        output: as_number(&counted.output),
+                        cache_written: as_number(&counted.cache_written),
+                        cache_read: as_number(&counted.cache_read),
+                        cost: as_number(&counted.cost),
+                    }),
+                    unreadable: as_value(task.unreadable.clone()),
                 })
                 .collect(),
         };
@@ -259,6 +296,8 @@ mod tests {
             session: None,
             worktree: None,
             reason: None,
+            consumed: None,
+            unreadable: None,
         }
     }
 
@@ -392,6 +431,76 @@ mod tests {
         assert!(written.contains("\"next_id\": 3"), "{written}");
         assert!(written.contains("\"id\": 2"), "{written}");
         assert!(written.contains("\"after\": 1"), "{written}");
+    }
+
+    /// The figures are numbers, and a task that never ran carries neither the
+    /// object nor the reason. That is what tells the three states apart in a
+    /// file a person reads.
+    #[test]
+    fn what_a_task_consumed_goes_back_into_the_file_as_numbers() {
+        let (dir, tasks) = in_a_temporary_directory();
+        let path = dir.path().join("backlog.json");
+        put(
+            &tasks,
+            &StoredBacklog {
+                next_id: "2".to_owned(),
+                tasks: vec![StoredTask {
+                    consumed: Some(StoredConsumption {
+                        input: "77".to_owned(),
+                        output: "3377".to_owned(),
+                        cache_written: "28879".to_owned(),
+                        cache_read: "263483".to_owned(),
+                        cost: "92170".to_owned(),
+                    }),
+                    ..a_task()
+                }],
+            },
+        );
+
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(written.contains("\"input\": 77"), "{written}");
+        assert!(written.contains("\"cost\": 92170"), "{written}");
+
+        // A second reader over the same path is what a restarted core is.
+        let restarted = FileBacklog::at(path);
+        let held = restarted.load().unwrap().tasks[0].clone();
+        assert_eq!(held.consumed.unwrap().cache_read, "263483");
+        assert_eq!(held.unreadable, None);
+    }
+
+    #[test]
+    fn a_task_nobody_could_count_keeps_the_reason_and_no_figures() {
+        let (dir, tasks) = in_a_temporary_directory();
+        let path = dir.path().join("backlog.json");
+        put(
+            &tasks,
+            &StoredBacklog {
+                next_id: "2".to_owned(),
+                tasks: vec![StoredTask {
+                    unreadable: Some("the answer said nothing about it".to_owned()),
+                    ..a_task()
+                }],
+            },
+        );
+
+        let held = FileBacklog::at(path).load().unwrap().tasks[0].clone();
+        assert_eq!(held.consumed, None);
+        assert_eq!(
+            held.unreadable.as_deref(),
+            Some("the answer said nothing about it")
+        );
+    }
+
+    /// A task registered before this core counted anything has neither key, and
+    /// a file written by an older one still reads.
+    #[test]
+    fn a_task_with_no_count_at_all_writes_neither_key() {
+        let (dir, tasks) = in_a_temporary_directory();
+        put(&tasks, &a_backlog());
+
+        let written = fs::read_to_string(dir.path().join("backlog.json")).unwrap();
+        assert!(!written.contains("consumed"), "{written}");
+        assert!(!written.contains("unreadable"), "{written}");
     }
 
     #[test]

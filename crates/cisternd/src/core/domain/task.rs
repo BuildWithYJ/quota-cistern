@@ -6,7 +6,7 @@
 
 use std::fmt::{self, Display};
 
-use super::SessionId;
+use super::{Consumption, Observation, SessionId};
 
 /// The branch a task starts from when it names neither a branch nor a
 /// predecessor.
@@ -62,6 +62,8 @@ pub struct Task {
     worktree: Option<String>,
     /// Why it ended as it did, for a task that did not simply finish.
     reason: Option<String>,
+    /// What running it consumed, as far as that is known.
+    consumed: Observation,
 }
 
 /// A task on its way back from a store, with every value already read.
@@ -82,6 +84,7 @@ pub struct Restored {
     pub session: Option<SessionId>,
     pub worktree: Option<String>,
     pub reason: Option<String>,
+    pub consumed: Observation,
 }
 
 /// Every task, and the number the next one will get.
@@ -230,6 +233,11 @@ impl Task {
         self.reason.as_deref()
     }
 
+    /// What running it consumed, as far as that is known.
+    pub fn consumed(&self) -> &Observation {
+        &self.consumed
+    }
+
     /// The branch this task's result is kept on, once one has been cut.
     ///
     /// A task that was never assigned has none, which is what section 2.1
@@ -288,6 +296,7 @@ impl Backlog {
             session: None,
             worktree: None,
             reason: None,
+            consumed: Observation::NotYet,
         });
         id
     }
@@ -374,6 +383,46 @@ impl Backlog {
         }
     }
 
+    /// Records what running a task consumed.
+    ///
+    /// Kept apart from [`Backlog::finish`] because a task can end without ever
+    /// having run, and what it consumed is then not nothing but unknown.
+    pub fn record(&mut self, id: TaskId, consumed: Observation) {
+        for task in &mut self.tasks {
+            if task.id == id {
+                task.consumed = consumed.clone();
+            }
+        }
+    }
+
+    /// What a session has consumed, added up over the tasks it assigned.
+    ///
+    /// Derived rather than kept beside the session, so that the figure cannot
+    /// disagree with the tasks it is the sum of.
+    ///
+    /// One task whose answer could not be read leaves the whole sum unreadable.
+    /// What is missing from a total is not visible in the total, and a session
+    /// held to a budget it cannot measure would be held to the wrong one. A
+    /// session none of whose tasks has run has consumed nothing, which is a
+    /// figure rather than a gap.
+    pub fn consumed_by(&self, session: SessionId) -> Observation {
+        let mut counted = Vec::new();
+        for task in self
+            .tasks
+            .iter()
+            .filter(|task| task.session == Some(session))
+        {
+            match &task.consumed {
+                Observation::NotYet => {}
+                Observation::Unreadable { why } => {
+                    return Observation::Unreadable { why: why.clone() };
+                }
+                Observation::Spent(spent) => counted.push(*spent),
+            }
+        }
+        Observation::Spent(Consumption::total(counted))
+    }
+
     pub fn find(&self, id: TaskId) -> Option<&Task> {
         self.tasks.iter().find(|task| task.id == id)
     }
@@ -417,6 +466,7 @@ impl Backlog {
                 session: held.session,
                 worktree: held.worktree,
                 reason: held.reason,
+                consumed: held.consumed,
             })
             .collect();
 
@@ -483,6 +533,7 @@ mod tests {
             session: None,
             worktree: None,
             reason: None,
+            consumed: Observation::NotYet,
             id: TaskId::parse(id).unwrap(),
             title: "a task".to_owned(),
             instruction: "do it".to_owned(),
@@ -713,6 +764,98 @@ mod tests {
                 task: TaskId::parse("1").unwrap()
             })
         );
+    }
+
+    /// A count with the same figure in every kind, so that a sum that dropped
+    /// one of them is visible.
+    fn spent(each: u64) -> Observation {
+        Observation::Spent(Consumption {
+            input: each,
+            output: each,
+            cache_written: each,
+            cache_read: each,
+            cost: each,
+        })
+    }
+
+    fn assigned(backlog: &mut Backlog, to: SessionId) -> TaskId {
+        registered(backlog, None, None);
+        backlog.assign(to).unwrap()
+    }
+
+    fn a_session() -> SessionId {
+        SessionId::parse("1").unwrap()
+    }
+
+    #[test]
+    fn what_a_session_consumed_is_what_its_tasks_did() {
+        let mut backlog = Backlog::default();
+        let session = a_session();
+        let first = assigned(&mut backlog, session);
+        backlog.finish(first, TaskState::Completed, None);
+        let second = assigned(&mut backlog, session);
+
+        backlog.record(first, spent(10));
+        backlog.record(second, spent(20));
+
+        assert_eq!(backlog.consumed_by(session), spent(30));
+    }
+
+    /// A task another session assigned is that session's, however recently it
+    /// ran.
+    #[test]
+    fn what_another_session_consumed_is_not_counted() {
+        let mut backlog = Backlog::default();
+        let mine = assigned(&mut backlog, a_session());
+        backlog.record(mine, spent(10));
+
+        let theirs = SessionId::parse("2").unwrap();
+        assert_eq!(backlog.consumed_by(theirs), spent(0));
+    }
+
+    #[test]
+    fn a_session_none_of_whose_tasks_has_run_consumed_nothing() {
+        let mut backlog = Backlog::default();
+        let session = a_session();
+        assigned(&mut backlog, session);
+
+        assert_eq!(
+            backlog.consumed_by(session),
+            Observation::Spent(Consumption::default())
+        );
+    }
+
+    /// What is missing from a total is not visible in the total, so one task
+    /// nobody could read leaves the whole figure unreadable rather than low.
+    #[test]
+    fn one_task_that_could_not_be_read_leaves_the_session_unreadable() {
+        let mut backlog = Backlog::default();
+        let session = a_session();
+        let first = assigned(&mut backlog, session);
+        backlog.finish(first, TaskState::Completed, None);
+        let second = assigned(&mut backlog, session);
+
+        backlog.record(first, spent(10));
+        backlog.record(
+            second,
+            Observation::Unreadable {
+                why: "the answer said nothing about it".to_owned(),
+            },
+        );
+
+        assert_eq!(
+            backlog.consumed_by(session),
+            Observation::Unreadable {
+                why: "the answer said nothing about it".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn a_registered_task_has_not_consumed_anything_yet() {
+        let mut backlog = Backlog::default();
+        let id = registered(&mut backlog, None, None);
+        assert_eq!(backlog.find(id).unwrap().consumed(), &Observation::NotYet);
     }
 
     #[test]

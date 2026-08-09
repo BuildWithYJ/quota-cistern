@@ -81,6 +81,39 @@ fn nothing_is_reached_through_an_alias() {
     );
 }
 
+/// What a vendor calls a field is the vendor's, and a vendor renaming one is a
+/// change to one adapter rather than to the core.
+///
+/// The names are the ones Claude Code answers with. Another vendor spells them
+/// differently, which is the point: none of the spellings belong in the core.
+const VENDOR_FIELDS: &[&str] = &[
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "total_cost_usd",
+];
+
+#[test]
+fn no_vendor_field_name_reaches_the_core() {
+    let mut named = Vec::new();
+
+    for file in rust_files(&workspace().join("crates/cisternd/src/core")) {
+        let text = fs::read_to_string(&file).unwrap();
+        for field in VENDOR_FIELDS {
+            if text.contains(field) {
+                named.push(format!("{} names {field}", under_workspace(&file)));
+            }
+        }
+    }
+
+    assert!(
+        named.is_empty(),
+        "docs/architecture.md says a vendor's words stop at its adapter:\n{}",
+        named.join("\n")
+    );
+}
+
 /// The socket library reaches one crate, which is why the framing is written
 /// once rather than at each end.
 #[test]

@@ -299,6 +299,19 @@ impl Sessions {
         Ok(id)
     }
 
+    /// Stops a session and records why.
+    ///
+    /// A session that already stopped keeps the reason it stopped for, since
+    /// the first one is what happened and the second is what noticed.
+    pub fn stop(&mut self, id: SessionId, reason: StoppedReason) {
+        for session in &mut self.sessions {
+            if session.id == id && session.state == SessionState::Running {
+                session.state = SessionState::Stopped;
+                session.stopped_reason = Some(reason);
+            }
+        }
+    }
+
     /// The session that is running, if one is.
     pub fn running(&self) -> Option<&Session> {
         self.sessions
@@ -421,7 +434,7 @@ mod tests {
         let first = sessions.open(a_budget(), None).unwrap();
         assert_eq!(first.labelled(), "session:1");
 
-        sessions.stop_for_the_test(first);
+        sessions.stop(first, StoppedReason::AllDone);
         let second = sessions.open(a_budget(), None).unwrap();
         assert_eq!(second.labelled(), "session:2");
     }
@@ -493,16 +506,19 @@ mod tests {
         }
     }
 
-    impl Sessions {
-        /// Stops a session so that a test can open the next one. What stops a
-        /// session for real arrives with the supervisor.
-        fn stop_for_the_test(&mut self, id: SessionId) {
-            for session in &mut self.sessions {
-                if session.id == id {
-                    session.state = SessionState::Stopped;
-                    session.stopped_reason = Some(StoppedReason::AllDone);
-                }
-            }
-        }
+    #[test]
+    fn a_stopped_session_says_why_and_keeps_the_first_answer() {
+        let mut sessions = Sessions::default();
+        let id = sessions.open(a_budget(), None).unwrap();
+
+        sessions.stop(id, StoppedReason::ObservationUnreadable);
+        sessions.stop(id, StoppedReason::AllDone);
+
+        let stopped = sessions.sessions().first().unwrap();
+        assert_eq!(stopped.state(), SessionState::Stopped);
+        assert_eq!(
+            stopped.stopped_reason(),
+            Some(StoppedReason::ObservationUnreadable)
+        );
     }
 }
