@@ -2,13 +2,14 @@
 
 use crate::core::{
     domain::{
-        Backlog, NotABacklog, RemovalRefused, Repository, Restored, SessionId, TaskId, TaskState,
+        Backlog, Consumption, NotABacklog, Observation, RemovalRefused, Repository, Restored,
+        SessionId, TaskId, TaskState,
     },
     port::{
         inbound::{
             Added, BacklogUseCase, Detail, Listing, Refusal, Registration, Removed, Waiting,
         },
-        outbound::{BacklogStore, RepositoryRoots, StoredBacklog, StoredTask},
+        outbound::{BacklogStore, RepositoryRoots, StoredBacklog, StoredConsumption, StoredTask},
     },
 };
 
@@ -242,6 +243,7 @@ fn restored_from(held: StoredTask) -> Result<Restored, Refusal> {
             .transpose()?,
         worktree: held.worktree,
         reason: held.reason,
+        consumed: observed(held.consumed, held.unreadable)?,
     })
 }
 
@@ -264,8 +266,52 @@ fn written(backlog: &Backlog) -> StoredBacklog {
                 session: task.session().map(|id| id.to_string()),
                 worktree: task.worktree().map(str::to_owned),
                 reason: task.reason().map(str::to_owned),
+                consumed: kept(task.consumed()),
+                unreadable: match task.consumed() {
+                    Observation::Unreadable { why } => Some(why.clone()),
+                    _ => None,
+                },
             })
             .collect(),
+    }
+}
+
+/// Reads what a store held about one task's consumption.
+///
+/// A store holding both a count and a reason it could not be counted is holding
+/// two answers to one question, and this core cannot tell which to believe.
+fn observed(
+    consumed: Option<StoredConsumption>,
+    unreadable: Option<String>,
+) -> Result<Observation, Refusal> {
+    match (consumed, unreadable) {
+        (None, None) => Ok(Observation::NotYet),
+        (None, Some(why)) => Ok(Observation::Unreadable { why }),
+        (Some(counted), None) => Ok(Observation::Spent(Consumption {
+            input: stored_count("input", &counted.input)?,
+            output: stored_count("output", &counted.output)?,
+            cache_written: stored_count("cache_written", &counted.cache_written)?,
+            cache_read: stored_count("cache_read", &counted.cache_read)?,
+            cost: stored_count("cost", &counted.cost)?,
+        })),
+        (Some(_), Some(_)) => Err(Refusal::Unavailable {
+            reason: "the store says both what a task consumed and that it could not be read"
+                .to_owned(),
+        }),
+    }
+}
+
+/// Hands one task's consumption to a store as the text a user would have typed.
+fn kept(consumed: &Observation) -> Option<StoredConsumption> {
+    match consumed {
+        Observation::Spent(counted) => Some(StoredConsumption {
+            input: counted.input.to_string(),
+            output: counted.output.to_string(),
+            cache_written: counted.cache_written.to_string(),
+            cache_read: counted.cache_read.to_string(),
+            cost: counted.cost.to_string(),
+        }),
+        _ => None,
     }
 }
 
@@ -274,6 +320,10 @@ fn stored_id(field: &str, value: &str) -> Result<TaskId, Refusal> {
 }
 
 fn stored_number(field: &str, value: &str) -> Result<u32, Refusal> {
+    value.parse().map_err(|_| unreadable(field, value))
+}
+
+fn stored_count(field: &str, value: &str) -> Result<u64, Refusal> {
     value.parse().map_err(|_| unreadable(field, value))
 }
 
@@ -635,6 +685,8 @@ mod tests {
                 session: None,
                 worktree: None,
                 reason: None,
+                consumed: None,
+                unreadable: None,
                 id: "1".to_owned(),
                 title: "first".to_owned(),
                 instruction: "do it".to_owned(),
@@ -648,6 +700,8 @@ mod tests {
                 session: None,
                 worktree: None,
                 reason: None,
+                consumed: None,
+                unreadable: None,
                 id: "2".to_owned(),
                 title: "second".to_owned(),
                 instruction: "do it".to_owned(),
@@ -663,6 +717,74 @@ mod tests {
         assert!(matches!(
             in_a_repository(&tasks).list(),
             Err(Refusal::Unavailable { .. })
+        ));
+    }
+
+    /// A count and a reason it could not be counted are two answers to one
+    /// question, and nothing here can tell which one to believe.
+    #[test]
+    fn a_task_stored_with_both_a_count_and_a_reason_is_refused() {
+        let tasks = Remembered::default();
+        let mut held = tasks.stored.lock().unwrap().clone();
+        held.tasks = vec![crate::core::port::outbound::StoredTask {
+            session: None,
+            worktree: None,
+            reason: None,
+            consumed: Some(StoredConsumption {
+                input: "34".to_owned(),
+                output: "755".to_owned(),
+                cache_written: "10068".to_owned(),
+                cache_read: "95826".to_owned(),
+                cost: "41623".to_owned(),
+            }),
+            unreadable: Some("the answer said nothing about it".to_owned()),
+            id: "1".to_owned(),
+            title: "first".to_owned(),
+            instruction: "do it".to_owned(),
+            branch: None,
+            after: None,
+            model: None,
+            repository: "/work/api".to_owned(),
+            state: "Completed".to_owned(),
+        }];
+        *tasks.stored.lock().unwrap() = held;
+
+        assert!(matches!(
+            in_a_repository(&tasks).list(),
+            Err(Refusal::Unavailable { .. })
+        ));
+    }
+
+    #[test]
+    fn a_figure_the_store_holds_that_is_not_a_number_fails_as_a_store() {
+        let tasks = Remembered::default();
+        let mut held = tasks.stored.lock().unwrap().clone();
+        held.tasks = vec![crate::core::port::outbound::StoredTask {
+            session: None,
+            worktree: None,
+            reason: None,
+            consumed: Some(StoredConsumption {
+                input: "a lot".to_owned(),
+                output: "755".to_owned(),
+                cache_written: "10068".to_owned(),
+                cache_read: "95826".to_owned(),
+                cost: "41623".to_owned(),
+            }),
+            unreadable: None,
+            id: "1".to_owned(),
+            title: "first".to_owned(),
+            instruction: "do it".to_owned(),
+            branch: None,
+            after: None,
+            model: None,
+            repository: "/work/api".to_owned(),
+            state: "Completed".to_owned(),
+        }];
+        *tasks.stored.lock().unwrap() = held;
+
+        assert!(matches!(
+            in_a_repository(&tasks).list(),
+            Err(Refusal::Unavailable { reason }) if reason.contains("a lot")
         ));
     }
 }

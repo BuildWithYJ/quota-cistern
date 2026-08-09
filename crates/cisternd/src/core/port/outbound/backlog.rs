@@ -33,6 +33,23 @@ pub struct StoredTask {
     pub worktree: Option<String>,
     /// Why it ended as it did, for a task that did not simply finish.
     pub reason: Option<String>,
+    /// What it consumed, once a run's answer said.
+    pub consumed: Option<StoredConsumption>,
+    /// Why what it consumed could not be read, when it could not.
+    ///
+    /// This and `consumed` are both absent for a task that has not run, which
+    /// is the third thing they tell apart.
+    pub unreadable: Option<String>,
+}
+
+/// What a task consumed, as a store holds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredConsumption {
+    pub input: String,
+    pub output: String,
+    pub cache_written: String,
+    pub cache_read: String,
+    pub cost: String,
 }
 
 /// Where the backlog is kept between runs.

@@ -6,8 +6,9 @@
 use std::process::{Command, Stdio};
 
 use serde::Deserialize;
+use serde_json::Value;
 
-use crate::core::port::outbound::{Agent, Ended, Unavailable, Work};
+use crate::core::port::outbound::{Agent, Ended, Observed, Spent, Unavailable, Work};
 
 /// How the agent is invoked, and what it is told it is finished.
 ///
@@ -102,16 +103,54 @@ fn fill(token: &str, filling: &[(&str, &str)]) -> String {
     written
 }
 
-/// What the agent answers with, of which this reads only how it ended.
+/// What the agent counted, under the names it uses.
 ///
-/// Reading what it consumed and keeping what it did are their own issues, and
-/// both read the same object.
+/// No field is given a default. A vendor that renames one leaves this
+/// unreadable rather than answering that the run consumed nothing, which is
+/// what a budget would read as untouched.
 #[derive(Debug, Deserialize)]
-struct Answered {
-    #[serde(default)]
-    subtype: Option<String>,
-    #[serde(default)]
-    result: Option<String>,
+struct Counted {
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_creation_input_tokens: u64,
+    cache_read_input_tokens: u64,
+}
+
+/// A dollar figure as millionths of one.
+const MILLIONTHS: f64 = 1_000_000.0;
+
+/// What the agent said it consumed.
+///
+/// The answer is read as a whole first, so that a figure this cannot read
+/// leaves the sentence about how the run ended where it was.
+fn observed(answer: Option<&Value>) -> Observed {
+    let Some(answer) = answer else {
+        return unreadable("the agent answered with nothing this could read");
+    };
+
+    let Some(counted) = answer.get("usage").cloned() else {
+        return unreadable("the agent's answer said nothing about what it consumed");
+    };
+    let Ok(counted) = serde_json::from_value::<Counted>(counted) else {
+        return unreadable("what the agent counted is not in the shape this reads");
+    };
+    let Some(priced) = answer.get("total_cost_usd").and_then(Value::as_f64) else {
+        return unreadable("the agent's answer put no figure on what it consumed");
+    };
+
+    Observed::Spent(Spent {
+        input: counted.input_tokens.to_string(),
+        output: counted.output_tokens.to_string(),
+        cache_written: counted.cache_creation_input_tokens.to_string(),
+        cache_read: counted.cache_read_input_tokens.to_string(),
+        cost: ((priced * MILLIONTHS).round().max(0.0) as u64).to_string(),
+    })
+}
+
+fn unreadable(why: &str) -> Observed {
+    Observed::Unreadable {
+        why: why.to_owned(),
+    }
 }
 
 impl Agent for ClaudeAgent {
@@ -139,15 +178,17 @@ impl Agent for ClaudeAgent {
             .output()
             .map_err(|e| Unavailable::new(format!("{}: {e}", self.program)))?;
 
-        Ok(match done.status.success() {
-            true => Ended {
-                done: true,
-                reason: None,
+        // Read once. How the run ended and what it consumed are two questions
+        // about one object, and one of them failing must not lose the other.
+        let answer = serde_json::from_slice::<Value>(&done.stdout).ok();
+
+        Ok(Ended {
+            done: done.status.success(),
+            reason: match done.status.success() {
+                true => None,
+                false => Some(said(&done.status, &done.stderr, answer.as_ref())),
             },
-            false => Ended {
-                done: false,
-                reason: Some(said(&done.status, &done.stderr, &done.stdout)),
-            },
+            observed: observed(answer.as_ref()),
         })
     }
 }
@@ -157,28 +198,24 @@ impl Agent for ClaudeAgent {
 /// A run cut off at a guard fails with its answer on standard output and
 /// nothing on standard error, so reading the whole of that answer back would
 /// put an object nobody can read where a sentence belongs.
-fn said(status: &std::process::ExitStatus, stderr: &[u8], stdout: &[u8]) -> String {
+fn said(status: &std::process::ExitStatus, stderr: &[u8], answer: Option<&Value>) -> String {
     let complained = String::from_utf8_lossy(stderr);
     let complained = complained.trim();
     if !complained.is_empty() {
         return complained.to_owned();
     }
 
-    let answered = String::from_utf8_lossy(stdout);
-    if let Ok(answered) = serde_json::from_str::<Answered>(&answered) {
-        if let Some(said) = answered.result.filter(|said| !said.trim().is_empty()) {
+    if let Some(answer) = answer {
+        if let Some(said) = answer.get("result").and_then(Value::as_str)
+            && !said.trim().is_empty()
+        {
             return said.trim().to_owned();
         }
-        if let Some(why) = answered.subtype {
-            return why_for(&why);
+        if let Some(why) = answer.get("subtype").and_then(Value::as_str) {
+            return why_for(why);
         }
     }
-
-    let answered = answered.trim();
-    match answered.is_empty() {
-        false => answered.to_owned(),
-        true => format!("the agent {status} and said nothing"),
-    }
+    format!("the agent {status} and said nothing")
 }
 
 /// A sentence for how the agent says it stopped.
@@ -239,6 +276,22 @@ mod tests {
         standing
     }
 
+    /// The vendor's answer, with the fields this file reads and some it does
+    /// not. The extra ones are there because a vendor adds fields, and adding
+    /// one must not stop the count being read.
+    const AN_ANSWER: &str = concat!(
+        r#"{"type":"result","subtype":"success","result":"done","#,
+        r#""usage":{"input_tokens":34,"output_tokens":755,"#,
+        r#""cache_creation_input_tokens":10068,"cache_read_input_tokens":95826,"#,
+        r#""server_tool_use":{"web_search_requests":0}},"#,
+        r#""total_cost_usd":0.0416231}"#,
+    );
+
+    /// A shell command that answers with `written` and nothing else.
+    fn answering(written: &str) -> String {
+        format!("printf '%s' '{written}'")
+    }
+
     fn prompt(held: &TempDir) -> String {
         fs::read_to_string(held.path().join("prompt")).unwrap()
     }
@@ -258,13 +311,80 @@ mod tests {
             .work(working(&held.path().display().to_string(), "exit 0"))
             .unwrap();
 
+        assert!(ended.done);
+        assert_eq!(ended.reason, None);
+    }
+
+    #[test]
+    fn what_the_agent_counted_is_read_out_of_its_answer() {
+        let held = TempDir::new().unwrap();
+        let ended = standing_in(&held)
+            .work(working(
+                &held.path().display().to_string(),
+                &answering(AN_ANSWER),
+            ))
+            .unwrap();
+
         assert_eq!(
-            ended,
-            Ended {
-                done: true,
-                reason: None
-            }
+            ended.observed,
+            Observed::Spent(Spent {
+                input: "34".to_owned(),
+                output: "755".to_owned(),
+                cache_written: "10068".to_owned(),
+                cache_read: "95826".to_owned(),
+                // 0.0416231 dollars, as millionths of one.
+                cost: "41623".to_owned(),
+            })
         );
+    }
+
+    /// A vendor that renames a field would otherwise report a run that spent a
+    /// hundred thousand tokens as having spent none.
+    #[test]
+    fn a_count_under_a_name_this_does_not_know_is_not_a_count_of_nothing() {
+        let held = TempDir::new().unwrap();
+        let renamed = AN_ANSWER.replace("input_tokens", "tokens_in");
+        let ended = standing_in(&held)
+            .work(working(
+                &held.path().display().to_string(),
+                &answering(&renamed),
+            ))
+            .unwrap();
+
+        assert!(matches!(ended.observed, Observed::Unreadable { .. }));
+    }
+
+    #[test]
+    fn an_answer_that_says_nothing_about_a_count_is_not_a_count_of_nothing() {
+        let held = TempDir::new().unwrap();
+        let ended = standing_in(&held)
+            .work(working(&held.path().display().to_string(), "echo done"))
+            .unwrap();
+
+        assert!(matches!(ended.observed, Observed::Unreadable { .. }));
+    }
+
+    /// A run that was cut off still consumed what it consumed, and how it ended
+    /// is read out of the same answer as what it spent.
+    #[test]
+    fn a_run_that_failed_still_reports_what_it_consumed() {
+        let held = TempDir::new().unwrap();
+        let cut_off = AN_ANSWER
+            .replace(r#""subtype":"success""#, r#""subtype":"error_max_turns""#)
+            .replace(r#""result":"done","#, "");
+        let ended = standing_in(&held)
+            .work(working(
+                &held.path().display().to_string(),
+                &format!("{}; exit 1", answering(&cut_off)),
+            ))
+            .unwrap();
+
+        assert!(!ended.done);
+        assert_eq!(
+            ended.reason.as_deref(),
+            Some("the agent was cut off after 200 turns")
+        );
+        assert!(matches!(ended.observed, Observed::Spent(_)));
     }
 
     #[test]

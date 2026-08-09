@@ -2,14 +2,14 @@
 
 use crate::core::{
     domain::{
-        Budget, Held, Key, NotASessionSet, NotOpened, SessionState, Sessions, Setting, Span,
-        TaskId, TaskState, Usage,
+        Budget, Consumption, Held, Key, NotASessionSet, NotOpened, Observation, SessionId,
+        SessionState, Sessions, Setting, Span, StoppedReason, Task, TaskId, TaskState, Usage,
     },
     port::{
         inbound::{Declaration, Declared, ExecutionUseCase, Refusal, Started},
         outbound::{
-            Agent, BacklogStore, ConfigurationStore, Cut, SessionStore, StoredSession,
-            StoredSessions, Work, Worktrees,
+            Agent, BacklogStore, ConfigurationStore, Cut, Observed, SessionStore, Spent,
+            StoredSession, StoredSessions, Work, Worktrees,
         },
     },
 };
@@ -140,7 +140,8 @@ impl ExecutionUseCase for ExecutionService<'_> {
             Ok(at) => at,
             // A task that could not be given a place to work in has ended, and
             // saying so is what keeps it from being read as still running.
-            Err(e) => return self.ended(id, TaskState::Error, Some(e.reason)),
+            // Nothing ran, so there is nothing to have consumed.
+            Err(e) => return self.ended(id, TaskState::Error, Some(e.reason), Observation::NotYet),
         };
         backlog::change(self.tasks, |tasks| {
             tasks.work_area(id, at.clone());
@@ -153,18 +154,82 @@ impl ExecutionUseCase for ExecutionService<'_> {
             model: model.as_deref(),
         });
         match ended {
-            Ok(ended) if ended.done => self.ended(id, TaskState::Completed, None),
-            Ok(ended) => self.ended(id, TaskState::Error, ended.reason),
-            Err(e) => self.ended(id, TaskState::Error, Some(e.reason)),
+            Ok(ended) => {
+                let consumed = observed(ended.observed);
+                match ended.done {
+                    true => self.ended(id, TaskState::Completed, None, consumed),
+                    false => self.ended(id, TaskState::Error, ended.reason, consumed),
+                }
+            }
+            Err(e) => self.ended(id, TaskState::Error, Some(e.reason), Observation::NotYet),
         }
     }
 }
 
+/// Reads what the agent said it consumed.
+///
+/// The port answers in the core's own words already, so this only tells the two
+/// answers apart. A count the adapter could not read is not a count of nothing,
+/// and section 1 keeps the two apart as far as the reason a session stops.
+fn observed(observed: Observed) -> Observation {
+    match observed {
+        Observed::Unreadable { why } => Observation::Unreadable { why },
+        Observed::Spent(spent) => match counted(&spent) {
+            Some(counted) => Observation::Spent(counted),
+            None => Observation::Unreadable {
+                why: "what the agent counted does not read as a number".to_owned(),
+            },
+        },
+    }
+}
+
+/// A count as the port hands it over, if every figure in it is one.
+fn counted(spent: &Spent) -> Option<Consumption> {
+    Some(Consumption {
+        input: spent.input.parse().ok()?,
+        output: spent.output.parse().ok()?,
+        cache_written: spent.cache_written.parse().ok()?,
+        cache_read: spent.cache_read.parse().ok()?,
+        cost: spent.cost.parse().ok()?,
+    })
+}
+
 impl ExecutionService<'_> {
-    /// Moves a task to the state it ended in.
-    fn ended(&self, id: TaskId, state: TaskState, reason: Option<String>) -> Result<(), Refusal> {
-        backlog::change(self.tasks, |tasks| {
+    /// Moves a task to the state it ended in and records what it consumed.
+    ///
+    /// Both in one change, so that a task is never stored as ended with what it
+    /// consumed still missing.
+    fn ended(
+        &self,
+        id: TaskId,
+        state: TaskState,
+        reason: Option<String>,
+        consumed: Observation,
+    ) -> Result<(), Refusal> {
+        let unmeasured = backlog::change(self.tasks, |tasks| {
             tasks.finish(id, state, reason.clone());
+            tasks.record(id, consumed.clone());
+
+            let session = tasks.find(id).and_then(Task::session);
+            Ok(session.filter(|&session| {
+                matches!(tasks.consumed_by(session), Observation::Unreadable { .. })
+            }))
+        })?;
+
+        match unmeasured {
+            Some(session) => self.stop_unmeasured(session),
+            None => Ok(()),
+        }
+    }
+
+    /// Stops a session whose consumption can no longer be read.
+    ///
+    /// Section 1 gives this its own reason. A budget is a figure, and a session
+    /// that cannot be measured against its own would run past it without
+    /// anything noticing, so it stops where the measurement stopped.
+    fn stop_unmeasured(&self, session: SessionId) -> Result<(), Refusal> {
+        change(self.sessions, |sessions| {
+            sessions.stop(session, StoppedReason::ObservationUnreadable);
             Ok(())
         })
     }
@@ -392,6 +457,8 @@ mod tests {
             session: None,
             worktree: None,
             reason: None,
+            consumed: None,
+            unreadable: None,
         }
     }
 
@@ -440,6 +507,17 @@ mod tests {
         }
     }
 
+    /// What an agent that answered with a count it could read reports.
+    fn spending() -> Observed {
+        Observed::Spent(Spent {
+            input: "34".to_owned(),
+            output: "755".to_owned(),
+            cache_written: "10068".to_owned(),
+            cache_read: "95826".to_owned(),
+            cost: "41623".to_owned(),
+        })
+    }
+
     /// An agent that answers as it was told to, and remembers what it was asked.
     struct Standing {
         ended: Ended,
@@ -458,6 +536,7 @@ mod tests {
             Standing::ending(Ended {
                 done: true,
                 reason: None,
+                observed: spending(),
             })
         }
     }
@@ -672,6 +751,109 @@ mod tests {
     }
 
     #[test]
+    fn a_task_that_ran_is_stored_with_what_it_consumed() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task()]);
+        let areas = Areas::default();
+        let agent = Standing::finishing();
+        let execution = ExecutionService::new(&sessions, &tasks, &ON_A_PLAN, &areas, &agent);
+
+        execution.run(declaring("50%", "8h")).unwrap();
+        execution.carry_on("task:1").unwrap();
+
+        let counted = tasks.first().consumed.unwrap();
+        assert_eq!(counted.input, "34");
+        assert_eq!(counted.output, "755");
+        assert_eq!(counted.cache_written, "10068");
+        assert_eq!(counted.cache_read, "95826");
+        assert_eq!(counted.cost, "41623");
+        assert_eq!(tasks.first().unreadable, None);
+        assert_eq!(sessions.load().sessions[0].state, "running");
+    }
+
+    /// A task that never reached the agent has not consumed nothing; it has not
+    /// consumed at all, and neither field says otherwise.
+    #[test]
+    fn a_task_that_never_ran_is_stored_with_no_count_at_all() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task()]);
+        let areas = Areas {
+            refuse: true,
+            ..Areas::default()
+        };
+        let agent = Standing::finishing();
+        let execution = ExecutionService::new(&sessions, &tasks, &ON_A_PLAN, &areas, &agent);
+
+        execution.run(declaring("50%", "8h")).unwrap();
+        execution.carry_on("task:1").unwrap();
+
+        let held = tasks.first();
+        assert_eq!(held.state, "Error");
+        assert_eq!(held.consumed, None);
+        assert_eq!(held.unreadable, None);
+    }
+
+    /// A budget is a figure, and a session that cannot be measured against its
+    /// own would run past it without anything noticing.
+    #[test]
+    fn a_session_whose_count_could_not_be_read_stops_and_says_so() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task()]);
+        let areas = Areas::default();
+        let agent = Standing::ending(Ended {
+            done: true,
+            reason: None,
+            observed: Observed::Unreadable {
+                why: "the answer said nothing about it".to_owned(),
+            },
+        });
+        let execution = ExecutionService::new(&sessions, &tasks, &ON_A_PLAN, &areas, &agent);
+
+        execution.run(declaring("50%", "8h")).unwrap();
+        execution.carry_on("task:1").unwrap();
+
+        let held = tasks.first();
+        assert_eq!(held.consumed, None);
+        assert_eq!(
+            held.unreadable.as_deref(),
+            Some("the answer said nothing about it")
+        );
+
+        let session = sessions.load().sessions[0].clone();
+        assert_eq!(session.state, "stopped");
+        assert_eq!(
+            session.stopped_reason.as_deref(),
+            Some("observation unreadable")
+        );
+    }
+
+    /// The agent answered with a count, and one figure in it is not a number.
+    #[test]
+    fn a_figure_that_does_not_read_as_a_number_is_not_a_count() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task()]);
+        let areas = Areas::default();
+        let agent = Standing::ending(Ended {
+            done: true,
+            reason: None,
+            observed: Observed::Spent(Spent {
+                input: "a lot".to_owned(),
+                output: "755".to_owned(),
+                cache_written: "10068".to_owned(),
+                cache_read: "95826".to_owned(),
+                cost: "41623".to_owned(),
+            }),
+        });
+        let execution = ExecutionService::new(&sessions, &tasks, &ON_A_PLAN, &areas, &agent);
+
+        execution.run(declaring("50%", "8h")).unwrap();
+        execution.carry_on("task:1").unwrap();
+
+        assert_eq!(tasks.first().consumed, None);
+        assert!(tasks.first().unreadable.is_some());
+    }
+
+    #[test]
     fn an_agent_that_failed_leaves_the_task_in_error_with_what_it_said() {
         let sessions = Remembered::empty();
         let tasks = Tasks::holding(vec![a_pending_task()]);
@@ -679,6 +861,7 @@ mod tests {
         let agent = Standing::ending(Ended {
             done: false,
             reason: Some("it went wrong".to_owned()),
+            observed: spending(),
         });
         let execution = ExecutionService::new(&sessions, &tasks, &ON_A_PLAN, &areas, &agent);
 
