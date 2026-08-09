@@ -7,6 +7,8 @@ use std::{
     fs,
     io::Read,
     path::{Path, PathBuf},
+    sync::mpsc::{self, Receiver, RecvTimeoutError},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -27,6 +29,13 @@ const GIVE_UP_AFTER: Duration = Duration::from_secs(90);
 
 /// How long to leave the session alone before typing at it.
 const SETTLES_IN: Duration = Duration::from_secs(4);
+
+/// How long to wait for the screen to say something more before looking at
+/// what it has said so far.
+///
+/// A terminal that has finished drawing says nothing until it is typed at, so
+/// waiting for the next character would be waiting for one this has to send.
+const BETWEEN_LOOKS: Duration = Duration::from_millis(200);
 
 /// A terminal wide enough that the vendor lays its screen out as usual.
 const SCREEN: PtySize = PtySize {
@@ -159,7 +168,20 @@ impl Limit for ClaudeLimit {
         let mut screen = pty.master.try_clone_reader().map_err(|e| failing(&e))?;
         let mut typing = pty.master.take_writer().map_err(|e| failing(&e))?;
 
-        let found = watch(&mut screen, &mut typing, &self.invocation, &held.written);
+        // Reading a terminal blocks until it has something to say, and a
+        // terminal waiting to be typed at has nothing. The reading happens
+        // beside the watching so that neither waits on the other.
+        let (said, arriving) = mpsc::channel();
+        thread::spawn(move || {
+            let mut chunk = [0u8; 8192];
+            while let Ok(read) = screen.read(&mut chunk) {
+                if read == 0 || said.send(chunk[..read].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let found = watch(&arriving, &mut typing, &self.invocation, &held.written);
 
         let _ = running.kill();
         let _ = running.wait();
@@ -174,27 +196,28 @@ impl Limit for ClaudeLimit {
 /// the prompt goes in. The limit is empty until an answer has come back, so
 /// the prompt is what fills it.
 fn watch(
-    screen: &mut Box<dyn Read + Send>,
+    arriving: &Receiver<Vec<u8>>,
     typing: &mut Box<dyn std::io::Write + Send>,
     invocation: &Invocation,
     written: &Path,
 ) -> Result<Reading, Unavailable> {
     let started = Instant::now();
     let mut seen = Vec::new();
+    let mut trusted = false;
     let mut asked = false;
 
     while started.elapsed() < GIVE_UP_AFTER {
-        let mut chunk = [0u8; 8192];
-        match screen.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(read) => seen.extend_from_slice(&chunk[..read]),
-            Err(_) => break,
+        match arriving.recv_timeout(BETWEEN_LOOKS) {
+            Ok(chunk) => seen.extend_from_slice(&chunk),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
         }
 
         let said = plainly(&seen);
-        if !asked && said.contains(&invocation.trusts) && !said.contains(&invocation.ready) {
+        if !trusted && said.contains(&invocation.trusts) {
             let _ = typing.write_all(b"\r");
             let _ = typing.flush();
+            trusted = true;
             continue;
         }
         if !asked && said.contains(&invocation.ready) && started.elapsed() > SETTLES_IN {
@@ -251,4 +274,60 @@ fn reading_in(one: &Value) -> Option<Reading> {
         used: window.get("used_percentage")?.as_u64()?.to_string(),
         resets_at: window.get("resets_at")?.as_u64()?.to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[test]
+    fn the_invocation_that_ships_is_readable() {
+        let held = TempDir::new().unwrap();
+        assert!(ClaudeLimit::at(held.path().to_path_buf()).is_ok());
+    }
+
+    #[test]
+    fn the_control_characters_a_terminal_writes_are_not_part_of_what_it_said() {
+        let written = b"\x1b[1mYes, I \x1b[32mtrust\x1b[0m this folder\x1b[0m";
+        assert_eq!(plainly(written), "yes,itrustthisfolder");
+    }
+
+    #[test]
+    fn the_five_hour_limit_is_what_is_read_out_of_a_status_line() {
+        let line = serde_json::json!({
+            "rate_limits": {
+                "five_hour": { "used_percentage": 17, "resets_at": 1786285800u64 },
+                "seven_day": { "used_percentage": 44, "resets_at": 1786316400u64 }
+            }
+        });
+        assert_eq!(
+            reading_in(&line),
+            Some(Reading {
+                used: "17".to_owned(),
+                resets_at: "1786285800".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn a_status_line_that_says_nothing_about_the_limit_is_not_a_reading() {
+        assert_eq!(reading_in(&serde_json::json!({ "cost": {} })), None);
+    }
+
+    /// Runs the vendor. Not part of `cargo test`, since it costs a turn.
+    #[test]
+    #[ignore = "reaches the vendor"]
+    fn the_vendor_says_where_its_limit_stands() {
+        let held = TempDir::new().unwrap();
+        let reading = ClaudeLimit::at(held.path().to_path_buf())
+            .unwrap()
+            .read()
+            .unwrap();
+
+        assert!(reading.used.parse::<u32>().unwrap() <= 100);
+        assert!(reading.resets_at.parse::<u64>().unwrap() > 0);
+        println!("used {}%, resets at {}", reading.used, reading.resets_at);
+    }
 }
