@@ -43,65 +43,65 @@ impl BacklogUseCase for BacklogService<'_> {
             });
         };
 
-        let mut backlog = read(self.store)?;
-        if let Some(after) = after
-            && backlog.find(after).is_none()
-        {
-            return Err(Refusal::NoSuchTask {
-                id: after.labelled(),
-            });
-        }
+        change(self.store, |backlog| {
+            if let Some(after) = after
+                && backlog.find(after).is_none()
+            {
+                return Err(Refusal::NoSuchTask {
+                    id: after.labelled(),
+                });
+            }
 
-        let id = backlog.add(
-            given.title.to_owned(),
-            given.instruction.to_owned(),
-            given.branch.map(str::to_owned),
-            after,
-            given.model.map(str::to_owned),
-            Repository::new(root),
-        );
-        self.store.store(&written(&backlog))?;
+            let id = backlog.add(
+                given.title.to_owned(),
+                given.instruction.to_owned(),
+                given.branch.map(str::to_owned),
+                after,
+                given.model.map(str::to_owned),
+                Repository::new(root),
+            );
 
-        let Some(registered) = backlog.find(id) else {
-            return Err(Refusal::NoSuchTask { id: id.labelled() });
-        };
-        Ok(Added {
-            id: registered.id().labelled(),
-            title: registered.title().to_owned(),
-            base_branch: registered.base_branch(),
-            after: registered.after().map(|after| after.labelled()),
-            model: registered.model().map(str::to_owned),
-            repository: registered.repository().to_string(),
-            state: registered.state().to_string(),
+            let Some(registered) = backlog.find(id) else {
+                return Err(Refusal::NoSuchTask { id: id.labelled() });
+            };
+            Ok(Added {
+                id: registered.id().labelled(),
+                title: registered.title().to_owned(),
+                base_branch: registered.base_branch(),
+                after: registered.after().map(|after| after.labelled()),
+                model: registered.model().map(str::to_owned),
+                repository: registered.repository().to_string(),
+                state: registered.state().to_string(),
+            })
         })
     }
 
     fn remove(&self, id: &str) -> Result<Removed, Refusal> {
-        let parsed = identifier(id)?;
-        let mut backlog = read(self.store)?;
+        let wanted = identifier(id)?;
 
-        let removed = backlog.remove(parsed).map_err(|why| match why {
-            RemovalRefused::NoSuchTask => Refusal::NoSuchTask {
-                id: parsed.labelled(),
-            },
-            RemovalRefused::NotPending => Refusal::NotPending {
-                id: parsed.labelled(),
-            },
-        })?;
-        self.store.store(&written(&backlog))?;
+        change(self.store, |backlog| {
+            let removed = backlog.remove(wanted).map_err(|why| match why {
+                RemovalRefused::NoSuchTask => Refusal::NoSuchTask {
+                    id: wanted.labelled(),
+                },
+                RemovalRefused::NotPending => Refusal::NotPending {
+                    id: wanted.labelled(),
+                },
+            })?;
 
-        Ok(Removed {
-            id: removed.id().labelled(),
-            title: removed.title().to_owned(),
+            Ok(Removed {
+                id: removed.id().labelled(),
+                title: removed.title().to_owned(),
+            })
         })
     }
 
     fn show(&self, id: &str) -> Result<Detail, Refusal> {
-        let parsed = identifier(id)?;
+        let wanted = identifier(id)?;
         let backlog = read(self.store)?;
-        let Some(task) = backlog.find(parsed) else {
+        let Some(task) = backlog.find(wanted) else {
             return Err(Refusal::NoSuchTask {
-                id: parsed.labelled(),
+                id: wanted.labelled(),
             });
         };
 
@@ -152,7 +152,11 @@ fn identifier(id: &str) -> Result<TaskId, Refusal> {
 /// file, so a backlog that does not add up is a store this core cannot use
 /// rather than something the user typed wrong.
 fn read(tasks: &dyn BacklogStore) -> Result<Backlog, Refusal> {
-    let stored = tasks.load()?;
+    read_from(tasks.load()?)
+}
+
+/// Reads the backlog a store handed over. Held to the standard `read` names.
+fn read_from(stored: StoredBacklog) -> Result<Backlog, Refusal> {
     let next_id = stored_number("next_id", &stored.next_id)?;
 
     let mut restored = Vec::with_capacity(stored.tasks.len());
@@ -162,6 +166,49 @@ fn read(tasks: &dyn BacklogStore) -> Result<Backlog, Refusal> {
 
     Backlog::restore(next_id, restored).map_err(|e| Refusal::Unavailable {
         reason: unusable(&e),
+    })
+}
+
+/// Reads the backlog, changes it, and writes it back as one step.
+///
+/// The answer travels out in a value this holds rather than out of the port,
+/// because a port that returned a refusal would have to name what one is, and
+/// that word belongs to the other edge.
+fn change<T>(
+    tasks: &dyn BacklogStore,
+    with: impl FnOnce(&mut Backlog) -> Result<T, Refusal>,
+) -> Result<T, Refusal> {
+    let mut with = Some(with);
+    let mut answer = None;
+
+    tasks.update(&mut |stored| {
+        // A store that ran the change twice would apply it twice. Taking it
+        // leaves the second call nothing to run and nothing to write.
+        let Some(with) = with.take() else {
+            return false;
+        };
+
+        let done = read_from(stored.clone()).and_then(|mut backlog| {
+            let got = with(&mut backlog)?;
+            Ok((got, backlog))
+        });
+        match done {
+            Ok((got, backlog)) => {
+                *stored = written(&backlog);
+                answer = Some(Ok(got));
+                true
+            }
+            Err(e) => {
+                answer = Some(Err(e));
+                false
+            }
+        }
+    })?;
+
+    answer.unwrap_or_else(|| {
+        Err(Refusal::Unavailable {
+            reason: "the store did not run the change it was given".to_owned(),
+        })
     })
 }
 
@@ -275,8 +322,14 @@ mod tests {
             }
         }
 
-        fn store(&self, backlog: &StoredBacklog) -> Result<(), Unavailable> {
-            *self.stored.borrow_mut() = backlog.clone();
+        fn update(
+            &self,
+            change: &mut dyn FnMut(&mut StoredBacklog) -> bool,
+        ) -> Result<(), Unavailable> {
+            let mut backlog = self.load()?;
+            if change(&mut backlog) {
+                *self.stored.borrow_mut() = backlog;
+            }
             Ok(())
         }
     }

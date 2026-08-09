@@ -38,9 +38,18 @@ pub trait BacklogStore {
     /// that apart from a store that cannot be read is the implementation's job.
     fn load(&self) -> Result<StoredBacklog, Unavailable>;
 
-    /// Writes the whole backlog.
+    /// Reads what is stored, hands it to `change`, and writes back what
+    /// `change` left behind.
     ///
-    /// The whole of it, so that adding one task stays in the core and the
+    /// Reading and writing are one call rather than two because two tasks
+    /// ending at the same moment would otherwise each write over what the other
+    /// recorded. Keeping them apart is the implementation's, and the core never
+    /// holds whatever does it.
+    ///
+    /// `change` answers whether it changed anything. Nothing is written when it
+    /// did not, so a refusal leaves the store as it was. The change is handed
+    /// the whole backlog, so adding one task stays in the core and the
     /// implementation never learns the shape.
-    fn store(&self, backlog: &StoredBacklog) -> Result<(), Unavailable>;
+    fn update(&self, change: &mut dyn FnMut(&mut StoredBacklog) -> bool)
+    -> Result<(), Unavailable>;
 }

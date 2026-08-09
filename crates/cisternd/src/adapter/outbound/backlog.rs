@@ -8,6 +8,7 @@ use std::{
     ffi::OsString,
     fs, io,
     path::{Path, PathBuf},
+    sync::{Mutex, PoisonError},
 };
 
 use serde::{Deserialize, Serialize};
@@ -18,6 +19,9 @@ use crate::core::port::outbound::{BacklogStore, StoredBacklog, StoredTask, Unava
 /// The backlog, kept as JSON at a path fixed when this is built.
 pub struct FileBacklog {
     path: PathBuf,
+    /// Held from the read to the write that follows it, so that two tasks
+    /// recording their state at the same moment do not write over each other.
+    writing: Mutex<()>,
 }
 
 /// The file, as JSON sees it.
@@ -51,7 +55,10 @@ struct Entry {
 impl FileBacklog {
     /// Takes the path it is given. This is how a test reaches a temporary one.
     pub fn at(path: PathBuf) -> Self {
-        FileBacklog { path }
+        FileBacklog {
+            path,
+            writing: Mutex::new(()),
+        }
     }
 
     /// The path `docs/cli.md` names, or nothing when there is nowhere for it.
@@ -118,8 +125,8 @@ fn as_value(text: Option<String>) -> Value {
     text.map_or(Value::Null, Value::String)
 }
 
-impl BacklogStore for FileBacklog {
-    fn load(&self) -> Result<StoredBacklog, Unavailable> {
+impl FileBacklog {
+    fn read(&self) -> Result<StoredBacklog, Unavailable> {
         let written = match fs::read_to_string(&self.path) {
             Ok(written) => written,
             // Nothing registered yet. Any other read failure is worth saying.
@@ -154,7 +161,7 @@ impl BacklogStore for FileBacklog {
 
     /// Writes beside the file and renames it into place, for the reason
     /// `adapter::settings` gives.
-    fn store(&self, backlog: &StoredBacklog) -> Result<(), Unavailable> {
+    fn write(&self, backlog: &StoredBacklog) -> Result<(), Unavailable> {
         let document = Document {
             next_id: as_number(&backlog.next_id),
             tasks: backlog
@@ -176,6 +183,27 @@ impl BacklogStore for FileBacklog {
 
         let staged = self.path.with_extension("json.new");
         replace(&self.path, &staged, &written).map_err(|e| self.failing(e))
+    }
+}
+
+impl BacklogStore for FileBacklog {
+    fn load(&self) -> Result<StoredBacklog, Unavailable> {
+        self.read()
+    }
+
+    fn update(
+        &self,
+        change: &mut dyn FnMut(&mut StoredBacklog) -> bool,
+    ) -> Result<(), Unavailable> {
+        // A thread that panicked under this lock left the file alone, since the
+        // write is the last thing that happens under it.
+        let _writing = self.writing.lock().unwrap_or_else(PoisonError::into_inner);
+
+        let mut backlog = self.read()?;
+        match change(&mut backlog) {
+            true => self.write(&backlog),
+            false => Ok(()),
+        }
     }
 }
 
@@ -226,6 +254,17 @@ mod tests {
         }
     }
 
+    /// Puts a backlog in place, which is what a change does when it replaces
+    /// everything it was handed.
+    fn put(tasks: &FileBacklog, backlog: &StoredBacklog) {
+        tasks
+            .update(&mut |held| {
+                *held = backlog.clone();
+                true
+            })
+            .unwrap();
+    }
+
     #[test]
     fn the_data_directory_wins() {
         assert_eq!(
@@ -258,7 +297,7 @@ mod tests {
     #[test]
     fn what_was_written_is_there_for_the_next_process_to_read() {
         let (dir, tasks) = in_a_temporary_directory();
-        tasks.store(&a_backlog()).unwrap();
+        put(&tasks, &a_backlog());
 
         // A second reader over the same path is what a restarted core is.
         let restarted = FileBacklog::at(dir.path().join("backlog.json"));
@@ -322,16 +361,17 @@ mod tests {
     fn identifiers_go_back_into_the_file_as_numbers() {
         let (dir, tasks) = in_a_temporary_directory();
         let path = dir.path().join("backlog.json");
-        tasks
-            .store(&StoredBacklog {
+        put(
+            &tasks,
+            &StoredBacklog {
                 next_id: "3".to_owned(),
                 tasks: vec![StoredTask {
                     after: Some("1".to_owned()),
                     id: "2".to_owned(),
                     ..a_task()
                 }],
-            })
-            .unwrap();
+            },
+        );
 
         let written = fs::read_to_string(&path).unwrap();
         assert!(written.contains("\"next_id\": 3"), "{written}");
@@ -342,7 +382,55 @@ mod tests {
     #[test]
     fn the_staged_file_does_not_outlive_the_write() {
         let (dir, tasks) = in_a_temporary_directory();
-        tasks.store(&a_backlog()).unwrap();
+        put(&tasks, &a_backlog());
         assert!(!dir.path().join("backlog.json.new").exists());
+    }
+
+    /// A refused command reads the backlog and changes nothing, and the file it
+    /// read should be the file that is still there.
+    #[test]
+    fn a_change_that_changed_nothing_leaves_the_file_where_it_was() {
+        let (dir, tasks) = in_a_temporary_directory();
+        let path = dir.path().join("backlog.json");
+        put(&tasks, &a_backlog());
+        let before = fs::metadata(&path).unwrap().modified().unwrap();
+
+        tasks
+            .update(&mut |held| {
+                held.tasks.clear();
+                false
+            })
+            .unwrap();
+
+        assert_eq!(tasks.load(), Ok(a_backlog()));
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
+    }
+
+    /// Two tasks ending at the same moment both record their state. Reading and
+    /// writing as two calls would let the later write drop the earlier one, so
+    /// this counts what survived.
+    #[test]
+    fn two_writers_at_once_do_not_write_over_each_other() {
+        let (_dir, tasks) = in_a_temporary_directory();
+        let tasks = &tasks;
+        let writers = 8;
+
+        std::thread::scope(|threads| {
+            for n in 0..writers {
+                threads.spawn(move || {
+                    tasks
+                        .update(&mut |held| {
+                            held.tasks.push(StoredTask {
+                                id: n.to_string(),
+                                ..a_task()
+                            });
+                            true
+                        })
+                        .unwrap();
+                });
+            }
+        });
+
+        assert_eq!(tasks.load().unwrap().tasks.len(), writers);
     }
 }
