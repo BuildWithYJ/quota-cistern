@@ -238,35 +238,16 @@ mod tests {
 
     use super::*;
 
-    /// An agent that is not the vendor's, so that what this file does can be
-    /// checked without running one.
-    ///
-    /// It takes the arguments this file passes, ignores all of them but the
-    /// instruction, and runs that instruction as a shell command. A program
-    /// that refused the arguments would fail every one of these for the same
-    /// reason and prove nothing about any of them.
+    /// The agent that stands in for the vendor's. A shell program, kept as one
+    /// rather than as a string this file would have to escape.
+    const STANDING_IN: &str = include_str!("standing-agent.sh");
+
     fn standing_in(held: &TempDir) -> ClaudeAgent {
         let program = held.path().join("agent");
         let saw = held.path().join("prompt");
         fs::write(
             &program,
-            // The prompt leads with the goal and the instruction follows a
-            // blank line, so the last line is what a test asked for. Where the
-            // prompt is written is fixed here, since a test cannot see the
-            // arguments a child was given any other way.
-            format!(
-                "#!/bin/sh\n\
-                 while [ $# -gt 0 ]; do\n\
-                 \x20 if [ \"$1\" = -p ]; then\n\
-                 \x20   shift\n\
-                 \x20   printf '%s' \"$1\" > '{saw}'\n\
-                 \x20   exec /bin/sh -c \"$(printf '%s' \"$1\" | tail -n 1)\"\n\
-                 \x20 fi\n\
-                 \x20 shift\n\
-                 done\n\
-                 exit 0\n",
-                saw = saw.display()
-            ),
+            STANDING_IN.replace("{prompt}", &saw.display().to_string()),
         )
         .unwrap();
         fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
