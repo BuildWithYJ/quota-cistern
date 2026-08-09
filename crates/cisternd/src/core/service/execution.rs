@@ -617,9 +617,13 @@ mod tests {
     }
 
     fn a_second_task() -> StoredTask {
+        a_task_numbered("2")
+    }
+
+    fn a_task_numbered(id: &str) -> StoredTask {
         StoredTask {
-            id: "2".to_owned(),
-            title: "tidy up again".to_owned(),
+            id: id.to_owned(),
+            title: format!("tidy up, again ({id})"),
             ..a_pending_task()
         }
     }
@@ -692,6 +696,27 @@ mod tests {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .to_string(),
+                resets_at: "1786285800".to_owned(),
+            })
+        }
+    }
+
+    /// A vendor limit that moves every time it is read.
+    ///
+    /// A session declared as a share is measured against a figure that grows
+    /// while its tasks run, and nothing else here makes it grow.
+    struct Advancing {
+        used: Mutex<u64>,
+        step: u64,
+    }
+
+    impl Limit for Advancing {
+        fn read(&self) -> Result<Reading, Unavailable> {
+            let mut used = self.used.lock().unwrap_or_else(PoisonError::into_inner);
+            let now = *used;
+            *used += self.step;
+            Ok(Reading {
+                used: now.to_string(),
                 resets_at: "1786285800".to_owned(),
             })
         }
@@ -1189,6 +1214,64 @@ mod tests {
         assert_eq!(session.state, "stopped");
         assert_eq!(session.stopped_reason.as_deref(), Some("budget hardlock"));
         // The second task was never assigned, so it is still waiting.
+        assert_eq!(tasks.load().unwrap().tasks[1].state, "Pending");
+    }
+
+    /// A task moves the vendor's limit by less than a point, and for a while
+    /// that read as costing nothing at all. Several tasks have to start once
+    /// there is anything to divide by.
+    #[test]
+    fn a_share_starts_several_once_it_knows_what_a_task_costs() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![
+            a_pending_task(),
+            a_second_task(),
+            a_task_numbered("3"),
+            a_task_numbered("4"),
+            a_task_numbered("5"),
+        ]);
+        let areas = Areas::default();
+        let agent = Standing::finishing();
+        // Half a point every time it is asked, which is what a task cost when
+        // this was measured against the vendor.
+        let moving = Advancing {
+            used: Mutex::new(0),
+            step: 50,
+        };
+        let execution = ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &moving);
+
+        // The first decision has no task to go on, so one starts alone.
+        let started = execution.run(declaring("5%", "8h")).unwrap();
+        assert_eq!(started.assigned.len(), 1);
+
+        // The second knows what one task cost, and the rest of the budget
+        // holds far more than a handful.
+        let assigned = execution.carry_on("task:1").unwrap();
+        assert_eq!(assigned.len(), 4);
+    }
+
+    /// A share is spent against a figure the vendor keeps, so a session that
+    /// reaches it stops however few tokens its own tasks reported.
+    #[test]
+    fn a_share_that_reached_what_it_declared_stops() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+        let areas = Areas::default();
+        let agent = Standing::finishing();
+        // One point every time it is asked, against a budget of one point.
+        let moving = Advancing {
+            used: Mutex::new(0),
+            step: 100,
+        };
+        let execution = ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &moving);
+
+        execution.run(declaring("1%", "8h")).unwrap();
+        let assigned = execution.carry_on("task:1").unwrap();
+
+        assert!(assigned.is_empty());
+        let session = sessions.load().sessions[0].clone();
+        assert_eq!(session.state, "stopped");
+        assert_eq!(session.stopped_reason.as_deref(), Some("budget hardlock"));
         assert_eq!(tasks.load().unwrap().tasks[1].state, "Pending");
     }
 
