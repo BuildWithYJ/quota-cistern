@@ -91,8 +91,8 @@ mod tests {
 
         /// Nothing here calls this: the adapter answers `run` and the queue is
         /// what reaches this, which is the composition root's.
-        fn carry_on(&self, _task: &str) -> Result<(), Refusal> {
-            Ok(())
+        fn carry_on(&self, _task: &str) -> Result<Vec<String>, Refusal> {
+            Ok(Vec::new())
         }
     }
 

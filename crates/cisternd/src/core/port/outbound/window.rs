@@ -1,0 +1,27 @@
+//! How much of the vendor's limit has been spent, as the core asks for it.
+
+use super::Unavailable;
+
+/// What the vendor says about the limit a session runs against.
+///
+/// Both fields cross as the text a user would have typed, for the reason
+/// `outbound::backlog` gives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reading {
+    /// How much of the limit is spent, as a percentage.
+    pub used: String,
+    /// When the limit starts over, in seconds since the epoch.
+    pub resets_at: String,
+}
+
+/// What the vendor's limit is at.
+///
+/// This is not part of running a task. The figure belongs to the account
+/// rather than to a session, it costs something to ask for, and it is a
+/// reading rather than a total: asking twice gives two readings, not two
+/// amounts to add up. Everything a task consumed comes back with the task, on
+/// [`super::Agent`].
+pub trait Limit: Sync {
+    /// Asks the vendor where its limit stands.
+    fn read(&self) -> Result<Reading, Unavailable>;
+}

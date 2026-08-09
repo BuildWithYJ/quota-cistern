@@ -21,6 +21,11 @@ use core::{
 };
 use platform::work::Queue;
 
+/// How many tasks the daemon has hands for.
+///
+/// The core decides how many may run; this only has to be at least that many.
+const AT_ONCE: usize = 4;
+
 fn main() -> ExitCode {
     if let Err(e) = platform::signal::remove_on_signal() {
         return quit(e);
@@ -40,7 +45,15 @@ fn main() -> ExitCode {
     let Some(worktrees) = outbound::worktree::GitWorktrees::in_data_home() else {
         return quit("neither XDG_DATA_HOME nor HOME is set");
     };
+    let Some(limit) = outbound::limit::ClaudeLimit::in_data_home() else {
+        return quit("neither XDG_DATA_HOME nor HOME is set");
+    };
+    let limit = match limit {
+        Ok(limit) => limit,
+        Err(e) => return quit(e.reason),
+    };
     let roots = outbound::repository::GitRoots;
+    let clock = outbound::clock::SystemClock;
     let agent = match outbound::agent::ClaudeAgent::new() {
         Ok(agent) => agent,
         Err(e) => return quit(e.reason),
@@ -54,6 +67,8 @@ fn main() -> ExitCode {
         &configuration_store,
         &worktrees,
         &agent,
+        &clock,
+        &limit,
     );
 
     let server = match exchange::listen() {
@@ -71,14 +86,19 @@ fn main() -> ExitCode {
     };
 
     thread::scope(|threads| {
-        threads.spawn(|| {
-            loop {
-                let task = queued.take();
-                if let Err(e) = execution.execution.carry_on(&task) {
-                    eprintln!("cisternd: {task} could not be carried on: {e:?}");
+        // Section 2.2 runs tasks in parallel. How many run at once is the
+        // core's, decided from the budget; these are only the hands to run
+        // them with, and one waiting on the queue costs nothing.
+        for _ in 0..AT_ONCE {
+            threads.spawn(|| {
+                loop {
+                    let task = queued.take();
+                    if let Err(e) = execution.carry_on(&task) {
+                        eprintln!("cisternd: {task} could not be carried on: {e:?}");
+                    }
                 }
-            }
-        });
+            });
+        }
 
         // Each group owns the names its own commands arrive under, so this
         // offers the request to one and then the next. It grows by a line per
@@ -111,8 +131,12 @@ impl<U: ExecutionUseCase> ExecutionUseCase for Queueing<'_, U> {
         Ok(started)
     }
 
-    fn carry_on(&self, task: &str) -> Result<(), Refusal> {
-        self.execution.carry_on(task)
+    fn carry_on(&self, task: &str) -> Result<Vec<String>, Refusal> {
+        let assigned = self.execution.carry_on(task)?;
+        for task in &assigned {
+            self.queued.add(task.clone());
+        }
+        Ok(assigned)
     }
 }
 

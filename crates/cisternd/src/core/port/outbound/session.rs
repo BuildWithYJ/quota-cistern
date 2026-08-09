@@ -23,6 +23,17 @@ pub struct StoredSession {
     /// What `--time` was given, as it was written.
     pub time: String,
     pub model: Option<String>,
+    /// When it opened, in seconds since the epoch.
+    ///
+    /// A time limit is measured from here, so it survives a restart along with
+    /// everything else the session was declared with.
+    pub started_at: String,
+    /// How much of the vendor's limit was spent when it opened.
+    ///
+    /// A share declares what this session may add to that, so what it started
+    /// from has to be kept. Absent for a session declared in tokens, which is
+    /// measured against nothing outside itself.
+    pub limit_at_start: Option<String>,
 }
 
 /// Where the sessions are kept between runs.
