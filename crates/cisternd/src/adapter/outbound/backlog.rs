@@ -446,11 +446,11 @@ mod tests {
                 next_id: "2".to_owned(),
                 tasks: vec![StoredTask {
                     consumed: Some(StoredConsumption {
-                        input: "34".to_owned(),
-                        output: "755".to_owned(),
-                        cache_written: "10068".to_owned(),
-                        cache_read: "95826".to_owned(),
-                        cost: "41623".to_owned(),
+                        input: "77".to_owned(),
+                        output: "3377".to_owned(),
+                        cache_written: "28879".to_owned(),
+                        cache_read: "263483".to_owned(),
+                        cost: "92170".to_owned(),
                     }),
                     ..a_task()
                 }],
@@ -458,13 +458,13 @@ mod tests {
         );
 
         let written = fs::read_to_string(&path).unwrap();
-        assert!(written.contains("\"input\": 34"), "{written}");
-        assert!(written.contains("\"cost\": 41623"), "{written}");
+        assert!(written.contains("\"input\": 77"), "{written}");
+        assert!(written.contains("\"cost\": 92170"), "{written}");
 
         // A second reader over the same path is what a restarted core is.
         let restarted = FileBacklog::at(path);
         let held = restarted.load().unwrap().tasks[0].clone();
-        assert_eq!(held.consumed.unwrap().cache_read, "95826");
+        assert_eq!(held.consumed.unwrap().cache_read, "263483");
         assert_eq!(held.unreadable, None);
     }
 

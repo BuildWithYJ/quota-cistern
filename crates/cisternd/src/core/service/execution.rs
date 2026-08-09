@@ -510,11 +510,11 @@ mod tests {
     /// What an agent that answered with a count it could read reports.
     fn spending() -> Observed {
         Observed::Spent(Spent {
-            input: "34".to_owned(),
-            output: "755".to_owned(),
-            cache_written: "10068".to_owned(),
-            cache_read: "95826".to_owned(),
-            cost: "41623".to_owned(),
+            input: "77".to_owned(),
+            output: "3377".to_owned(),
+            cache_written: "28879".to_owned(),
+            cache_read: "263483".to_owned(),
+            cost: "92170".to_owned(),
         })
     }
 
@@ -762,11 +762,11 @@ mod tests {
         execution.carry_on("task:1").unwrap();
 
         let counted = tasks.first().consumed.unwrap();
-        assert_eq!(counted.input, "34");
-        assert_eq!(counted.output, "755");
-        assert_eq!(counted.cache_written, "10068");
-        assert_eq!(counted.cache_read, "95826");
-        assert_eq!(counted.cost, "41623");
+        assert_eq!(counted.input, "77");
+        assert_eq!(counted.output, "3377");
+        assert_eq!(counted.cache_written, "28879");
+        assert_eq!(counted.cache_read, "263483");
+        assert_eq!(counted.cost, "92170");
         assert_eq!(tasks.first().unreadable, None);
         assert_eq!(sessions.load().sessions[0].state, "running");
     }
@@ -838,10 +838,10 @@ mod tests {
             reason: None,
             observed: Observed::Spent(Spent {
                 input: "a lot".to_owned(),
-                output: "755".to_owned(),
-                cache_written: "10068".to_owned(),
-                cache_read: "95826".to_owned(),
-                cost: "41623".to_owned(),
+                output: "3377".to_owned(),
+                cache_written: "28879".to_owned(),
+                cache_read: "263483".to_owned(),
+                cost: "92170".to_owned(),
             }),
         });
         let execution = ExecutionService::new(&sessions, &tasks, &ON_A_PLAN, &areas, &agent);

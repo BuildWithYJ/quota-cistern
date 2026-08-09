@@ -103,12 +103,18 @@ fn fill(token: &str, filling: &[(&str, &str)]) -> String {
     written
 }
 
-/// What the agent counted, under the names it uses.
+/// What the agent counted for one model, under the names it uses.
+///
+/// This is the per-model breakdown rather than the run's own `usage`. A run
+/// makes calls that leave no message behind, and `usage` counts only the ones
+/// that do, while the price the same answer gives covers all of them. Reading
+/// the breakdown keeps the counts and the price describing one thing.
 ///
 /// No field is given a default. A vendor that renames one leaves this
 /// unreadable rather than answering that the run consumed nothing, which is
 /// what a budget would read as untouched.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Counted {
     input_tokens: u64,
     output_tokens: u64,
@@ -123,26 +129,46 @@ const MILLIONTHS: f64 = 1_000_000.0;
 ///
 /// The answer is read as a whole first, so that a figure this cannot read
 /// leaves the sentence about how the run ended where it was.
+///
+/// One run may reach for more than one model, so every model the answer names
+/// is added up. Which of the kinds count against a budget is the supervisor's,
+/// and they stay apart as far as the store.
 fn observed(answer: Option<&Value>) -> Observed {
     let Some(answer) = answer else {
         return unreadable("the agent answered with nothing this could read");
     };
 
-    let Some(counted) = answer.get("usage").cloned() else {
+    let Some(counted) = answer.get("modelUsage").and_then(Value::as_object) else {
         return unreadable("the agent's answer said nothing about what it consumed");
     };
-    let Ok(counted) = serde_json::from_value::<Counted>(counted) else {
-        return unreadable("what the agent counted is not in the shape this reads");
-    };
+    if counted.is_empty() {
+        return unreadable("the agent's answer named no model to have consumed anything");
+    }
+
+    let mut spent = [0u64; 4];
+    for (_model, held) in counted {
+        let Ok(held) = serde_json::from_value::<Counted>(held.clone()) else {
+            return unreadable("what the agent counted is not in the shape this reads");
+        };
+        for (total, one) in spent.iter_mut().zip([
+            held.input_tokens,
+            held.output_tokens,
+            held.cache_creation_input_tokens,
+            held.cache_read_input_tokens,
+        ]) {
+            *total = total.saturating_add(one);
+        }
+    }
+
     let Some(priced) = answer.get("total_cost_usd").and_then(Value::as_f64) else {
         return unreadable("the agent's answer put no figure on what it consumed");
     };
 
     Observed::Spent(Spent {
-        input: counted.input_tokens.to_string(),
-        output: counted.output_tokens.to_string(),
-        cache_written: counted.cache_creation_input_tokens.to_string(),
-        cache_read: counted.cache_read_input_tokens.to_string(),
+        input: spent[0].to_string(),
+        output: spent[1].to_string(),
+        cache_written: spent[2].to_string(),
+        cache_read: spent[3].to_string(),
         cost: ((priced * MILLIONTHS).round().max(0.0) as u64).to_string(),
     })
 }
@@ -234,6 +260,7 @@ fn why_for(subtype: &str) -> String {
 mod tests {
     use std::{fs, os::unix::fs::PermissionsExt};
 
+    use serde_json::json;
     use tempfile::TempDir;
 
     use super::*;
@@ -257,11 +284,22 @@ mod tests {
         standing
     }
 
-    /// An answer in the shape the vendor sends one, holding the fields this
-    /// file reads and several it does not. The ones it does not read are there
-    /// because a vendor adds fields, and adding one must not stop the count
-    /// being read.
+    /// An answer a vendor actually sent, kept as it arrived apart from a
+    /// shortened `result`. It holds the fields this file reads and a dozen it
+    /// does not, which is what makes a test say that a vendor adding one
+    /// changes nothing.
     const AN_ANSWER: &str = include_str!("claude-answer.json");
+
+    /// The answer with something about it changed.
+    ///
+    /// The object is edited rather than its text, so that a fixture kept as a
+    /// vendor sent it can be reshaped without a test knowing how it is laid
+    /// out.
+    fn answer_with(change: impl FnOnce(&mut Value)) -> String {
+        let mut answer: Value = serde_json::from_str(AN_ANSWER).unwrap();
+        change(&mut answer);
+        answer.to_string()
+    }
 
     /// A shell command that answers with `written` and nothing else.
     ///
@@ -309,14 +347,62 @@ mod tests {
         assert_eq!(
             ended.observed,
             Observed::Spent(Spent {
-                input: "34".to_owned(),
-                output: "755".to_owned(),
-                cache_written: "10068".to_owned(),
-                cache_read: "95826".to_owned(),
-                // 0.0416231 dollars, as millionths of one.
-                cost: "41623".to_owned(),
+                input: "77".to_owned(),
+                output: "3377".to_owned(),
+                cache_written: "28879".to_owned(),
+                cache_read: "263483".to_owned(),
+                // 0.0921703 dollars, as millionths of one.
+                cost: "92170".to_owned(),
             })
         );
+    }
+
+    /// The run's own `usage` counts only the calls that left a message behind,
+    /// and this answer shows the gap: 3182 against 3377. Reading it would put a
+    /// count beside a price that covers more than the count does.
+    #[test]
+    fn what_a_run_counted_is_more_than_the_calls_that_left_a_message() {
+        let held = TempDir::new().unwrap();
+        let ended = standing_in(&held)
+            .work(working(
+                &held.path().display().to_string(),
+                &answering(&held, AN_ANSWER),
+            ))
+            .unwrap();
+
+        let Observed::Spent(spent) = ended.observed else {
+            panic!("the answer holds a count");
+        };
+        assert_ne!(spent.output, "3182");
+    }
+
+    /// A run may reach for more than one model, and the four kinds are the sum
+    /// over all of them.
+    #[test]
+    fn a_run_that_reached_for_two_models_counts_both() {
+        let held = TempDir::new().unwrap();
+        let two = answer_with(|answer| {
+            answer["modelUsage"]["claude-opus-5"] = json!({
+                "inputTokens": 1,
+                "outputTokens": 2,
+                "cacheCreationInputTokens": 3,
+                "cacheReadInputTokens": 4,
+            });
+        });
+        let ended = standing_in(&held)
+            .work(working(
+                &held.path().display().to_string(),
+                &answering(&held, &two),
+            ))
+            .unwrap();
+
+        let Observed::Spent(spent) = ended.observed else {
+            panic!("the answer holds a count");
+        };
+        assert_eq!(spent.input, "78");
+        assert_eq!(spent.output, "3379");
+        assert_eq!(spent.cache_written, "28882");
+        assert_eq!(spent.cache_read, "263487");
     }
 
     /// A vendor that renames a field would otherwise report a run that spent a
@@ -326,11 +412,28 @@ mod tests {
         let held = TempDir::new().unwrap();
         // One of the four, so that what is caught is a name this does not
         // know rather than an answer that lost its whole count.
-        let renamed = AN_ANSWER.replace(r#""input_tokens": 34"#, r#""tokens_in": 34"#);
+        let renamed = answer_with(|answer| {
+            let counted = &mut answer["modelUsage"]["claude-haiku-4-5-20251001"];
+            counted["tokensIn"] = counted["inputTokens"].take();
+        });
         let ended = standing_in(&held)
             .work(working(
                 &held.path().display().to_string(),
                 &answering(&held, &renamed),
+            ))
+            .unwrap();
+
+        assert!(matches!(ended.observed, Observed::Unreadable { .. }));
+    }
+
+    #[test]
+    fn an_answer_naming_no_model_is_not_a_count_of_nothing() {
+        let held = TempDir::new().unwrap();
+        let none = answer_with(|answer| answer["modelUsage"] = json!({}));
+        let ended = standing_in(&held)
+            .work(working(
+                &held.path().display().to_string(),
+                &answering(&held, &none),
             ))
             .unwrap();
 
@@ -354,9 +457,10 @@ mod tests {
         let held = TempDir::new().unwrap();
         // A run cut off at a guard names what stopped it and answers with no
         // text of its own.
-        let cut_off = AN_ANSWER
-            .replace(r#""subtype": "success""#, r#""subtype": "error_max_turns""#)
-            .replace(r#""result": "done""#, r#""result": null"#);
+        let cut_off = answer_with(|answer| {
+            answer["subtype"] = json!("error_max_turns");
+            answer["result"] = Value::Null;
+        });
         let ended = standing_in(&held)
             .work(working(
                 &held.path().display().to_string(),
