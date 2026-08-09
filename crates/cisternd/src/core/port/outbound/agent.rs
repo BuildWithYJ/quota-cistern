@@ -41,8 +41,12 @@ pub enum Observed {
 ///
 /// Three outcomes rather than a pass and a fail, because section 1 of
 /// `docs/cli.md` treats one of the failures differently from the rest: a run
-/// stopped at its own ceiling leaves the session running, and one that failed
-/// on its own account says nothing about the session either way.
+/// stopped at its own ceiling leaves the session running, while one that
+/// failed says nothing about the session either way.
+///
+/// Why a run failed is not here. A run turned away because the vendor had
+/// reached a limit of its own fails the same way as one that went wrong, and
+/// telling those apart takes a question this cannot answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     /// It did the work.
@@ -51,11 +55,6 @@ pub enum Outcome {
     AtCeiling,
     /// It stopped without doing the work.
     Failed,
-    /// The vendor would not run it, having reached a limit of its own.
-    ///
-    /// Not the same as a task that failed. Nothing about the task was wrong
-    /// and running it again later is what it wants.
-    AtVendorLimit,
 }
 
 /// How an agent finished.

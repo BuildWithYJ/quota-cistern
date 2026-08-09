@@ -252,8 +252,7 @@ fn said(status: &std::process::ExitStatus, stderr: &[u8], answer: Option<&Value>
 /// How the run came to an end.
 ///
 /// The name the agent gives for stopping is what tells a ceiling from a
-/// failure, and a vendor limit from both. Which names mean what is this file's
-/// to know.
+/// failure. Which names mean what is this file's to know.
 fn outcome_of(finished: bool, answer: Option<&Value>) -> Outcome {
     if finished {
         return Outcome::Finished;
@@ -263,21 +262,8 @@ fn outcome_of(finished: bool, answer: Option<&Value>) -> Outcome {
         .and_then(Value::as_str)
     {
         Some(AT_TURNS | AT_SPEND) => Outcome::AtCeiling,
-        _ if refused(answer) => Outcome::AtVendorLimit,
         _ => Outcome::Failed,
     }
-}
-
-/// Whether the vendor turned the run away at a limit of its own.
-///
-/// It says so where it says how far that limit is from starting over, which
-/// it only sends when it has one and is holding the run against it.
-fn refused(answer: Option<&Value>) -> bool {
-    answer
-        .and_then(|answer| answer.get("rate_limit_info"))
-        .and_then(|held| held.get("status"))
-        .and_then(Value::as_str)
-        .is_some_and(|status| status != "allowed")
 }
 
 /// A sentence for how the agent says it stopped.

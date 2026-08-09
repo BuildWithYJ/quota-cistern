@@ -168,10 +168,14 @@ impl ExecutionUseCase for ExecutionService<'_> {
                         Some(AT_CEILING.to_owned()),
                         consumed,
                     ),
-                    // Nothing about the task was wrong, so it goes back to
-                    // waiting rather than ending, and the session stops.
-                    Outcome::AtVendorLimit => self.turned_away(id, consumed),
-                    Outcome::Failed => self.ended(id, TaskState::Error, ended.reason, consumed),
+                    // A run the vendor would not take fails the same way as
+                    // one that went wrong, and only the vendor's limit tells
+                    // them apart. It is asked here rather than on every task,
+                    // since asking costs a turn and a task rarely fails.
+                    Outcome::Failed => match self.at_its_limit() {
+                        true => self.turned_away(id, consumed),
+                        false => self.ended(id, TaskState::Error, ended.reason, consumed),
+                    },
                 }
             }
             Err(e) => self.ended(id, TaskState::Error, Some(e.reason), Observation::NotYet),
@@ -210,7 +214,19 @@ fn counted(spent: &Spent) -> Option<Consumption> {
 /// The reason section 1 gives a task stopped at the ceiling on one run.
 const AT_CEILING: &str = "task ceiling";
 
+/// The reading at which the vendor has nothing left to give.
+const FULL: u32 = 100;
+
 impl ExecutionService<'_> {
+    /// Whether the vendor has nothing left to give.
+    ///
+    /// A reading this cannot take is not a limit that has been reached. The
+    /// run failed either way, and calling it the vendor's doing on a question
+    /// nobody could answer would stop a session that had room left.
+    fn at_its_limit(&self) -> bool {
+        self.limit_now().is_ok_and(|used| used >= FULL)
+    }
+
     /// A task the vendor would not run, and the session it belonged to.
     ///
     /// The task goes back to waiting, since nothing about it was wrong and it
@@ -1082,12 +1098,15 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
         let areas = Areas::default();
         let agent = Standing::ending(Ended {
-            outcome: Outcome::AtVendorLimit,
-            reason: Some("the vendor is at its limit".to_owned()),
+            outcome: Outcome::Failed,
+            reason: Some("it stopped".to_owned()),
             observed: spending(),
         });
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let full = AtPercent {
+            used: Mutex::new(100),
+            refuse: false,
+        };
+        let execution = ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &full);
 
         execution.run(declaring("2M", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();
@@ -1100,6 +1119,56 @@ mod tests {
         let session = sessions.load().sessions[0].clone();
         assert_eq!(session.state, "stopped");
         assert_eq!(session.stopped_reason.as_deref(), Some("vendor limit"));
+    }
+
+    /// A run can fail on its own account, and the vendor having room left is
+    /// what says so.
+    #[test]
+    fn a_task_that_failed_with_room_left_is_an_error() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+        let areas = Areas::default();
+        let agent = Standing::ending(Ended {
+            outcome: Outcome::Failed,
+            reason: Some("it went wrong".to_owned()),
+            observed: spending(),
+        });
+        let room = AtPercent {
+            used: Mutex::new(40),
+            refuse: false,
+        };
+        let execution = ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &room);
+
+        execution.run(declaring("2M", "8h")).unwrap();
+        execution.carry_on("task:1").unwrap();
+
+        let held = tasks.first();
+        assert_eq!(held.state, "Error");
+        assert_eq!(held.reason.as_deref(), Some("it went wrong"));
+        assert_eq!(sessions.load().sessions[0].state, "running");
+    }
+
+    /// A reading nobody could take is not a limit that has been reached.
+    #[test]
+    fn a_task_that_failed_with_no_reading_to_be_had_is_an_error() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+        let areas = Areas::default();
+        let agent = Standing::ending(Ended {
+            outcome: Outcome::Failed,
+            reason: Some("it went wrong".to_owned()),
+            observed: spending(),
+        });
+        let silent = AtPercent {
+            used: Mutex::new(0),
+            refuse: true,
+        };
+        let execution = ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &silent);
+
+        execution.run(declaring("2M", "8h")).unwrap();
+        execution.carry_on("task:1").unwrap();
+
+        assert_eq!(tasks.first().state, "Error");
     }
 
     /// A session that has run as long as it declared stops, and whatever it
