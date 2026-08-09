@@ -12,22 +12,10 @@ pub enum Vendor {
     Claude,
 }
 
-/// The subscription a percentage of usage is measured against.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Plan {
-    Pro,
-    Max5x,
-    Max20x,
-    /// The basis comes from `usage-limit` rather than from a preset.
-    Custom,
-}
-
 /// A key, whether or not anything is stored under it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
     Vendor,
-    Plan,
-    UsageLimit,
 }
 
 /// A key together with a value that key takes.
@@ -37,8 +25,6 @@ pub enum Key {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Setting {
     Vendor(Vendor),
-    Plan(Plan),
-    UsageLimit(u64),
 }
 
 /// What is stored.
@@ -48,8 +34,6 @@ pub enum Setting {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Configuration {
     vendor: Option<Vendor>,
-    plan: Option<Plan>,
-    usage_limit: Option<u64>,
 }
 
 impl Key {
@@ -57,8 +41,6 @@ impl Key {
     pub fn parse(key: &str) -> Option<Self> {
         match key {
             "vendor" => Some(Key::Vendor),
-            "plan" => Some(Key::Plan),
-            "usage-limit" => Some(Key::UsageLimit),
             _ => None,
         }
     }
@@ -68,8 +50,6 @@ impl Display for Key {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Key::Vendor => "vendor",
-            Key::Plan => "plan",
-            Key::UsageLimit => "usage-limit",
         })
     }
 }
@@ -80,17 +60,6 @@ impl Display for Vendor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Vendor::Claude => "claude",
-        })
-    }
-}
-
-impl Display for Plan {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Plan::Pro => "pro",
-            Plan::Max5x => "max-5x",
-            Plan::Max20x => "max-20x",
-            Plan::Custom => "custom",
         })
     }
 }
@@ -106,19 +75,6 @@ impl Setting {
                 "claude" => Some(Setting::Vendor(Vendor::Claude)),
                 _ => None,
             },
-            Key::Plan => match value {
-                "pro" => Some(Setting::Plan(Plan::Pro)),
-                "max-5x" => Some(Setting::Plan(Plan::Max5x)),
-                "max-20x" => Some(Setting::Plan(Plan::Max20x)),
-                "custom" => Some(Setting::Plan(Plan::Custom)),
-                _ => None,
-            },
-            // A limit of zero makes every percentage zero, which is not a
-            // limit anyone can have meant.
-            Key::UsageLimit => match value.parse::<u64>() {
-                Ok(0) | Err(_) => None,
-                Ok(limit) => Some(Setting::UsageLimit(limit)),
-            },
         }
     }
 }
@@ -128,8 +84,6 @@ impl Configuration {
     pub fn apply(&mut self, setting: Setting) {
         match setting {
             Setting::Vendor(vendor) => self.vendor = Some(vendor),
-            Setting::Plan(plan) => self.plan = Some(plan),
-            Setting::UsageLimit(limit) => self.usage_limit = Some(limit),
         }
     }
 
@@ -137,14 +91,12 @@ impl Configuration {
     pub fn value_of(&self, key: Key) -> Option<String> {
         match key {
             Key::Vendor => self.vendor.map(|v| v.to_string()),
-            Key::Plan => self.plan.map(|p| p.to_string()),
-            Key::UsageLimit => self.usage_limit.map(|n| n.to_string()),
         }
     }
 
     /// Every key that holds something, in the order `docs/cli.md` lists them.
     pub fn entries(&self) -> Vec<(Key, String)> {
-        [Key::Vendor, Key::Plan, Key::UsageLimit]
+        [Key::Vendor]
             .into_iter()
             .filter_map(|key| self.value_of(key).map(|value| (key, value)))
             .collect()
@@ -165,34 +117,16 @@ mod tests {
     }
 
     #[test]
-    fn every_plan_the_specification_lists_parses() {
-        for plan in ["pro", "max-5x", "max-20x", "custom"] {
-            assert!(setting("plan", plan).is_some(), "{plan}");
-        }
-    }
-
-    #[test]
     fn a_vendor_we_do_not_run_is_refused() {
         assert_eq!(setting("vendor", "codex"), None);
     }
 
     #[test]
-    fn a_usage_limit_is_a_number_above_zero() {
-        assert_eq!(
-            setting("usage-limit", "2000000"),
-            Some(Setting::UsageLimit(2_000_000))
-        );
-        assert_eq!(setting("usage-limit", "0"), None);
-        assert_eq!(setting("usage-limit", "-1"), None);
-        assert_eq!(setting("usage-limit", "2M"), None);
-    }
-
-    #[test]
     fn setting_a_key_twice_keeps_the_second_value() {
         let mut config = Configuration::default();
-        config.apply(Setting::Plan(Plan::Pro));
-        config.apply(Setting::Plan(Plan::Max20x));
-        assert_eq!(config.value_of(Key::Plan), Some("max-20x".to_owned()));
+        config.apply(Setting::Vendor(Vendor::Claude));
+        config.apply(Setting::Vendor(Vendor::Claude));
+        assert_eq!(config.value_of(Key::Vendor), Some("claude".to_owned()));
     }
 
     #[test]

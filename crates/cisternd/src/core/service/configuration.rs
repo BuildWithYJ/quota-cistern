@@ -77,11 +77,7 @@ impl ConfigurationUseCase for ConfigurationService<'_> {
 /// text they were kept as, so reading them is this layer's work.
 fn read(settings: &dyn ConfigurationStore) -> Result<Configuration, Refusal> {
     let stored = settings.load()?;
-    let held = [
-        (Key::Vendor, stored.vendor),
-        (Key::Plan, stored.plan),
-        (Key::UsageLimit, stored.usage_limit),
-    ];
+    let held = [(Key::Vendor, stored.vendor)];
 
     let mut configuration = Configuration::default();
     for (key, value) in held {
@@ -101,8 +97,6 @@ fn read(settings: &dyn ConfigurationStore) -> Result<Configuration, Refusal> {
 fn written(configuration: &Configuration) -> StoredConfiguration {
     StoredConfiguration {
         vendor: configuration.value_of(Key::Vendor),
-        plan: configuration.value_of(Key::Plan),
-        usage_limit: configuration.value_of(Key::UsageLimit),
     }
 }
 
@@ -164,22 +158,6 @@ mod tests {
     }
 
     #[test]
-    fn setting_one_key_leaves_the_others_alone() {
-        let settings = Remembered::default();
-        over(&settings).set("vendor", "claude").unwrap();
-        over(&settings).set("plan", "max-20x").unwrap();
-        assert_eq!(
-            over(&settings).get(None),
-            Ok(View::All {
-                entries: vec![
-                    ("vendor".to_owned(), "claude".to_owned()),
-                    ("plan".to_owned(), "max-20x".to_owned()),
-                ]
-            })
-        );
-    }
-
-    #[test]
     fn an_unknown_key_is_refused_by_name() {
         let settings = Remembered::default();
         assert_eq!(
@@ -194,10 +172,10 @@ mod tests {
     fn a_value_the_key_does_not_take_is_refused_with_both() {
         let settings = Remembered::default();
         assert_eq!(
-            over(&settings).set("plan", "max-40x"),
+            over(&settings).set("vendor", "codex"),
             Err(Refusal::BadValue {
-                key: "plan".to_owned(),
-                value: "max-40x".to_owned()
+                key: "vendor".to_owned(),
+                value: "codex".to_owned()
             })
         );
     }
@@ -205,7 +183,7 @@ mod tests {
     #[test]
     fn a_refused_value_stores_nothing() {
         let settings = Remembered::default();
-        over(&settings).set("plan", "max-40x").ok();
+        over(&settings).set("vendor", "codex").ok();
         assert_eq!(over(&settings).get(None), Ok(View::All { entries: vec![] }));
     }
 
@@ -213,9 +191,9 @@ mod tests {
     fn reading_a_key_nobody_set_is_not_a_refusal() {
         let settings = Remembered::default();
         assert_eq!(
-            over(&settings).get(Some("plan")),
+            over(&settings).get(Some("vendor")),
             Ok(View::One {
-                key: "plan".to_owned(),
+                key: "vendor".to_owned(),
                 value: None
             })
         );
@@ -237,8 +215,6 @@ mod tests {
     fn what_goes_to_a_store_comes_back_the_same() {
         let settings = Remembered::default();
         over(&settings).set("vendor", "claude").unwrap();
-        over(&settings).set("plan", "max-20x").unwrap();
-        over(&settings).set("usage-limit", "2000000").unwrap();
 
         // A second reader over the same store is what a restarted core is.
         let restarted = Remembered::holding(settings.stored.lock().unwrap().clone());
@@ -250,13 +226,12 @@ mod tests {
     #[test]
     fn a_stored_value_of_another_type_is_refused_the_same_way() {
         let settings = Remembered::holding(StoredConfiguration {
-            usage_limit: Some("-1".to_owned()),
-            ..Default::default()
+            vendor: Some("-1".to_owned()),
         });
         assert_eq!(
             over(&settings).get(None),
             Err(Refusal::BadValue {
-                key: "usage-limit".to_owned(),
+                key: "vendor".to_owned(),
                 value: "-1".to_owned()
             })
         );
@@ -265,14 +240,13 @@ mod tests {
     #[test]
     fn a_value_edited_into_the_store_by_hand_is_refused_too() {
         let settings = Remembered::holding(StoredConfiguration {
-            plan: Some("max-40x".to_owned()),
-            ..Default::default()
+            vendor: Some("codex".to_owned()),
         });
         assert_eq!(
             over(&settings).get(None),
             Err(Refusal::BadValue {
-                key: "plan".to_owned(),
-                value: "max-40x".to_owned()
+                key: "vendor".to_owned(),
+                value: "codex".to_owned()
             })
         );
     }

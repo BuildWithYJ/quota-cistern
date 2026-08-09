@@ -2,15 +2,15 @@
 
 use crate::core::{
     domain::{
-        Budget, Consumption, Held, Key, NotASessionSet, NotOpened, Observation, Opening, Session,
-        SessionId, SessionState, Sessions, Setting, Span, Spending, StoppedReason, Task, TaskId,
-        TaskState, Usage, each_of, room_for,
+        Budget, Consumption, Held, NotASessionSet, NotOpened, Observation, Opening, Session,
+        SessionId, SessionState, Sessions, Span, Spending, StoppedReason, Task, TaskId, TaskState,
+        Usage, each_of, room_for,
     },
     port::{
         inbound::{Declaration, Declared, ExecutionUseCase, Refusal, Started},
         outbound::{
-            Agent, BacklogStore, Clock, ConfigurationStore, Cut, Limit, Observed, Outcome,
-            SessionStore, Spent, StoredSession, StoredSessions, Work, Worktrees,
+            Agent, BacklogStore, Clock, Cut, Limit, Observed, Outcome, SessionStore, Spent,
+            StoredSession, StoredSessions, Work, Worktrees,
         },
     },
 };
@@ -18,13 +18,9 @@ use crate::core::{
 use super::backlog;
 
 /// The commands over sessions, and what they need from outside.
-///
-/// The configuration is here because a share of a plan cannot be declared
-/// without one, which is the only thing this reads it for.
 pub struct ExecutionService<'a> {
     sessions: &'a dyn SessionStore,
     tasks: &'a dyn BacklogStore,
-    configuration: &'a dyn ConfigurationStore,
     worktrees: &'a dyn Worktrees,
     agent: &'a dyn Agent,
     clock: &'a dyn Clock,
@@ -35,7 +31,6 @@ impl<'a> ExecutionService<'a> {
     pub fn new(
         sessions: &'a dyn SessionStore,
         tasks: &'a dyn BacklogStore,
-        configuration: &'a dyn ConfigurationStore,
         worktrees: &'a dyn Worktrees,
         agent: &'a dyn Agent,
         clock: &'a dyn Clock,
@@ -44,7 +39,6 @@ impl<'a> ExecutionService<'a> {
         ExecutionService {
             sessions,
             tasks,
-            configuration,
             worktrees,
             agent,
             clock,
@@ -63,22 +57,6 @@ impl<'a> ExecutionService<'a> {
             .parse()
             .map_err(|_| unreadable("used", &reading.used))
     }
-
-    /// Whether a plan is configured, which is what a share is measured against.
-    ///
-    /// A plan that is there and cannot be read is a store this core cannot use,
-    /// the same as any other value a file holds wrongly.
-    fn plan_is_configured(&self) -> Result<bool, Refusal> {
-        let Some(plan) = self.configuration.load()?.plan else {
-            return Ok(false);
-        };
-        match Setting::parse(Key::Plan, &plan) {
-            Some(_) => Ok(true),
-            None => Err(Refusal::Unavailable {
-                reason: format!("the configuration holds {plan} where plan belongs"),
-            }),
-        }
-    }
 }
 
 impl ExecutionUseCase for ExecutionService<'_> {
@@ -91,12 +69,6 @@ impl ExecutionUseCase for ExecutionService<'_> {
             key: "time".to_owned(),
             value: declared.time.to_owned(),
         })?;
-
-        // Asked before the sessions are read, since a share with no plan is
-        // refused whatever else is running.
-        if matches!(usage, Usage::Share(_)) && !self.plan_is_configured()? {
-            return Err(Refusal::NoPlanConfigured);
-        }
 
         // Asked before a session is opened, so that a run with nothing to do
         // does not leave one behind that has to be stopped again.
@@ -548,9 +520,7 @@ mod tests {
 
     use crate::core::{
         domain::SessionId,
-        port::outbound::{
-            Ended, Reading, StoredBacklog, StoredConfiguration, StoredTask, Unavailable,
-        },
+        port::outbound::{Ended, Reading, StoredBacklog, StoredTask, Unavailable},
     };
 
     use super::*;
@@ -659,30 +629,6 @@ mod tests {
             unreadable: None,
         }
     }
-
-    /// A configuration held in memory.
-    struct Configured {
-        plan: Option<&'static str>,
-    }
-
-    impl ConfigurationStore for Configured {
-        fn load(&self) -> Result<StoredConfiguration, Unavailable> {
-            Ok(StoredConfiguration {
-                vendor: None,
-                plan: self.plan.map(str::to_owned),
-                usage_limit: None,
-            })
-        }
-
-        fn store(&self, _stored: &StoredConfiguration) -> Result<(), Unavailable> {
-            Ok(())
-        }
-    }
-
-    static ON_A_PLAN: Configured = Configured {
-        plan: Some("max-20x"),
-    };
-    static ON_NO_PLAN: Configured = Configured { plan: None };
 
     /// Work areas that are only remembered, so no repository is needed.
     #[derive(Default)]
@@ -803,9 +749,8 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution = ExecutionService::new(
-            &sessions, &tasks, &ON_A_PLAN, &areas, &agent, &STILL, &UNTOUCHED,
-        );
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
 
         let started = execution.run(declaring("50%", "8h")).unwrap();
         assert_eq!(started.session, "session:1");
@@ -821,9 +766,8 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution = ExecutionService::new(
-            &sessions, &tasks, &ON_A_PLAN, &areas, &agent, &STILL, &UNTOUCHED,
-        );
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
         execution.run(declaring("2M", "30m")).unwrap();
 
         let held = sessions.load();
@@ -841,9 +785,8 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution = ExecutionService::new(
-            &sessions, &tasks, &ON_A_PLAN, &areas, &agent, &STILL, &UNTOUCHED,
-        );
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
         execution.run(declaring("50%", "8h")).unwrap();
 
         let held = tasks.first();
@@ -857,9 +800,8 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task(), a_second_pending_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution = ExecutionService::new(
-            &sessions, &tasks, &ON_A_PLAN, &areas, &agent, &STILL, &UNTOUCHED,
-        );
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
         execution.run(declaring("50%", "8h")).unwrap();
 
         assert_eq!(
@@ -884,9 +826,8 @@ mod tests {
         let tasks = Tasks::holding(Vec::new());
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution = ExecutionService::new(
-            &sessions, &tasks, &ON_A_PLAN, &areas, &agent, &STILL, &UNTOUCHED,
-        );
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
 
         assert_eq!(
             execution.run(declaring("50%", "8h")),
@@ -896,56 +837,13 @@ mod tests {
     }
 
     #[test]
-    fn a_share_of_a_plan_nobody_configured_is_refused() {
-        let sessions = Remembered::empty();
-        let tasks = Tasks::holding(vec![a_pending_task()]);
-        let areas = Areas::default();
-        let agent = Standing::finishing();
-        let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &ON_NO_PLAN,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-        );
-
-        assert_eq!(
-            execution.run(declaring("50%", "8h")),
-            Err(Refusal::NoPlanConfigured)
-        );
-    }
-
-    /// An absolute count is measured against nothing, so it needs no plan.
-    #[test]
-    fn a_count_of_tokens_does_not_need_a_plan() {
-        let sessions = Remembered::empty();
-        let tasks = Tasks::holding(vec![a_pending_task()]);
-        let areas = Areas::default();
-        let agent = Standing::finishing();
-        let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &ON_NO_PLAN,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-        );
-
-        assert!(execution.run(declaring("2M", "8h")).is_ok());
-    }
-
-    #[test]
     fn a_declaration_that_cannot_be_read_is_refused_as_a_bad_argument() {
         let sessions = Remembered::empty();
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution = ExecutionService::new(
-            &sessions, &tasks, &ON_A_PLAN, &areas, &agent, &STILL, &UNTOUCHED,
-        );
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
 
         assert_eq!(
             execution.run(declaring("50%", "8x")),
@@ -981,9 +879,8 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution = ExecutionService::new(
-            &sessions, &tasks, &ON_A_PLAN, &areas, &agent, &STILL, &UNTOUCHED,
-        );
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
 
         let refused = execution.run(declaring("50%", "8h")).unwrap_err();
         assert!(matches!(refused, Refusal::Unavailable { reason } if reason.contains("sprinting")));
@@ -995,9 +892,8 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution = ExecutionService::new(
-            &sessions, &tasks, &ON_A_PLAN, &areas, &agent, &STILL, &UNTOUCHED,
-        );
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
 
         execution.run(declaring("50%", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();
@@ -1027,9 +923,8 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution = ExecutionService::new(
-            &sessions, &tasks, &ON_A_PLAN, &areas, &agent, &STILL, &UNTOUCHED,
-        );
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
 
         execution.run(declaring("50%", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();
@@ -1060,9 +955,8 @@ mod tests {
             ..Areas::default()
         };
         let agent = Standing::finishing();
-        let execution = ExecutionService::new(
-            &sessions, &tasks, &ON_A_PLAN, &areas, &agent, &STILL, &UNTOUCHED,
-        );
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
 
         execution.run(declaring("50%", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();
@@ -1087,9 +981,8 @@ mod tests {
                 why: "the answer said nothing about it".to_owned(),
             },
         });
-        let execution = ExecutionService::new(
-            &sessions, &tasks, &ON_A_PLAN, &areas, &agent, &STILL, &UNTOUCHED,
-        );
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
 
         execution.run(declaring("50%", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();
@@ -1126,9 +1019,8 @@ mod tests {
                 cost: "92170".to_owned(),
             }),
         });
-        let execution = ExecutionService::new(
-            &sessions, &tasks, &ON_A_PLAN, &areas, &agent, &STILL, &UNTOUCHED,
-        );
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
 
         execution.run(declaring("50%", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();
@@ -1147,9 +1039,8 @@ mod tests {
             reason: Some("it went wrong".to_owned()),
             observed: spending(),
         });
-        let execution = ExecutionService::new(
-            &sessions, &tasks, &ON_A_PLAN, &areas, &agent, &STILL, &UNTOUCHED,
-        );
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
 
         execution.run(declaring("50%", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();
@@ -1171,9 +1062,8 @@ mod tests {
             reason: Some("the agent was cut off after 200 turns".to_owned()),
             observed: spending(),
         });
-        let execution = ExecutionService::new(
-            &sessions, &tasks, &ON_A_PLAN, &areas, &agent, &STILL, &UNTOUCHED,
-        );
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
 
         execution.run(declaring("2M", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();
@@ -1196,9 +1086,8 @@ mod tests {
             reason: Some("the vendor is at its limit".to_owned()),
             observed: spending(),
         });
-        let execution = ExecutionService::new(
-            &sessions, &tasks, &ON_A_PLAN, &areas, &agent, &STILL, &UNTOUCHED,
-        );
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
 
         execution.run(declaring("2M", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();
@@ -1222,14 +1111,10 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let late = Frozen(1_000 + 8 * 3_600);
-        let opened = ExecutionService::new(
-            &sessions, &tasks, &ON_A_PLAN, &areas, &agent, &STILL, &UNTOUCHED,
-        );
+        let opened = ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
         opened.run(declaring("2M", "8h")).unwrap();
 
-        let execution = ExecutionService::new(
-            &sessions, &tasks, &ON_A_PLAN, &areas, &agent, &late, &UNTOUCHED,
-        );
+        let execution = ExecutionService::new(&sessions, &tasks, &areas, &agent, &late, &UNTOUCHED);
         let assigned = execution.carry_on("task:1").unwrap();
 
         assert!(assigned.is_empty());
@@ -1247,9 +1132,8 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task(), a_second_pending_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution = ExecutionService::new(
-            &sessions, &tasks, &ON_A_PLAN, &areas, &agent, &STILL, &UNTOUCHED,
-        );
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
 
         // The supervisor is what assigns more than one; until it exists a test
         // stands in for it by assigning the second task itself.
@@ -1282,9 +1166,8 @@ mod tests {
             ..Areas::default()
         };
         let agent = Standing::finishing();
-        let execution = ExecutionService::new(
-            &sessions, &tasks, &ON_A_PLAN, &areas, &agent, &STILL, &UNTOUCHED,
-        );
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
 
         execution.run(declaring("50%", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();

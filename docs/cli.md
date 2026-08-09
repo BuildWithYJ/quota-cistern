@@ -281,7 +281,7 @@ cistern run --usage <N> --time <T> [--model <M>] [--follow] [-o <fmt>]
 
 | Name | Required | Form | Example | Description |
 | --- | --- | --- | --- | --- |
-| `--usage <N>` | yes | percentage or token count | `50%` · `2M` | With `%`, a share of the configured plan; without it, an absolute token count |
+| `--usage <N>` | yes | percentage or token count | `50%` · `2M` | With `%`, a share of the vendor's five-hour limit; without it, a token count |
 | `--time <T>` | yes | duration | `8h` · `2h30m` | Time limit |
 | `--model <M>` | no | model name | `opus` · `sonnet` | Default for tasks that name no model. Falls back to the vendor default |
 | `--follow` | no | flag | — | Streams progress instead of returning. Ctrl-C ends the stream only; the loop keeps running |
@@ -290,9 +290,11 @@ On start the core assigns some of the backlog and runs those tasks in parallel. 
 
 Tasks within a session run in parallel, but only one session runs at a time. A second `run` while a session is running is refused.
 
-`%` is converted against the configured plan's usage and ranges from 1 to 100. If no plan is configured the command exits with code 4. An absolute token count must be an integer and accepts the suffixes `K` (=1,000) and `M` (=1,000,000).
+`%` is a share of the vendor's five-hour limit, a whole number from 1 to 100; a token count is a whole number and takes the suffixes `K` (=1,000) and `M` (=1,000,000).
 
-The session stops automatically at whichever runs out first, usage or time. Consumption is reported in the unit that was declared: `%` for a percentage declaration, tokens for an absolute one.
+What is reported as consumed is approximate.
+
+The session stops automatically at whichever runs out first, usage or time. Consumption is reported in the unit that was declared: `%` for a percentage declaration, tokens for a token one.
 
 **Output**
 
@@ -312,7 +314,7 @@ With `--follow`, progress events are streamed to stderr. Tasks run in parallel, 
 | 0 | Started |
 | 1 | No task available to assign |
 | 2 | Malformed argument (for example `--time 8x`) |
-| 4 | Another session is running, or `%` was used with no plan configured |
+| 4 | Another session is running |
 | 5 | Core error |
 
 **Example**
@@ -668,7 +670,7 @@ task:6 discarded
 
 #### `cistern config`
 
-Sets the vendor and the plan. The plan is what `--usage %` is measured against.
+Sets the vendor.
 
 ```
 cistern config set <key> <value>
@@ -680,10 +682,8 @@ cistern config get [<key>]
 | Key | Value | Description |
 | --- | --- | --- |
 | `vendor` | `claude` | The agent to run. 0.1.0 supports `claude` only |
-| `plan` | `pro` · `max-5x` · `max-20x` · `custom` | Subscription plan, the basis for `--usage %` |
-| `usage-limit` | token count | Absolute tokens that make up 100% when `plan` is `custom` |
 
-Configuration is stored at `$XDG_CONFIG_HOME/cistern/config.toml`, or `~/.config/cistern/config.toml` when that variable is unset. The token counts behind the plan presets are approximate, so if an exact basis is needed, set `plan` to `custom` and give `usage-limit` directly.
+Configuration is stored at `$XDG_CONFIG_HOME/cistern/config.toml`, or `~/.config/cistern/config.toml` when that variable is unset.
 
 **Output**
 
@@ -700,10 +700,9 @@ Configuration is stored at `$XDG_CONFIG_HOME/cistern/config.toml`, or `~/.config
 **Example**
 
 ```console
-$ cistern config set plan max-20x
-plan = max-20x
+$ cistern config set vendor claude
+vendor = claude
 
 $ cistern config get
 vendor: claude
-plan:   max-20x
 ```

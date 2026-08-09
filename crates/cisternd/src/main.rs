@@ -64,7 +64,6 @@ fn main() -> ExitCode {
     let execution = ExecutionService::new(
         &session_store,
         &backlog_store,
-        &configuration_store,
         &worktrees,
         &agent,
         &clock,

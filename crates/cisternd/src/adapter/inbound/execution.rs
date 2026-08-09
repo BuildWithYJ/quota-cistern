@@ -198,18 +198,4 @@ mod tests {
 
         assert_eq!(refused.code, STATE_CONFLICT);
     }
-
-    #[test]
-    fn a_share_with_no_plan_is_the_code_section_2_2_gives_it() {
-        let execution = Answering::with(Err(Refusal::NoPlanConfigured));
-        let refused = failure(
-            respond(
-                &execution,
-                asked("run", serde_json::json!({"usage": "50%", "time": "8h"})),
-            )
-            .unwrap(),
-        );
-
-        assert_eq!(refused.code, STATE_CONFLICT);
-    }
 }
