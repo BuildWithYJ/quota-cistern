@@ -16,7 +16,7 @@ mod session;
 mod window;
 mod worktree;
 
-pub use agent::{Agent, Ended, Observed, Spent, Work};
+pub use agent::{Agent, Ended, Observed, Outcome, Spent, Work};
 pub use backlog::{BacklogStore, StoredBacklog, StoredConsumption, StoredTask};
 pub use clock::Clock;
 pub use configuration::{ConfigurationStore, StoredConfiguration};

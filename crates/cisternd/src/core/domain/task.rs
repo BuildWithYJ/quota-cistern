@@ -423,6 +423,20 @@ impl Backlog {
         Observation::Spent(Consumption::total(counted))
     }
 
+    /// Puts a task back where it was before it was assigned.
+    ///
+    /// For a task nobody would run. It keeps its number and whatever it was
+    /// registered with, and waits for a session that can start it.
+    pub fn wait_again(&mut self, id: TaskId) {
+        for task in &mut self.tasks {
+            if task.id == id {
+                task.state = TaskState::Pending;
+                task.session = None;
+                task.reason = None;
+            }
+        }
+    }
+
     /// How many of a session's tasks are still running.
     pub fn running_in(&self, session: SessionId) -> usize {
         self.tasks

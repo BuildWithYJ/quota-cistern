@@ -9,8 +9,8 @@ use crate::core::{
     port::{
         inbound::{Declaration, Declared, ExecutionUseCase, Refusal, Started},
         outbound::{
-            Agent, BacklogStore, Clock, ConfigurationStore, Cut, Limit, Observed, SessionStore,
-            Spent, StoredSession, StoredSessions, Work, Worktrees,
+            Agent, BacklogStore, Clock, ConfigurationStore, Cut, Limit, Observed, Outcome,
+            SessionStore, Spent, StoredSession, StoredSessions, Work, Worktrees,
         },
     },
 };
@@ -186,9 +186,20 @@ impl ExecutionUseCase for ExecutionService<'_> {
         match ended {
             Ok(ended) => {
                 let consumed = observed(ended.observed);
-                match ended.done {
-                    true => self.ended(id, TaskState::Completed, None, consumed),
-                    false => self.ended(id, TaskState::Error, ended.reason, consumed),
+                match ended.outcome {
+                    Outcome::Finished => self.ended(id, TaskState::Completed, None, consumed),
+                    // Section 1 gives a run stopped at its ceiling a reason of
+                    // its own, and says the session carries on.
+                    Outcome::AtCeiling => self.ended(
+                        id,
+                        TaskState::Interrupted,
+                        Some(AT_CEILING.to_owned()),
+                        consumed,
+                    ),
+                    // Nothing about the task was wrong, so it goes back to
+                    // waiting rather than ending, and the session stops.
+                    Outcome::AtVendorLimit => self.turned_away(id, consumed),
+                    Outcome::Failed => self.ended(id, TaskState::Error, ended.reason, consumed),
                 }
             }
             Err(e) => self.ended(id, TaskState::Error, Some(e.reason), Observation::NotYet),
@@ -224,7 +235,29 @@ fn counted(spent: &Spent) -> Option<Consumption> {
     })
 }
 
+/// The reason section 1 gives a task stopped at the ceiling on one run.
+const AT_CEILING: &str = "task ceiling";
+
 impl ExecutionService<'_> {
+    /// A task the vendor would not run, and the session it belonged to.
+    ///
+    /// The task goes back to waiting, since nothing about it was wrong and it
+    /// is the vendor that has to change its mind. The session stops, because
+    /// every other task in it would be turned away the same way.
+    fn turned_away(&self, id: TaskId, consumed: Observation) -> Result<Vec<String>, Refusal> {
+        let session = backlog::change(self.tasks, |tasks| {
+            tasks.record(id, consumed.clone());
+            let session = tasks.find(id).and_then(Task::session);
+            tasks.wait_again(id);
+            Ok(session)
+        })?;
+
+        if let Some(session) = session {
+            self.stop(session, StoppedReason::VendorLimit)?;
+        }
+        Ok(Vec::new())
+    }
+
     /// Moves a task to the state it ended in, records what it consumed, and
     /// decides what happens next.
     ///
@@ -601,6 +634,14 @@ mod tests {
         }
     }
 
+    fn a_second_task() -> StoredTask {
+        StoredTask {
+            id: "2".to_owned(),
+            title: "tidy up again".to_owned(),
+            ..a_pending_task()
+        }
+    }
+
     fn a_pending_task() -> StoredTask {
         StoredTask {
             id: "1".to_owned(),
@@ -730,7 +771,7 @@ mod tests {
 
         fn finishing() -> Self {
             Standing::ending(Ended {
-                done: true,
+                outcome: Outcome::Finished,
                 reason: None,
                 observed: spending(),
             })
@@ -1040,7 +1081,7 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Standing::ending(Ended {
-            done: true,
+            outcome: Outcome::Finished,
             reason: None,
             observed: Observed::Unreadable {
                 why: "the answer said nothing about it".to_owned(),
@@ -1075,7 +1116,7 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Standing::ending(Ended {
-            done: true,
+            outcome: Outcome::Finished,
             reason: None,
             observed: Observed::Spent(Spent {
                 input: "a lot".to_owned(),
@@ -1102,7 +1143,7 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Standing::ending(Ended {
-            done: false,
+            outcome: Outcome::Failed,
             reason: Some("it went wrong".to_owned()),
             observed: spending(),
         });
@@ -1116,6 +1157,85 @@ mod tests {
         let held = tasks.first();
         assert_eq!(held.state, "Error");
         assert_eq!(held.reason.as_deref(), Some("it went wrong"));
+    }
+
+    /// Section 1 says the session carries on when one task hits the ceiling
+    /// on a single run.
+    #[test]
+    fn a_task_stopped_at_its_ceiling_says_so_and_the_session_carries_on() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+        let areas = Areas::default();
+        let agent = Standing::ending(Ended {
+            outcome: Outcome::AtCeiling,
+            reason: Some("the agent was cut off after 200 turns".to_owned()),
+            observed: spending(),
+        });
+        let execution = ExecutionService::new(
+            &sessions, &tasks, &ON_A_PLAN, &areas, &agent, &STILL, &UNTOUCHED,
+        );
+
+        execution.run(declaring("2M", "8h")).unwrap();
+        execution.carry_on("task:1").unwrap();
+
+        let held = tasks.first();
+        assert_eq!(held.state, "Interrupted");
+        assert_eq!(held.reason.as_deref(), Some("task ceiling"));
+        assert_eq!(sessions.load().sessions[0].state, "running");
+    }
+
+    /// A vendor that will not run one task will not run the next either, and
+    /// nothing about the task was wrong.
+    #[test]
+    fn a_task_the_vendor_would_not_run_waits_again_and_the_session_stops() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+        let areas = Areas::default();
+        let agent = Standing::ending(Ended {
+            outcome: Outcome::AtVendorLimit,
+            reason: Some("the vendor is at its limit".to_owned()),
+            observed: spending(),
+        });
+        let execution = ExecutionService::new(
+            &sessions, &tasks, &ON_A_PLAN, &areas, &agent, &STILL, &UNTOUCHED,
+        );
+
+        execution.run(declaring("2M", "8h")).unwrap();
+        execution.carry_on("task:1").unwrap();
+
+        let held = tasks.first();
+        assert_eq!(held.state, "Pending");
+        assert_eq!(held.session, None);
+        assert_eq!(held.reason, None);
+
+        let session = sessions.load().sessions[0].clone();
+        assert_eq!(session.state, "stopped");
+        assert_eq!(session.stopped_reason.as_deref(), Some("vendor limit"));
+    }
+
+    /// A session that has run as long as it declared stops, and whatever it
+    /// still had running ends where it got to.
+    #[test]
+    fn a_session_out_of_time_stops_and_interrupts_what_was_running() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+        let areas = Areas::default();
+        let agent = Standing::finishing();
+        let late = Frozen(1_000 + 8 * 3_600);
+        let opened = ExecutionService::new(
+            &sessions, &tasks, &ON_A_PLAN, &areas, &agent, &STILL, &UNTOUCHED,
+        );
+        opened.run(declaring("2M", "8h")).unwrap();
+
+        let execution = ExecutionService::new(
+            &sessions, &tasks, &ON_A_PLAN, &areas, &agent, &late, &UNTOUCHED,
+        );
+        let assigned = execution.carry_on("task:1").unwrap();
+
+        assert!(assigned.is_empty());
+        let session = sessions.load().sessions[0].clone();
+        assert_eq!(session.state, "stopped");
+        assert_eq!(session.stopped_reason.as_deref(), Some("budget hardlock"));
     }
 
     /// The executor is called for one task at a time and several at once, so
