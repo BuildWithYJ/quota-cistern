@@ -6,14 +6,16 @@
 mod configuration;
 mod consumption;
 mod session;
+mod supervision;
 mod task;
 
 pub use configuration::{Configuration, Key, Setting};
 pub use consumption::{Consumption, Observation};
 pub use session::{
-    Budget, Held, NotASessionSet, NotOpened, SessionId, SessionState, Sessions, Span,
-    StoppedReason, Usage,
+    Budget, Held, NotASessionSet, NotOpened, Opening, Session, SessionId, SessionState, Sessions,
+    Span, StoppedReason, Usage,
 };
+pub use supervision::{Cost, HUNDREDTHS, Spending, cost_of, room_for};
 pub use task::{
     Backlog, NotABacklog, RemovalRefused, Repository, Restored, Task, TaskId, TaskState,
 };

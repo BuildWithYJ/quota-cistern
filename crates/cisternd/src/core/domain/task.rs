@@ -423,6 +423,81 @@ impl Backlog {
         Observation::Spent(Consumption::total(counted))
     }
 
+    /// Puts a task back where it was before it was assigned.
+    ///
+    /// For a task nobody would run. It keeps its number and whatever it was
+    /// registered with, and waits for a session that can start it.
+    pub fn wait_again(&mut self, id: TaskId) {
+        for task in &mut self.tasks {
+            if task.id == id {
+                task.state = TaskState::Pending;
+                task.session = None;
+                task.reason = None;
+            }
+        }
+    }
+
+    /// How many of a session's tasks are still running.
+    pub fn running_in(&self, session: SessionId) -> usize {
+        self.tasks
+            .iter()
+            .filter(|task| task.session == Some(session) && task.state == TaskState::Running)
+            .count()
+    }
+
+    /// Ends every task a session still has running.
+    ///
+    /// Whatever the agent committed by then is on the branch already, so
+    /// nothing is undone here. Section 1 says an interrupted task keeps its
+    /// partial work.
+    pub fn interrupt(&mut self, session: SessionId, reason: &str) -> Vec<TaskId> {
+        let mut ended = Vec::new();
+        for task in &mut self.tasks {
+            if task.session == Some(session) && task.state == TaskState::Running {
+                task.state = TaskState::Interrupted;
+                task.reason = Some(reason.to_owned());
+                ended.push(task.id);
+            }
+        }
+        ended
+    }
+
+    /// What each task that reported a count consumed, over the whole backlog.
+    ///
+    /// A task from an earlier session counts. Tokens mean the same thing
+    /// whenever they were spent, and a session that has run nothing of its own
+    /// yet can still tell what a task around here costs.
+    pub fn counted(&self) -> Vec<Consumption> {
+        self.tasks
+            .iter()
+            .filter_map(|task| match &task.consumed {
+                Observation::Spent(spent) => Some(*spent),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// What a session's own tasks consumed.
+    pub fn counted_in(&self, session: SessionId) -> Vec<Consumption> {
+        self.tasks
+            .iter()
+            .filter(|task| task.session == Some(session))
+            .filter_map(|task| match &task.consumed {
+                Observation::Spent(spent) => Some(*spent),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// How many of a session's tasks have ended, whatever they ended as.
+    pub fn ended_in(&self, session: SessionId) -> usize {
+        self.tasks
+            .iter()
+            .filter(|task| task.session == Some(session) && task.state != TaskState::Running)
+            .filter(|task| task.session == Some(session))
+            .count()
+    }
+
     pub fn find(&self, id: TaskId) -> Option<&Task> {
         self.tasks.iter().find(|task| task.id == id)
     }

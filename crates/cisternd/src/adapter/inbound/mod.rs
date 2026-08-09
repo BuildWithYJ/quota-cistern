@@ -58,8 +58,7 @@ fn code_for(refusal: &Refusal) -> u8 {
         Refusal::NothingToAssign => GENERAL_FAILURE,
         Refusal::NotPending { .. }
         | Refusal::NotARepository { .. }
-        | Refusal::AlreadyRunning { .. }
-        | Refusal::NoPlanConfigured => STATE_CONFLICT,
+        | Refusal::AlreadyRunning { .. } => STATE_CONFLICT,
         Refusal::Unavailable { .. } => CORE_ERROR,
     }
 }
@@ -72,9 +71,6 @@ fn message_for(refusal: &Refusal) -> String {
         Refusal::NotPending { id } => format!("{id} is not pending"),
         Refusal::NotARepository { at } => format!("{at} is not inside a repository"),
         Refusal::AlreadyRunning { id } => format!("{id} is already running"),
-        Refusal::NoPlanConfigured => {
-            "no plan is configured, so a share of one cannot be measured".to_owned()
-        }
         Refusal::NothingToAssign => "no task is waiting that may start".to_owned(),
         Refusal::Unavailable { reason } => format!("the store cannot be read: {reason}"),
     }

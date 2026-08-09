@@ -46,6 +46,19 @@ pub enum Observation {
 }
 
 impl Consumption {
+    /// Every kind of token added together.
+    ///
+    /// A budget declared as a count of tokens is measured against this. Which
+    /// kinds a budget counts was left open by #9 and answered here: all of
+    /// them. Every kind is charged for and every kind moves the vendor's own
+    /// limit, so leaving one out reports a session as cheaper than it was.
+    pub fn tokens(&self) -> u64 {
+        self.input
+            .saturating_add(self.output)
+            .saturating_add(self.cache_written)
+            .saturating_add(self.cache_read)
+    }
+
     /// Every kind added together.
     ///
     /// One number for a set of runs, still keeping the kinds apart within it.

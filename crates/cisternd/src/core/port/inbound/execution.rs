@@ -42,10 +42,12 @@ pub trait ExecutionUseCase {
     /// command returns at once and the tasks keep running.
     fn run(&self, declared: Declaration<'_>) -> Result<Started, Refusal>;
 
-    /// Runs one assigned task to the end.
+    /// Runs one assigned task to the end, and answers with whatever the
+    /// decision that followed assigned next.
     ///
     /// This does not return until the task has, so whoever calls it is not the
     /// same thread that answered `run`. When that happens is the composition
-    /// root's to arrange; what happens is here.
-    fn carry_on(&self, task: &str) -> Result<(), Refusal>;
+    /// root's to arrange; what happens is here. What comes back has to be run
+    /// the same way the tasks `run` answered with are.
+    fn carry_on(&self, task: &str) -> Result<Vec<String>, Refusal>;
 }

@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::core::port::outbound::{Agent, Ended, Observed, Spent, Unavailable, Work};
+use crate::core::port::outbound::{Agent, Ended, Observed, Outcome, Spent, Unavailable, Work};
 
 /// How the agent is invoked, and what it is told it is finished.
 ///
@@ -31,6 +31,10 @@ const TURNS: &str = "200";
 /// The same guard, against the same runaway, in the other unit. The figure the
 /// agent counts against is its own estimate.
 const SPEND: &str = "20";
+
+/// What the agent calls the two ceilings it stops at.
+const AT_TURNS: &str = "error_max_turns";
+const AT_SPEND: &str = "error_max_budget";
 
 /// The format the answer arrives in.
 ///
@@ -208,11 +212,12 @@ impl Agent for ClaudeAgent {
         // about one object, and one of them failing must not lose the other.
         let answer = serde_json::from_slice::<Value>(&done.stdout).ok();
 
+        let outcome = outcome_of(done.status.success(), answer.as_ref());
         Ok(Ended {
-            done: done.status.success(),
-            reason: match done.status.success() {
-                true => None,
-                false => Some(said(&done.status, &done.stderr, answer.as_ref())),
+            outcome,
+            reason: match outcome {
+                Outcome::Finished => None,
+                _ => Some(said(&done.status, &done.stderr, answer.as_ref())),
             },
             observed: observed(answer.as_ref()),
         })
@@ -244,14 +249,31 @@ fn said(status: &std::process::ExitStatus, stderr: &[u8], answer: Option<&Value>
     format!("the agent {status} and said nothing")
 }
 
+/// How the run came to an end.
+///
+/// The name the agent gives for stopping is what tells a ceiling from a
+/// failure. Which names mean what is this file's to know.
+fn outcome_of(finished: bool, answer: Option<&Value>) -> Outcome {
+    if finished {
+        return Outcome::Finished;
+    }
+    match answer
+        .and_then(|answer| answer.get("subtype"))
+        .and_then(Value::as_str)
+    {
+        Some(AT_TURNS | AT_SPEND) => Outcome::AtCeiling,
+        _ => Outcome::Failed,
+    }
+}
+
 /// A sentence for how the agent says it stopped.
 ///
 /// A run cut off at a guard answers with no text of its own, and the name it
 /// gives instead is the only thing there is to report.
 fn why_for(subtype: &str) -> String {
     match subtype {
-        "error_max_turns" => format!("the agent was cut off after {TURNS} turns"),
-        "error_max_budget" => format!("the agent was cut off at {SPEND} dollars"),
+        AT_TURNS => format!("the agent was cut off after {TURNS} turns"),
+        AT_SPEND => format!("the agent was cut off at {SPEND} dollars"),
         other => format!("the agent stopped with {other}"),
     }
 }
@@ -278,10 +300,31 @@ mod tests {
         )
         .unwrap();
         fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+        wait_until_runnable(&program);
 
         let mut standing = ClaudeAgent::new().unwrap();
         standing.program = program.display().to_string();
         standing
+    }
+
+    /// Waits for the file just written to be one this may run.
+    ///
+    /// Tests run beside each other, and a thread that starts a child while
+    /// another is still writing a file leaves that file open in the child.
+    /// Running a file that is open for writing is refused, so this asks until
+    /// it is not. The stand-in given no arguments does nothing and exits.
+    fn wait_until_runnable(program: &std::path::Path) {
+        for _ in 0..100 {
+            let ran = Command::new(program)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            if ran.is_ok() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 
     /// An answer a vendor actually sent, kept as it arrived apart from a
@@ -330,7 +373,7 @@ mod tests {
             .work(working(&held.path().display().to_string(), "exit 0"))
             .unwrap();
 
-        assert!(ended.done);
+        assert_eq!(ended.outcome, Outcome::Finished);
         assert_eq!(ended.reason, None);
     }
 
@@ -468,7 +511,7 @@ mod tests {
             ))
             .unwrap();
 
-        assert!(!ended.done);
+        assert_ne!(ended.outcome, Outcome::Finished);
         assert_eq!(
             ended.reason.as_deref(),
             Some("the agent was cut off after 200 turns")
@@ -486,7 +529,7 @@ mod tests {
             ))
             .unwrap();
 
-        assert!(!ended.done);
+        assert_ne!(ended.outcome, Outcome::Finished);
         assert_eq!(ended.reason.as_deref(), Some("it went wrong"));
     }
 
@@ -502,7 +545,7 @@ mod tests {
             ))
             .unwrap();
 
-        assert!(ended.done, "{ended:?}");
+        assert_eq!(ended.outcome, Outcome::Finished, "{ended:?}");
     }
 
     /// The agent runs where the task's work area is, not where the core was
@@ -549,7 +592,7 @@ mod tests {
             ))
             .unwrap();
 
-        assert!(!ended.done);
+        assert_ne!(ended.outcome, Outcome::Finished);
         assert_eq!(
             ended.reason.as_deref(),
             Some("the agent was cut off after 200 turns")

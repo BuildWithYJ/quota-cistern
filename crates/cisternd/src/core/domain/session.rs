@@ -60,6 +60,18 @@ pub struct Budget {
     pub time: Span,
 }
 
+/// What a session is opened with.
+///
+/// The clock reading and the vendor's limit are taken outside and handed in,
+/// so that nothing here reaches for either.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Opening {
+    pub budget: Budget,
+    pub model: Option<String>,
+    pub started_at: u64,
+    pub limit_at_start: Option<u64>,
+}
+
 /// A session, as the core holds one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
@@ -69,6 +81,14 @@ pub struct Session {
     budget: Budget,
     /// The model tasks fall back to when they name none.
     model: Option<String>,
+    /// Where the time limit is measured from.
+    started_at: u64,
+    /// Where a share is measured from, in hundredths of a percent.
+    ///
+    /// A share says what this session may add to what the vendor's limit
+    /// already held, so the reading it opened on is kept. A session declared
+    /// in tokens has none.
+    limit_at_start: Option<u64>,
 }
 
 /// A session on its way back from a store, with every value already read.
@@ -79,6 +99,8 @@ pub struct Held {
     pub stopped_reason: Option<StoppedReason>,
     pub budget: Budget,
     pub model: Option<String>,
+    pub started_at: u64,
+    pub limit_at_start: Option<u64>,
 }
 
 /// Every session, and the number the next one will get.
@@ -215,6 +237,11 @@ impl Display for Usage {
 }
 
 impl Span {
+    /// The length of time, in seconds.
+    pub fn seconds(&self) -> u64 {
+        self.0
+    }
+
     /// Reads what `--time` was given.
     ///
     /// Hours, then minutes, then seconds, each at most once and at least one of
@@ -275,6 +302,19 @@ impl Session {
     pub fn model(&self) -> Option<&str> {
         self.model.as_deref()
     }
+
+    pub fn started_at(&self) -> u64 {
+        self.started_at
+    }
+
+    pub fn limit_at_start(&self) -> Option<u64> {
+        self.limit_at_start
+    }
+
+    /// Whether the session has run for as long as it declared.
+    pub fn out_of_time(&self, now: u64) -> bool {
+        now.saturating_sub(self.started_at) >= self.budget.time.seconds()
+    }
 }
 
 impl Sessions {
@@ -282,7 +322,7 @@ impl Sessions {
     ///
     /// One runs at a time, so this refuses while another is running rather than
     /// leaving the caller to look first and open second.
-    pub fn open(&mut self, budget: Budget, model: Option<String>) -> Result<SessionId, NotOpened> {
+    pub fn open(&mut self, opening: Opening) -> Result<SessionId, NotOpened> {
         if let Some(running) = self.running() {
             return Err(NotOpened::AlreadyRunning { id: running.id });
         }
@@ -293,8 +333,10 @@ impl Sessions {
             id,
             state: SessionState::Running,
             stopped_reason: None,
-            budget,
-            model,
+            budget: opening.budget,
+            model: opening.model,
+            started_at: opening.started_at,
+            limit_at_start: opening.limit_at_start,
         });
         Ok(id)
     }
@@ -359,6 +401,8 @@ impl Sessions {
                 stopped_reason: one.stopped_reason,
                 budget: one.budget,
                 model: one.model,
+                started_at: one.started_at,
+                limit_at_start: one.limit_at_start,
             });
         }
 
@@ -374,6 +418,15 @@ mod tests {
         Budget {
             usage: Usage::Share(50),
             time: Span(8 * 3_600),
+        }
+    }
+
+    fn opening() -> Opening {
+        Opening {
+            budget: a_budget(),
+            model: None,
+            started_at: 1_000,
+            limit_at_start: Some(1_100),
         }
     }
 
@@ -431,21 +484,21 @@ mod tests {
     #[test]
     fn a_number_is_given_out_once_and_the_next_one_follows_it() {
         let mut sessions = Sessions::restore(1, Vec::new()).unwrap();
-        let first = sessions.open(a_budget(), None).unwrap();
+        let first = sessions.open(opening()).unwrap();
         assert_eq!(first.labelled(), "session:1");
 
         sessions.stop(first, StoppedReason::AllDone);
-        let second = sessions.open(a_budget(), None).unwrap();
+        let second = sessions.open(opening()).unwrap();
         assert_eq!(second.labelled(), "session:2");
     }
 
     #[test]
     fn a_second_session_is_refused_while_one_is_running() {
         let mut sessions = Sessions::default();
-        let first = sessions.open(a_budget(), None).unwrap();
+        let first = sessions.open(opening()).unwrap();
 
         assert_eq!(
-            sessions.open(a_budget(), None),
+            sessions.open(opening()),
             Err(NotOpened::AlreadyRunning { id: first })
         );
     }
@@ -458,6 +511,8 @@ mod tests {
             stopped_reason: None,
             budget: a_budget(),
             model: None,
+            started_at: 1_000,
+            limit_at_start: Some(1_100),
         };
 
         assert_eq!(
@@ -477,6 +532,8 @@ mod tests {
             stopped_reason: None,
             budget: a_budget(),
             model: None,
+            started_at: 1_000,
+            limit_at_start: Some(1_100),
         };
 
         assert_eq!(
@@ -507,9 +564,19 @@ mod tests {
     }
 
     #[test]
+    fn a_session_is_out_of_time_once_it_has_run_as_long_as_it_declared() {
+        let mut sessions = Sessions::default();
+        sessions.open(opening()).unwrap();
+        let held = sessions.running().unwrap();
+
+        assert!(!held.out_of_time(1_000 + 8 * 3_600 - 1));
+        assert!(held.out_of_time(1_000 + 8 * 3_600));
+    }
+
+    #[test]
     fn a_stopped_session_says_why_and_keeps_the_first_answer() {
         let mut sessions = Sessions::default();
-        let id = sessions.open(a_budget(), None).unwrap();
+        let id = sessions.open(opening()).unwrap();
 
         sessions.stop(id, StoppedReason::ObservationUnreadable);
         sessions.stop(id, StoppedReason::AllDone);

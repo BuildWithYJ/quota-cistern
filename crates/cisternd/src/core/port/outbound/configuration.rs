@@ -11,8 +11,6 @@ use super::Unavailable;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StoredConfiguration {
     pub vendor: Option<String>,
-    pub plan: Option<String>,
-    pub usage_limit: Option<String>,
 }
 
 /// Where the configuration is kept between runs.

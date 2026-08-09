@@ -91,8 +91,8 @@ mod tests {
 
         /// Nothing here calls this: the adapter answers `run` and the queue is
         /// what reaches this, which is the composition root's.
-        fn carry_on(&self, _task: &str) -> Result<(), Refusal> {
-            Ok(())
+        fn carry_on(&self, _task: &str) -> Result<Vec<String>, Refusal> {
+            Ok(Vec::new())
         }
     }
 
@@ -188,20 +188,6 @@ mod tests {
         let execution = Answering::with(Err(Refusal::AlreadyRunning {
             id: "session:1".to_owned(),
         }));
-        let refused = failure(
-            respond(
-                &execution,
-                asked("run", serde_json::json!({"usage": "50%", "time": "8h"})),
-            )
-            .unwrap(),
-        );
-
-        assert_eq!(refused.code, STATE_CONFLICT);
-    }
-
-    #[test]
-    fn a_share_with_no_plan_is_the_code_section_2_2_gives_it() {
-        let execution = Answering::with(Err(Refusal::NoPlanConfigured));
         let refused = failure(
             respond(
                 &execution,

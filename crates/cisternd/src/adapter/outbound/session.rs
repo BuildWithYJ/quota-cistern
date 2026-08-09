@@ -46,6 +46,9 @@ struct Entry {
     time: Value,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     model: Value,
+    started_at: Value,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    limit_at_start: Value,
 }
 
 impl FileSessions {
@@ -92,6 +95,8 @@ impl FileSessions {
                     usage: as_text(entry.usage),
                     time: as_text(entry.time),
                     model: as_optional(entry.model),
+                    started_at: as_text(entry.started_at),
+                    limit_at_start: as_optional(entry.limit_at_start),
                 })
                 .collect(),
         })
@@ -112,6 +117,11 @@ impl FileSessions {
                     usage: Value::String(session.usage.clone()),
                     time: Value::String(session.time.clone()),
                     model: as_value(session.model.clone()),
+                    started_at: as_number(&session.started_at),
+                    limit_at_start: session
+                        .limit_at_start
+                        .as_deref()
+                        .map_or(Value::Null, as_number),
                 })
                 .collect(),
         };
@@ -209,6 +219,8 @@ mod tests {
             usage: "50%".to_owned(),
             time: "8h".to_owned(),
             model: None,
+            started_at: "1000".to_owned(),
+            limit_at_start: Some("11".to_owned()),
         }
     }
 
@@ -290,7 +302,7 @@ mod tests {
         fs::write(
             dir.path().join("sessions.json"),
             r#"{"next_id":2,"sessions":[{"id":1,"state":"running","stopped_reason":null,
-                "usage":"50%","time":"8h"}]}"#,
+                "usage":"50%","time":"8h","started_at":1000}]}"#,
         )
         .unwrap();
 

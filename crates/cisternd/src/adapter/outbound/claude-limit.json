@@ -1,0 +1,26 @@
+{
+  "_": [
+    "How the vendor is asked where its limit stands.",
+    "",
+    "The figure is only on the status line, and the status line is only drawn",
+    "where there is a terminal, so this is a session with a terminal attached",
+    "rather than the one-shot invocation claude.json describes.",
+    "",
+    "'settings' names a file this writes, holding the status line command.",
+    "Nothing else is loaded: a person's own settings can hold anything, and a",
+    "session that stops to complain about them never draws a status line.",
+    "'prompt' is sent once because the limit is not known until an answer has",
+    "come back from the vendor. 'trusts' and 'ready' are what the screen says",
+    "at the two moments this has to type something; they are the vendor's",
+    "words and change when the vendor changes them."
+  ],
+  "program": "claude",
+  "args": [
+    ["--settings", "{settings}"],
+    ["--setting-sources", "project"],
+    ["--model", "haiku"]
+  ],
+  "prompt": "say ok and nothing else",
+  "trusts": "trustthisfolder",
+  "ready": "try\""
+}

@@ -9,16 +9,20 @@
 
 mod agent;
 mod backlog;
+mod clock;
 mod configuration;
 mod repository;
 mod session;
+mod window;
 mod worktree;
 
-pub use agent::{Agent, Ended, Observed, Spent, Work};
+pub use agent::{Agent, Ended, Observed, Outcome, Spent, Work};
 pub use backlog::{BacklogStore, StoredBacklog, StoredConsumption, StoredTask};
+pub use clock::Clock;
 pub use configuration::{ConfigurationStore, StoredConfiguration};
 pub use repository::RepositoryRoots;
 pub use session::{SessionStore, StoredSession, StoredSessions};
+pub use window::{Limit, Reading};
 pub use worktree::{Cut, Worktrees};
 
 /// The outside could not be reached or could not be understood.
