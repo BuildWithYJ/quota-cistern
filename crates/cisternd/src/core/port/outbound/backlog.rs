@@ -27,10 +27,16 @@ pub struct StoredTask {
     pub model: Option<String>,
     pub repository: String,
     pub state: String,
+    /// The session that assigned it, once one has.
+    pub session: Option<String>,
+    /// Where it is being worked on, once a work area was made.
+    pub worktree: Option<String>,
+    /// Why it ended as it did, for a task that did not simply finish.
+    pub reason: Option<String>,
 }
 
 /// Where the backlog is kept between runs.
-pub trait BacklogStore {
+pub trait BacklogStore: Sync {
     /// Reads what is stored.
     ///
     /// Nothing stored is an empty backlog rather than a failure, since

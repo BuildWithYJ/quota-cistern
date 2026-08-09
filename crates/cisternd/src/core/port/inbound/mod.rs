@@ -39,6 +39,8 @@ pub enum Refusal {
     /// A share of the plan was declared and no plan is configured to measure
     /// it against.
     NoPlanConfigured,
+    /// Nothing in the backlog may start.
+    NothingToAssign,
     /// The store could not be reached or could not be understood.
     Unavailable { reason: String },
 }

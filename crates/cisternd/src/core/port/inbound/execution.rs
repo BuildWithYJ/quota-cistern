@@ -29,13 +29,23 @@ pub struct Declared {
 pub struct Started {
     pub session: String,
     pub state: String,
-    /// Tasks assigned at the start.
-    pub assigned: u32,
+    /// The tasks assigned at the start.
+    pub assigned: Vec<String>,
     pub budget: Declared,
 }
 
-/// `run`.
+/// `run`, and the work a run leaves behind.
 pub trait ExecutionUseCase {
-    /// Opens a session and starts what it was able to assign.
+    /// Opens a session and assigns what may start.
+    ///
+    /// It answers as soon as the session exists, because section 2.2 says the
+    /// command returns at once and the tasks keep running.
     fn run(&self, declared: Declaration<'_>) -> Result<Started, Refusal>;
+
+    /// Runs one assigned task to the end.
+    ///
+    /// This does not return until the task has, so whoever calls it is not the
+    /// same thread that answered `run`. When that happens is the composition
+    /// root's to arrange; what happens is here.
+    fn carry_on(&self, task: &str) -> Result<(), Refusal>;
 }

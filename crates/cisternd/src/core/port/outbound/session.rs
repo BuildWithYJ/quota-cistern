@@ -30,7 +30,7 @@ pub struct StoredSession {
 /// Sessions and the backlog are kept apart because they are written at
 /// different moments by different work: the backlog changes when a user
 /// registers something, and a session changes while one runs.
-pub trait SessionStore {
+pub trait SessionStore: Sync {
     /// Reads what is stored, hands it to `change`, and writes back what
     /// `change` left behind, for the reason `BacklogStore::update` gives.
     fn update(

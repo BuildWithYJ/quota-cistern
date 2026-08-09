@@ -44,7 +44,7 @@ fn started(started: Started) -> Value {
     serde_json::json!({
         "session": started.session,
         "state": started.state,
-        "assigned": started.assigned,
+        "assigned": started.assigned.len(),
         "budget": {
             "usage": started.budget.usage,
             "time": started.budget.time,
@@ -88,13 +88,19 @@ mod tests {
             ));
             self.outcome.clone()
         }
+
+        /// Nothing here calls this: the adapter answers `run` and the queue is
+        /// what reaches this, which is the composition root's.
+        fn carry_on(&self, _task: &str) -> Result<(), Refusal> {
+            Ok(())
+        }
     }
 
     fn a_start() -> Started {
         Started {
             session: "session:1".to_owned(),
             state: "running".to_owned(),
-            assigned: 0,
+            assigned: Vec::new(),
             budget: Declared {
                 usage: "50%".to_owned(),
                 time: "8h".to_owned(),

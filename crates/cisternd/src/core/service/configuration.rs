@@ -108,7 +108,7 @@ fn written(configuration: &Configuration) -> StoredConfiguration {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use std::sync::Mutex;
 
     use crate::core::port::outbound::Unavailable;
 
@@ -121,7 +121,7 @@ mod tests {
     /// A store held in memory, so the steps can be checked without a file.
     #[derive(Default)]
     struct Remembered {
-        stored: RefCell<StoredConfiguration>,
+        stored: Mutex<StoredConfiguration>,
         /// Makes every read fail, standing in for a store that is there but
         /// cannot be understood.
         broken: bool,
@@ -130,7 +130,7 @@ mod tests {
     impl Remembered {
         fn holding(stored: StoredConfiguration) -> Self {
             Remembered {
-                stored: RefCell::new(stored),
+                stored: Mutex::new(stored),
                 broken: false,
             }
         }
@@ -140,12 +140,12 @@ mod tests {
         fn load(&self) -> Result<StoredConfiguration, Unavailable> {
             match self.broken {
                 true => Err(Unavailable::new("not valid TOML")),
-                false => Ok(self.stored.borrow().clone()),
+                false => Ok(self.stored.lock().unwrap().clone()),
             }
         }
 
         fn store(&self, stored: &StoredConfiguration) -> Result<(), Unavailable> {
-            *self.stored.borrow_mut() = stored.clone();
+            *self.stored.lock().unwrap() = stored.clone();
             Ok(())
         }
     }
@@ -241,7 +241,7 @@ mod tests {
         over(&settings).set("usage-limit", "2000000").unwrap();
 
         // A second reader over the same store is what a restarted core is.
-        let restarted = Remembered::holding(settings.stored.borrow().clone());
+        let restarted = Remembered::holding(settings.stored.lock().unwrap().clone());
         assert_eq!(over(&restarted).get(None), over(&settings).get(None));
     }
 

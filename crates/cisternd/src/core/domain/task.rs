@@ -6,6 +6,8 @@
 
 use std::fmt::{self, Display};
 
+use super::SessionId;
+
 /// The branch a task starts from when it names neither a branch nor a
 /// predecessor.
 const DEFAULT_BRANCH: &str = "main";
@@ -54,6 +56,12 @@ pub struct Task {
     model: Option<String>,
     repository: Repository,
     state: TaskState,
+    /// The session that assigned it, once one has.
+    session: Option<SessionId>,
+    /// Where it is being worked on, once a work area was made.
+    worktree: Option<String>,
+    /// Why it ended as it did, for a task that did not simply finish.
+    reason: Option<String>,
 }
 
 /// A task on its way back from a store, with every value already read.
@@ -71,6 +79,9 @@ pub struct Restored {
     pub model: Option<String>,
     pub repository: Repository,
     pub state: TaskState,
+    pub session: Option<SessionId>,
+    pub worktree: Option<String>,
+    pub reason: Option<String>,
 }
 
 /// Every task, and the number the next one will get.
@@ -207,6 +218,29 @@ impl Task {
         self.state
     }
 
+    pub fn session(&self) -> Option<SessionId> {
+        self.session
+    }
+
+    pub fn worktree(&self) -> Option<&str> {
+        self.worktree.as_deref()
+    }
+
+    pub fn reason(&self) -> Option<&str> {
+        self.reason.as_deref()
+    }
+
+    /// The branch this task's result is kept on, once one has been cut.
+    ///
+    /// A task that was never assigned has none, which is what section 2.1
+    /// reports as null.
+    pub fn result_branch(&self) -> Option<String> {
+        match self.state {
+            TaskState::Pending => None,
+            _ => Some(result_branch_of(self.id)),
+        }
+    }
+
     /// Where the task starts from.
     ///
     /// Derived rather than stored, because a predecessor's result branch does
@@ -215,10 +249,18 @@ impl Task {
     pub fn base_branch(&self) -> String {
         match (&self.branch, self.after) {
             (Some(branch), _) => branch.clone(),
-            (None, Some(after)) => format!("cistern/{after}"),
+            (None, Some(after)) => result_branch_of(after),
             (None, None) => DEFAULT_BRANCH.to_owned(),
         }
     }
+}
+
+/// The branch a task's result is kept on.
+///
+/// A predecessor's is where a task that waits for it starts from, so both
+/// spellings come from here and cannot drift apart.
+fn result_branch_of(id: TaskId) -> String {
+    format!("cistern/{id}")
 }
 
 impl Backlog {
@@ -243,6 +285,9 @@ impl Backlog {
             model,
             repository,
             state: TaskState::Pending,
+            session: None,
+            worktree: None,
+            reason: None,
         });
         id
     }
@@ -271,6 +316,62 @@ impl Backlog {
             }
         }
         Ok(removed)
+    }
+
+    /// Hands the first task that may start to a session, and says which.
+    ///
+    /// A task waiting for one that has not completed is not eligible, and
+    /// neither is one that is no longer waiting to be assigned. Nothing is
+    /// answered when none may start, which is what an empty backlog and a
+    /// backlog of blocked tasks both look like from here.
+    pub fn assign(&mut self, to: SessionId) -> Option<TaskId> {
+        let id = self.next_to_assign()?;
+        for task in &mut self.tasks {
+            if task.id == id {
+                task.state = TaskState::Running;
+                task.session = Some(to);
+            }
+        }
+        Some(id)
+    }
+
+    /// The task `assign` would hand over, without handing it over.
+    ///
+    /// A run that has nothing to start is refused before a session is opened,
+    /// and asking that question is what this is for.
+    pub fn next_to_assign(&self) -> Option<TaskId> {
+        self.tasks
+            .iter()
+            .filter(|task| task.state == TaskState::Pending)
+            .find(|task| match task.after {
+                None => true,
+                Some(after) => self
+                    .find(after)
+                    .is_some_and(|held| held.state == TaskState::Completed),
+            })
+            .map(|task| task.id)
+    }
+
+    /// Records where a task is being worked on.
+    pub fn work_area(&mut self, id: TaskId, at: String) {
+        for task in &mut self.tasks {
+            if task.id == id {
+                task.worktree = Some(at.clone());
+            }
+        }
+    }
+
+    /// Moves a task to the state it ended in.
+    ///
+    /// Every terminal state leaves the branch alone, so what changes here is
+    /// what the task says about itself.
+    pub fn finish(&mut self, id: TaskId, state: TaskState, reason: Option<String>) {
+        for task in &mut self.tasks {
+            if task.id == id {
+                task.state = state;
+                task.reason.clone_from(&reason);
+            }
+        }
     }
 
     pub fn find(&self, id: TaskId) -> Option<&Task> {
@@ -313,6 +414,9 @@ impl Backlog {
                 model: held.model,
                 repository: held.repository,
                 state: held.state,
+                session: held.session,
+                worktree: held.worktree,
+                reason: held.reason,
             })
             .collect();
 
@@ -376,6 +480,9 @@ mod tests {
 
     fn held(id: &str, after: Option<&str>, state: &str) -> Restored {
         Restored {
+            session: None,
+            worktree: None,
+            reason: None,
             id: TaskId::parse(id).unwrap(),
             title: "a task".to_owned(),
             instruction: "do it".to_owned(),

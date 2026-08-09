@@ -13,7 +13,7 @@ pub mod execution;
 
 use cistern_contract::{
     Answer, Failure, Request, Response,
-    code::{CORE_ERROR, NOT_FOUND, STATE_CONFLICT, USAGE_ERROR},
+    code::{CORE_ERROR, GENERAL_FAILURE, NOT_FOUND, STATE_CONFLICT, USAGE_ERROR},
 };
 use serde_json::Value;
 
@@ -55,6 +55,7 @@ fn code_for(refusal: &Refusal) -> u8 {
     match refusal {
         Refusal::UnknownKey { .. } | Refusal::BadValue { .. } => USAGE_ERROR,
         Refusal::NoSuchTask { .. } => NOT_FOUND,
+        Refusal::NothingToAssign => GENERAL_FAILURE,
         Refusal::NotPending { .. }
         | Refusal::NotARepository { .. }
         | Refusal::AlreadyRunning { .. }
@@ -74,6 +75,7 @@ fn message_for(refusal: &Refusal) -> String {
         Refusal::NoPlanConfigured => {
             "no plan is configured, so a share of one cannot be measured".to_owned()
         }
+        Refusal::NothingToAssign => "no task is waiting that may start".to_owned(),
         Refusal::Unavailable { reason } => format!("the store cannot be read: {reason}"),
     }
 }

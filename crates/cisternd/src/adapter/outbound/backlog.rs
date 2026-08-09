@@ -50,6 +50,12 @@ struct Entry {
     model: Value,
     repository: Value,
     state: Value,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    session: Value,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    worktree: Value,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    reason: Value,
 }
 
 impl FileBacklog {
@@ -154,6 +160,9 @@ impl FileBacklog {
                     model: as_optional(entry.model),
                     repository: as_text(entry.repository),
                     state: as_text(entry.state),
+                    session: as_optional(entry.session),
+                    worktree: as_optional(entry.worktree),
+                    reason: as_optional(entry.reason),
                 })
                 .collect(),
         })
@@ -176,6 +185,9 @@ impl FileBacklog {
                     model: as_value(task.model.clone()),
                     repository: Value::String(task.repository.clone()),
                     state: Value::String(task.state.clone()),
+                    session: task.session.as_deref().map_or(Value::Null, as_number),
+                    worktree: as_value(task.worktree.clone()),
+                    reason: as_value(task.reason.clone()),
                 })
                 .collect(),
         };
@@ -244,6 +256,9 @@ mod tests {
             model: None,
             repository: "/work/api".to_owned(),
             state: "Pending".to_owned(),
+            session: None,
+            worktree: None,
+            reason: None,
         }
     }
 
