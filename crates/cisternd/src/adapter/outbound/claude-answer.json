@@ -1,0 +1,24 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "duration_ms": 41263,
+  "num_turns": 12,
+  "result": "done",
+  "total_cost_usd": 0.0416231,
+  "usage": {
+    "input_tokens": 34,
+    "output_tokens": 755,
+    "cache_creation_input_tokens": 10068,
+    "cache_read_input_tokens": 95826
+  },
+  "modelUsage": {
+    "claude-haiku-4-5": {
+      "inputTokens": 34,
+      "outputTokens": 755,
+      "cacheCreationInputTokens": 10068,
+      "cacheReadInputTokens": 95826,
+      "costUSD": 0.0416231
+    }
+  }
+}

@@ -257,20 +257,20 @@ mod tests {
         standing
     }
 
-    /// The vendor's answer, with the fields this file reads and some it does
-    /// not. The extra ones are there because a vendor adds fields, and adding
-    /// one must not stop the count being read.
-    const AN_ANSWER: &str = concat!(
-        r#"{"type":"result","subtype":"success","result":"done","#,
-        r#""usage":{"input_tokens":34,"output_tokens":755,"#,
-        r#""cache_creation_input_tokens":10068,"cache_read_input_tokens":95826,"#,
-        r#""server_tool_use":{"web_search_requests":0}},"#,
-        r#""total_cost_usd":0.0416231}"#,
-    );
+    /// An answer in the shape the vendor sends one, holding the fields this
+    /// file reads and several it does not. The ones it does not read are there
+    /// because a vendor adds fields, and adding one must not stop the count
+    /// being read.
+    const AN_ANSWER: &str = include_str!("claude-answer.json");
 
     /// A shell command that answers with `written` and nothing else.
-    fn answering(written: &str) -> String {
-        format!("printf '%s' '{written}'")
+    ///
+    /// Written to a file and read back rather than quoted into the command, so
+    /// that an answer can be kept as an object a person can read.
+    fn answering(held: &TempDir, written: &str) -> String {
+        let at = held.path().join("answer.json");
+        fs::write(&at, written).unwrap();
+        format!("cat '{}'", at.display())
     }
 
     fn prompt(held: &TempDir) -> String {
@@ -302,7 +302,7 @@ mod tests {
         let ended = standing_in(&held)
             .work(working(
                 &held.path().display().to_string(),
-                &answering(AN_ANSWER),
+                &answering(&held, AN_ANSWER),
             ))
             .unwrap();
 
@@ -324,11 +324,13 @@ mod tests {
     #[test]
     fn a_count_under_a_name_this_does_not_know_is_not_a_count_of_nothing() {
         let held = TempDir::new().unwrap();
-        let renamed = AN_ANSWER.replace("input_tokens", "tokens_in");
+        // One of the four, so that what is caught is a name this does not
+        // know rather than an answer that lost its whole count.
+        let renamed = AN_ANSWER.replace(r#""input_tokens": 34"#, r#""tokens_in": 34"#);
         let ended = standing_in(&held)
             .work(working(
                 &held.path().display().to_string(),
-                &answering(&renamed),
+                &answering(&held, &renamed),
             ))
             .unwrap();
 
@@ -350,13 +352,15 @@ mod tests {
     #[test]
     fn a_run_that_failed_still_reports_what_it_consumed() {
         let held = TempDir::new().unwrap();
+        // A run cut off at a guard names what stopped it and answers with no
+        // text of its own.
         let cut_off = AN_ANSWER
-            .replace(r#""subtype":"success""#, r#""subtype":"error_max_turns""#)
-            .replace(r#""result":"done","#, "");
+            .replace(r#""subtype": "success""#, r#""subtype": "error_max_turns""#)
+            .replace(r#""result": "done""#, r#""result": null"#);
         let ended = standing_in(&held)
             .work(working(
                 &held.path().display().to_string(),
-                &format!("{}; exit 1", answering(&cut_off)),
+                &format!("{}; exit 1", answering(&held, &cut_off)),
             ))
             .unwrap();
 
