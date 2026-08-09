@@ -289,6 +289,10 @@ task:2  Interrupted
 
 ### 2.2 세션 · 실행
 
+세션은 `$XDG_DATA_HOME/cistern/sessions.json`에 저장하거나, `XDG_DATA_HOME`이 없을 경우 `~/.local/share/cistern/sessions.json`에 저장한다.
+
+작업은 `$XDG_DATA_HOME/cistern/worktrees` 아래에 `git worktree`로 만드는 별도 체크아웃에서 실행한다.
+
 #### `cistern run`
 
 예산을 선언하고 세션의 무인 루프를 기동한다. 논블로킹이라 즉시 반환한다.
