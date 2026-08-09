@@ -2,9 +2,9 @@
 
 use crate::core::{
     domain::{
-        Budget, Consumption, Held, NotASessionSet, NotOpened, Observation, Opening, Session,
+        Budget, Consumption, Cost, Held, NotASessionSet, NotOpened, Observation, Opening, Session,
         SessionId, SessionState, Sessions, Span, Spending, StoppedReason, Task, TaskId, TaskState,
-        Usage, each_of, room_for,
+        Usage, cost_of, room_for,
     },
     port::{
         inbound::{Declaration, Declared, ExecutionUseCase, Refusal, Started},
@@ -280,33 +280,33 @@ impl ExecutionService<'_> {
         };
 
         let spent = self.spending(&held)?;
-        let (left, running, waiting, each) = backlog::read(self.tasks).map(|tasks| {
-            let each = match held.budget().usage {
+        let (left, running, waiting, cost) = backlog::read(self.tasks).map(|tasks| {
+            let cost = match (held.budget().usage, spent) {
                 // Tokens mean the same in every session, so what a task costs
                 // is what tasks have cost here at all.
-                Usage::Tokens(_) => each_of(tasks.counted().iter().map(Consumption::tokens)),
+                (Usage::Tokens(_), _) => {
+                    Some(cost_of(tasks.counted().iter().map(Consumption::tokens)))
+                }
                 // A share is how far this session moved the vendor's limit,
                 // and only this session's tasks moved it.
-                Usage::Share(_) => match tasks.ended_in(session) {
-                    0 => None,
-                    ended => match spent {
-                        Spending::Share(points) => Some(u64::from(points) / ended as u64),
-                        Spending::Tokens(_) => None,
-                    },
-                },
+                (Usage::Share(_), Spending::Share(points)) => Some(Cost {
+                    total: u64::from(points),
+                    over: tasks.ended_in(session) as u64,
+                }),
+                (Usage::Share(_), Spending::Tokens(_)) => None,
             };
             (
                 held.budget().left(spent),
                 tasks.running_in(session),
                 tasks.next_to_assign().is_some(),
-                each,
+                cost,
             )
         })?;
 
-        if let Some(why) = self.why_it_stops(&held, left, running, waiting, each)? {
+        if let Some(why) = self.why_it_stops(&held, left, running, waiting, cost)? {
             return self.stop(session, why).map(|()| Vec::new());
         }
-        let room = room_for(left, each, running);
+        let room = room_for(left, cost, running);
         backlog::change(self.tasks, |tasks| {
             Ok((0..room).filter_map(|_| tasks.assign(session)).collect())
         })
@@ -319,7 +319,7 @@ impl ExecutionService<'_> {
         left: u64,
         running: usize,
         waiting: bool,
-        each: Option<u64>,
+        cost: Option<Cost>,
     ) -> Result<Option<StoppedReason>, Refusal> {
         // A count nobody could read leaves a budget that cannot be measured,
         // and a budget that cannot be measured cannot be held to.
@@ -334,7 +334,7 @@ impl ExecutionService<'_> {
         }
         // Nothing more fits, and nothing is running that would make room.
         // Waiting for a task that will never start is not carrying on.
-        if running == 0 && room_for(left, each, 0) == 0 {
+        if running == 0 && room_for(left, cost, 0) == 0 {
             return Ok(Some(StoppedReason::BudgetHardlock));
         }
         if running == 0 && !waiting {

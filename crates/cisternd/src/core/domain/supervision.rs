@@ -44,36 +44,46 @@ impl Budget {
     }
 }
 
+/// What a set of tasks cost, and how many of them there were.
+///
+/// The pair rather than the average, because the average of a share is a
+/// fraction. Two tasks that moved the vendor's limit one point cost half a
+/// point each, and half a point in whole numbers is nothing at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cost {
+    /// What they cost together, in the unit the budget was declared in.
+    pub total: u64,
+    /// How many of them there were.
+    pub over: u64,
+}
+
 /// How many more tasks may be started.
 ///
-/// `each` is what one task has cost so far, in the same unit as `left`.
-/// Without it, one. A task that has not run cannot be costed, and starting
-/// several on a guess is how a budget is passed before anything is learned.
-/// A cost of zero is the same as no cost at all: a share moves in whole
-/// percentage points, so a task too small to move it says nothing about how
-/// many of them fit.
-pub fn room_for(left: u64, each: Option<u64>, running: usize) -> usize {
+/// What is left, divided by what one of these tasks cost. The multiplication
+/// comes first so that the fraction survives it.
+///
+/// A set that cost nothing measurable says nothing about how many fit, and
+/// neither does an empty one. Both leave one task to start, which is what
+/// makes the sample the next answer is worked out from.
+pub fn room_for(left: u64, cost: Option<Cost>, running: usize) -> usize {
     if left == 0 {
         return 0;
     }
-    let fits = match each.filter(|&each| each > 0) {
-        Some(each) => (left / each).min(AT_ONCE as u64) as usize,
+    let fits = match cost.filter(|cost| cost.total > 0 && cost.over > 0) {
+        Some(cost) => (left.saturating_mul(cost.over) / cost.total).min(AT_ONCE as u64) as usize,
         None => 1,
     };
     fits.saturating_sub(running)
 }
 
-/// What one task has cost, averaged over the ones that reported a cost.
-///
-/// Nothing is answered for a set that reported nothing, which is the first
-/// task of the first session there has ever been.
-pub fn each_of(costs: impl IntoIterator<Item = u64>) -> Option<u64> {
-    let (total, counted) = costs
+/// What a set of tasks cost together, and how many reported a cost.
+pub fn cost_of(costs: impl IntoIterator<Item = u64>) -> Cost {
+    costs
         .into_iter()
-        .fold((0u64, 0u64), |(total, counted), one| {
-            (total.saturating_add(one), counted + 1)
-        });
-    (counted > 0).then(|| total / counted)
+        .fold(Cost { total: 0, over: 0 }, |cost, one| Cost {
+            total: cost.total.saturating_add(one),
+            over: cost.over + 1,
+        })
 }
 
 #[cfg(test)]
@@ -114,6 +124,10 @@ mod tests {
         assert_eq!(budget.left(Spending::Tokens(1)), 0);
     }
 
+    fn over(total: u64, over: u64) -> Option<Cost> {
+        Some(Cost { total, over })
+    }
+
     #[test]
     fn with_nothing_to_go_on_one_task_starts() {
         assert_eq!(room_for(1_000_000, None, 0), 1);
@@ -121,46 +135,59 @@ mod tests {
 
     #[test]
     fn what_is_left_divided_by_what_one_costs_is_how_many_start() {
-        assert_eq!(room_for(300, Some(100), 0), 3);
+        assert_eq!(room_for(300, over(100, 1), 0), 3);
+        assert_eq!(room_for(300, over(300, 3), 0), 3);
+    }
+
+    /// Two tasks that moved the vendor's limit one point cost half a point
+    /// each. Working out that half first and then dividing by it loses the
+    /// whole answer, so a session declared as a share would run one task at a
+    /// time forever.
+    #[test]
+    fn a_cost_smaller_than_one_still_says_how_many_fit() {
+        // One point left, half a point each.
+        assert_eq!(room_for(1, over(1, 2), 0), 2);
+        assert_eq!(room_for(49, over(1, 2), 0), AT_ONCE);
     }
 
     #[test]
     fn what_is_already_running_counts_against_that() {
-        assert_eq!(room_for(300, Some(100), 2), 1);
-        assert_eq!(room_for(300, Some(100), 3), 0);
+        assert_eq!(room_for(300, over(100, 1), 2), 1);
+        assert_eq!(room_for(300, over(100, 1), 3), 0);
     }
 
     /// A large budget divides into more tasks than a machine should run.
     #[test]
     fn no_more_than_a_handful_start_however_large_the_budget() {
-        assert_eq!(room_for(1_000_000, Some(1), 0), AT_ONCE);
+        assert_eq!(room_for(1_000_000, over(1, 1), 0), AT_ONCE);
     }
 
     #[test]
     fn nothing_starts_once_the_budget_is_spent() {
-        assert_eq!(room_for(0, Some(100), 0), 0);
+        assert_eq!(room_for(0, over(100, 1), 0), 0);
         assert_eq!(room_for(0, None, 0), 0);
     }
 
     #[test]
     fn nothing_starts_when_one_task_costs_more_than_is_left() {
-        assert_eq!(room_for(50, Some(100), 0), 0);
+        assert_eq!(room_for(50, over(100, 1), 0), 0);
     }
 
-    /// A share moves in whole points, so a task smaller than one point reads
-    /// as costing nothing. That says how small it is, not how many fit.
+    /// A set that has cost nothing at all has not run yet.
     #[test]
-    fn a_cost_too_small_to_measure_starts_one_at_a_time() {
-        assert_eq!(room_for(50, Some(0), 0), 1);
-    }
-
-    #[test]
-    fn what_one_task_costs_is_the_average_of_what_they_did() {
-        assert_eq!(each_of([100, 200, 300]), Some(200));
+    fn a_set_that_cost_nothing_starts_one_at_a_time() {
+        assert_eq!(room_for(50, over(0, 2), 0), 1);
     }
 
     #[test]
-    fn a_set_that_reported_nothing_says_nothing() {
-        assert_eq!(each_of([]), None);
+    fn a_cost_is_what_a_set_came_to_and_how_many_were_in_it() {
+        assert_eq!(
+            cost_of([100, 200, 300]),
+            Cost {
+                total: 600,
+                over: 3
+            }
+        );
+        assert_eq!(cost_of([]), Cost { total: 0, over: 0 });
     }
 }
