@@ -345,8 +345,15 @@ mod tests {
             .read()
             .unwrap();
 
-        assert!(reading.used.parse::<u32>().unwrap() <= 100);
+        // Hundredths of a percent, so a full limit reads as ten thousand.
+        let used: u64 = reading.used.parse().unwrap();
+        assert!(used <= 10_000, "{used}");
         assert!(reading.resets_at.parse::<u64>().unwrap() > 0);
-        println!("used {}%, resets at {}", reading.used, reading.resets_at);
+        println!(
+            "used {}.{:02}%, resets at {}",
+            used / 100,
+            used % 100,
+            reading.resets_at
+        );
     }
 }
