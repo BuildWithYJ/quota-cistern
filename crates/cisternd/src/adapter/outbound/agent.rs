@@ -300,10 +300,31 @@ mod tests {
         )
         .unwrap();
         fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+        wait_until_runnable(&program);
 
         let mut standing = ClaudeAgent::new().unwrap();
         standing.program = program.display().to_string();
         standing
+    }
+
+    /// Waits for the file just written to be one this may run.
+    ///
+    /// Tests run beside each other, and a thread that starts a child while
+    /// another is still writing a file leaves that file open in the child.
+    /// Running a file that is open for writing is refused, so this asks until
+    /// it is not. The stand-in given no arguments does nothing and exits.
+    fn wait_until_runnable(program: &std::path::Path) {
+        for _ in 0..100 {
+            let ran = Command::new(program)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            if ran.is_ok() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 
     /// An answer a vendor actually sent, kept as it arrived apart from a
