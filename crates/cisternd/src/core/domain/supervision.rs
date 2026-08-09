@@ -14,6 +14,12 @@ use super::{Budget, Usage};
 /// budget would otherwise start as many as the budget divides into.
 const AT_ONCE: usize = 4;
 
+/// A percentage as hundredths of one.
+///
+/// A share is declared in whole percent and measured in hundredths, because
+/// one task moves the vendor's limit by less than a point.
+pub const HUNDREDTHS: u64 = 100;
+
 /// What a session has consumed of its usage budget, in the unit it declared.
 ///
 /// A share and a count are not two spellings of one number. A share is how far
@@ -22,7 +28,8 @@ const AT_ONCE: usize = 4;
 /// this session's tasks reported, and nothing else adds to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Spending {
-    Share(u32),
+    /// Hundredths of a percent.
+    Share(u64),
     Tokens(u64),
 }
 
@@ -34,7 +41,7 @@ impl Budget {
     pub fn left(&self, spent: Spending) -> u64 {
         match (self.usage, spent) {
             (Usage::Share(declared), Spending::Share(spent)) => {
-                u64::from(declared.saturating_sub(spent))
+                (u64::from(declared) * HUNDREDTHS).saturating_sub(spent)
             }
             (Usage::Tokens(declared), Spending::Tokens(spent)) => declared.saturating_sub(spent),
             // A session is measured in the unit it was declared in, and
@@ -104,10 +111,11 @@ mod tests {
         assert_eq!(budget.left(Spending::Tokens(400)), 600);
     }
 
+    /// A share is declared in whole percent and measured in hundredths.
     #[test]
-    fn a_share_is_left_over_in_the_same_points_it_was_declared_in() {
+    fn a_share_is_left_over_in_hundredths_of_a_percent() {
         let budget = declaring(Usage::Share(50));
-        assert_eq!(budget.left(Spending::Share(20)), 30);
+        assert_eq!(budget.left(Spending::Share(2_000)), 3_000);
     }
 
     /// A session can pass its budget between two decisions, since a decision
@@ -122,6 +130,12 @@ mod tests {
     fn nothing_is_left_when_the_unit_is_not_the_one_declared() {
         let budget = declaring(Usage::Share(50));
         assert_eq!(budget.left(Spending::Tokens(1)), 0);
+    }
+
+    #[test]
+    fn spending_more_of_a_share_than_was_declared_leaves_nothing() {
+        let budget = declaring(Usage::Share(1));
+        assert_eq!(budget.left(Spending::Share(4_000)), 0);
     }
 
     fn over(total: u64, over: u64) -> Option<Cost> {

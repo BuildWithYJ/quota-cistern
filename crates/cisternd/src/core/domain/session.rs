@@ -69,7 +69,7 @@ pub struct Opening {
     pub budget: Budget,
     pub model: Option<String>,
     pub started_at: u64,
-    pub limit_at_start: Option<u32>,
+    pub limit_at_start: Option<u64>,
 }
 
 /// A session, as the core holds one.
@@ -83,12 +83,12 @@ pub struct Session {
     model: Option<String>,
     /// Where the time limit is measured from.
     started_at: u64,
-    /// Where a share is measured from.
+    /// Where a share is measured from, in hundredths of a percent.
     ///
     /// A share says what this session may add to what the vendor's limit
     /// already held, so the reading it opened on is kept. A session declared
     /// in tokens has none.
-    limit_at_start: Option<u32>,
+    limit_at_start: Option<u64>,
 }
 
 /// A session on its way back from a store, with every value already read.
@@ -100,7 +100,7 @@ pub struct Held {
     pub budget: Budget,
     pub model: Option<String>,
     pub started_at: u64,
-    pub limit_at_start: Option<u32>,
+    pub limit_at_start: Option<u64>,
 }
 
 /// Every session, and the number the next one will get.
@@ -307,7 +307,7 @@ impl Session {
         self.started_at
     }
 
-    pub fn limit_at_start(&self) -> Option<u32> {
+    pub fn limit_at_start(&self) -> Option<u64> {
         self.limit_at_start
     }
 
@@ -426,7 +426,7 @@ mod tests {
             budget: a_budget(),
             model: None,
             started_at: 1_000,
-            limit_at_start: Some(11),
+            limit_at_start: Some(1_100),
         }
     }
 
@@ -512,7 +512,7 @@ mod tests {
             budget: a_budget(),
             model: None,
             started_at: 1_000,
-            limit_at_start: Some(11),
+            limit_at_start: Some(1_100),
         };
 
         assert_eq!(
@@ -533,7 +533,7 @@ mod tests {
             budget: a_budget(),
             model: None,
             started_at: 1_000,
-            limit_at_start: Some(11),
+            limit_at_start: Some(1_100),
         };
 
         assert_eq!(

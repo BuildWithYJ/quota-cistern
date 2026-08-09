@@ -8,7 +8,11 @@ use super::Unavailable;
 /// `outbound::backlog` gives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reading {
-    /// How much of the limit is spent, as a percentage.
+    /// How much of the limit is spent, in hundredths of a percent.
+    ///
+    /// Finer than the percentage a person is shown, because one task moves
+    /// the limit by less than a point and a budget divided by nothing is a
+    /// budget nobody can plan against.
     pub used: String,
     /// When the limit starts over, in seconds since the epoch.
     pub resets_at: String,

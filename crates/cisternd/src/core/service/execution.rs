@@ -2,9 +2,9 @@
 
 use crate::core::{
     domain::{
-        Budget, Consumption, Cost, Held, NotASessionSet, NotOpened, Observation, Opening, Session,
-        SessionId, SessionState, Sessions, Span, Spending, StoppedReason, Task, TaskId, TaskState,
-        Usage, cost_of, room_for,
+        Budget, Consumption, Cost, HUNDREDTHS, Held, NotASessionSet, NotOpened, Observation,
+        Opening, Session, SessionId, SessionState, Sessions, Span, Spending, StoppedReason, Task,
+        TaskId, TaskState, Usage, cost_of, room_for,
     },
     port::{
         inbound::{Declaration, Declared, ExecutionUseCase, Refusal, Started},
@@ -50,7 +50,7 @@ impl<'a> ExecutionService<'a> {
     ///
     /// Only a session declared as a share asks, since only a share is measured
     /// against it and asking costs something.
-    fn limit_now(&self) -> Result<u32, Refusal> {
+    fn limit_now(&self) -> Result<u64, Refusal> {
         let reading = self.limit.read()?;
         reading
             .used
@@ -215,7 +215,7 @@ fn counted(spent: &Spent) -> Option<Consumption> {
 const AT_CEILING: &str = "task ceiling";
 
 /// The reading at which the vendor has nothing left to give.
-const FULL: u32 = 100;
+const FULL: u64 = 100 * HUNDREDTHS;
 
 impl ExecutionService<'_> {
     /// Whether the vendor has nothing left to give.
@@ -289,8 +289,8 @@ impl ExecutionService<'_> {
                 }
                 // A share is how far this session moved the vendor's limit,
                 // and only this session's tasks moved it.
-                (Usage::Share(_), Spending::Share(points)) => Some(Cost {
-                    total: u64::from(points),
+                (Usage::Share(_), Spending::Share(spent)) => Some(Cost {
+                    total: spent,
                     over: tasks.ended_in(session) as u64,
                 }),
                 (Usage::Share(_), Spending::Tokens(_)) => None,
@@ -399,10 +399,6 @@ fn stored_count(field: &str, value: &str) -> Result<u64, Refusal> {
     value.parse().map_err(|_| unreadable(field, value))
 }
 
-fn stored_share(field: &str, value: &str) -> Result<u32, Refusal> {
-    value.parse().map_err(|_| unreadable(field, value))
-}
-
 /// Reads the sessions and holds them to the same standard as an argument.
 ///
 /// Nobody is meant to write this file, so a set that does not add up is a store
@@ -434,7 +430,7 @@ fn held_from(one: StoredSession) -> Result<Held, Refusal> {
         limit_at_start: one
             .limit_at_start
             .as_deref()
-            .map(|used| stored_share("limit_at_start", used))
+            .map(|used| stored_count("limit_at_start", used))
             .transpose()?,
         id: SessionId::parse(&one.id).ok_or_else(|| unreadable("id", &one.id))?,
         state: SessionState::parse(&one.state).ok_or_else(|| unreadable("state", &one.state))?,
@@ -680,7 +676,8 @@ mod tests {
 
     /// A vendor limit that stands where a test put it.
     struct AtPercent {
-        used: Mutex<u32>,
+        /// Hundredths of a percent, as the port carries it.
+        used: Mutex<u64>,
         refuse: bool,
     }
 
@@ -1103,7 +1100,7 @@ mod tests {
             observed: spending(),
         });
         let full = AtPercent {
-            used: Mutex::new(100),
+            used: Mutex::new(100 * HUNDREDTHS),
             refuse: false,
         };
         let execution = ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &full);
@@ -1134,7 +1131,7 @@ mod tests {
             observed: spending(),
         });
         let room = AtPercent {
-            used: Mutex::new(40),
+            used: Mutex::new(40 * HUNDREDTHS),
             refuse: false,
         };
         let execution = ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &room);

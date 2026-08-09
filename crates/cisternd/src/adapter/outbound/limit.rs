@@ -264,14 +264,22 @@ fn kept(written: &Path) -> Option<Reading> {
         .next_back()
 }
 
+/// A percentage as hundredths of one.
+const HUNDREDTHS: f64 = 100.0;
+
 /// The five-hour limit out of one status line.
 ///
 /// Section 2.2 measures a session against the limit that starts over every
 /// five hours. The longer one arrives alongside and is not read.
+///
+/// The vendor writes the percentage as a fraction, and one that lands on a
+/// whole number lands a hair off it. It crosses as hundredths of a percent,
+/// which is finer than a person is shown and holds every figure seen so far.
 fn reading_in(one: &Value) -> Option<Reading> {
     let window = one.get("rate_limits")?.get("five_hour")?;
+    let used = window.get("used_percentage")?.as_f64()?;
     Some(Reading {
-        used: window.get("used_percentage")?.as_u64()?.to_string(),
+        used: ((used * HUNDREDTHS).round().max(0.0) as u64).to_string(),
         resets_at: window.get("resets_at")?.as_u64()?.to_string(),
     })
 }
@@ -298,14 +306,14 @@ mod tests {
     fn the_five_hour_limit_is_what_is_read_out_of_a_status_line() {
         let line = serde_json::json!({
             "rate_limits": {
-                "five_hour": { "used_percentage": 17, "resets_at": 1786285800u64 },
+                "five_hour": { "used_percentage": 7.000000000000001, "resets_at": 1786285800u64 },
                 "seven_day": { "used_percentage": 44, "resets_at": 1786316400u64 }
             }
         });
         assert_eq!(
             reading_in(&line),
             Some(Reading {
-                used: "17".to_owned(),
+                used: "700".to_owned(),
                 resets_at: "1786285800".to_owned()
             })
         );
