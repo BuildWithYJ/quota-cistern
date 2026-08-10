@@ -23,6 +23,10 @@ pub fn run(usage: &str, time: &str, model: Option<String>) -> ExitCode {
     )
 }
 
+pub fn interrupt() -> ExitCode {
+    send("interrupt", serde_json::json!({}), interrupted)
+}
+
 pub fn query(command: SessionCommand) -> ExitCode {
     match command {
         SessionCommand::Ls { page, limit } => send(
@@ -104,6 +108,31 @@ fn started(data: &Value) {
 
 /// The width `session show` lays its two figures out in.
 const REPORTED: usize = 10;
+
+fn interrupted(data: &Value) {
+    let Some(session) = data.get("session").and_then(Value::as_str) else {
+        return;
+    };
+    println!("{session} interrupted");
+
+    if let Some(tasks) = data.get("interrupted_tasks").and_then(Value::as_array) {
+        for task in tasks.iter().filter_map(Value::as_str) {
+            println!("  {task} {TOWARDS} Interrupted");
+        }
+    }
+
+    let field = |name: &str| {
+        data.get("consumed")
+            .and_then(|held| held.get(name))
+            .and_then(Value::as_str)
+            .unwrap_or("(none)")
+    };
+    println!(
+        "  consumed {} {BETWEEN} time {}",
+        field("usage"),
+        field("time")
+    );
+}
 
 fn listed(data: &Value) {
     let Some(sessions) = data.get("sessions").and_then(Value::as_array) else {

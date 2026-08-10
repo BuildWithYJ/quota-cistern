@@ -374,9 +374,14 @@ impl Backlog {
     ///
     /// Every terminal state leaves the branch alone, so what changes here is
     /// what the task says about itself.
+    ///
+    /// Only a task that is still running ends. A task interrupted by hand
+    /// ends the moment the user asks, and the thread that was waiting on its
+    /// agent comes back afterwards to say the agent failed. The first answer
+    /// is the true one.
     pub fn finish(&mut self, id: TaskId, state: TaskState, reason: Option<String>) {
         for task in &mut self.tasks {
-            if task.id == id {
+            if task.id == id && task.state == TaskState::Running {
                 task.state = state;
                 task.reason.clone_from(&reason);
             }

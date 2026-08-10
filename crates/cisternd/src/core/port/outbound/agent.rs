@@ -4,6 +4,11 @@ use super::Unavailable;
 
 /// What an agent is being asked to do.
 pub struct Work<'a> {
+    /// The task this is a run of.
+    ///
+    /// Nothing about the run needs it. It is what a later `stop` names, and
+    /// the run has to be findable by then.
+    pub task: &'a str,
     /// The work area it runs in.
     pub at: &'a str,
     pub instruction: &'a str,
@@ -81,4 +86,11 @@ pub trait Agent: Sync {
     /// This does not return until the agent has, so whoever calls it is not on
     /// a thread that anything else waits for.
     fn work(&self, work: Work<'_>) -> Result<Ended, Unavailable>;
+
+    /// Ends the run a task has going, if it still has one.
+    ///
+    /// Nothing is answered. What the run did up to here is whatever it
+    /// committed, and how the task ended is the core's to record. Asking for a
+    /// task that is not running does nothing.
+    fn stop(&self, task: &str);
 }

@@ -3,8 +3,19 @@
 //! The only place that knows the program, its arguments, and what it writes.
 //! None of that reaches the core.
 
-use std::process::{Command, Stdio};
+use std::{
+    collections::HashMap,
+    os::unix::process::CommandExt,
+    process::{Command, Stdio},
+    sync::{Mutex, PoisonError},
+    thread,
+    time::Duration,
+};
 
+use nix::{
+    sys::signal::{Signal, killpg},
+    unistd::Pid,
+};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -43,12 +54,24 @@ const AT_SPEND: &str = "error_max_budget";
 /// forget.
 const FORMAT: [&str; 2] = ["--output-format", "json"];
 
+/// How long a run has to end on its own before it is made to.
+///
+/// A run commits as it goes, so there is little for it to tidy up, and
+/// whoever asked for it to stop is waiting for the command to come back.
+const TIDIES_UP_IN: Duration = Duration::from_secs(2);
+
 /// Runs the agent as a child process and waits for it.
 pub struct ClaudeAgent {
     program: String,
     /// The arguments as they were written, with the places still in them.
     args: Vec<Vec<String>>,
     goal: String,
+    /// The process group each running task was given, by task.
+    ///
+    /// A run is ended from whichever thread took the command that asked for
+    /// it, not from the one waiting on the run, so where to send that has to
+    /// be somewhere both can reach.
+    running: Mutex<HashMap<String, u32>>,
 }
 
 /// The invocation as its file holds it.
@@ -76,6 +99,7 @@ impl ClaudeAgent {
             program: read.program,
             args: read.args,
             goal: GOAL.trim().to_owned(),
+            running: Mutex::new(HashMap::new()),
         })
     }
 
@@ -200,28 +224,124 @@ impl Agent for ClaudeAgent {
             // the core, and would wait on it forever if it tried.
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            // A group of its own, so that everything the run started can be
+            // ended together. An agent starts children, and those start their
+            // own; ending the one this holds leaves the rest.
+            .process_group(0);
+
+        let mut child = running
+            .spawn()
+            .map_err(|e| Unavailable::new(format!("{}: {e}", self.program)))?;
+        let group = child.id();
+        self.went(work.task, group);
 
         // Both pipes are read while the child writes, so a child that writes
         // more than a pipe holds carries on rather than stopping where it is.
-        let done = running
-            .output()
+        let stdout = reading(child.stdout.take());
+        let stderr = reading(child.stderr.take());
+
+        let status = child
+            .wait()
             .map_err(|e| Unavailable::new(format!("{}: {e}", self.program)))?;
+
+        // Whatever the agent started outlives it and holds the writing end of
+        // those pipes. Waiting for the reading to finish before the group is
+        // gone would be waiting on a child nobody is watching.
+        self.gone(work.task);
+        end(group);
+
+        let (stdout, stderr) = (said_by(stdout), said_by(stderr));
 
         // Read once. How the run ended and what it consumed are two questions
         // about one object, and one of them failing must not lose the other.
-        let answer = serde_json::from_slice::<Value>(&done.stdout).ok();
+        let answer = serde_json::from_slice::<Value>(&stdout).ok();
 
-        let outcome = outcome_of(done.status.success(), answer.as_ref());
+        let outcome = outcome_of(status.success(), answer.as_ref());
         Ok(Ended {
             outcome,
             reason: match outcome {
                 Outcome::Finished => None,
-                _ => Some(said(&done.status, &done.stderr, answer.as_ref())),
+                _ => Some(said(&status, &stderr, answer.as_ref())),
             },
             observed: observed(answer.as_ref()),
         })
     }
+
+    fn stop(&self, task: &str) {
+        let Some(group) = self.gone(task) else {
+            return;
+        };
+        end(group);
+    }
+}
+
+impl ClaudeAgent {
+    /// Remembers which group a task's run was given.
+    fn went(&self, task: &str, group: u32) {
+        self.running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(task.to_owned(), group);
+    }
+
+    /// Forgets it, and says what it was.
+    fn gone(&self, task: &str) -> Option<u32> {
+        self.running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(task)
+    }
+}
+
+/// Ends a process group, and makes sure of it.
+///
+/// The first signal is one a process may act on. A group with nothing left in
+/// it is done there, which is every run that ended on its own. Whatever is
+/// still there after that is not going to act on it, and whoever asked for
+/// this is waiting.
+fn end(group: u32) {
+    signal(Signal::SIGTERM, group);
+    if !still_there(group) {
+        return;
+    }
+    thread::sleep(TIDIES_UP_IN);
+    signal(Signal::SIGKILL, group);
+}
+
+/// Whether anything in the group is still running.
+fn still_there(group: u32) -> bool {
+    signal(None, group)
+}
+
+/// Signals a whole process group, and says whether there was one.
+///
+/// Not through the `kill` program. The two systems this runs on disagree about
+/// what a negative number on its command line means: one reads it as the group
+/// to signal and the other as the signal to send, so on one of them nothing
+/// was signalled and nothing said so. Nothing is sent when no signal is given,
+/// which only asks whether the group is there.
+fn signal(with: impl Into<Option<Signal>>, group: u32) -> bool {
+    let Ok(group) = i32::try_from(group) else {
+        return false;
+    };
+    killpg(Pid::from_raw(group), with).is_ok()
+}
+
+/// Reads one of the run's pipes on a thread of its own.
+fn reading<R: std::io::Read + Send + 'static>(held: Option<R>) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut said = Vec::new();
+        if let Some(mut held) = held {
+            let _ = held.read_to_end(&mut said);
+        }
+        said
+    })
+}
+
+/// What that pipe carried, once nobody is left to write to it.
+fn said_by(reading: thread::JoinHandle<Vec<u8>>) -> Vec<u8> {
+    reading.join().unwrap_or_default()
 }
 
 /// What the agent said about a run that failed.
@@ -360,6 +480,7 @@ mod tests {
 
     fn working<'a>(at: &'a str, instruction: &'a str) -> Work<'a> {
         Work {
+            task: "1",
             at,
             instruction,
             model: None,
@@ -653,6 +774,54 @@ mod tests {
         ]);
         assert!(!unnamed.contains(&"--model".to_owned()), "{unnamed:?}");
         assert!(unnamed.contains(&"--max-turns".to_owned()), "{unnamed:?}");
+    }
+
+    /// An agent that leaves something of its own behind. Ending the agent
+    /// alone leaves that holding the pipe this reads, and reading it to the
+    /// end would never finish.
+    #[test]
+    fn a_run_that_left_a_child_behind_still_answers() {
+        let held = TempDir::new().unwrap();
+        let ended = standing_in(&held)
+            .work(working(
+                &held.path().display().to_string(),
+                "sleep 60 & echo the agent said this",
+            ))
+            .unwrap();
+
+        assert_eq!(ended.outcome, Outcome::Finished);
+    }
+
+    /// What the run wrote is still read, though what wrote it is gone by then.
+    #[test]
+    fn what_a_run_wrote_survives_the_end_of_its_group() {
+        let held = TempDir::new().unwrap();
+        let said = answering(&held, AN_ANSWER);
+        let ended = standing_in(&held)
+            .work(working(
+                &held.path().display().to_string(),
+                &format!("sleep 60 & {said}; exit 1"),
+            ))
+            .unwrap();
+
+        assert!(matches!(ended.observed, Observed::Spent(_)), "{ended:?}");
+    }
+
+    /// Nothing the run started is left once it has been answered for.
+    #[test]
+    fn nothing_of_the_run_outlives_the_answer() {
+        let held = TempDir::new().unwrap();
+        let marker = held.path().join("still-here");
+        standing_in(&held)
+            .work(working(
+                &held.path().display().to_string(),
+                &format!("(sleep 3; touch '{}') & echo done", marker.display()),
+            ))
+            .unwrap();
+
+        // Longer than the child would have taken, had it lived.
+        thread::sleep(Duration::from_secs(5));
+        assert!(!marker.exists(), "something the run started outlived it");
     }
 
     #[test]

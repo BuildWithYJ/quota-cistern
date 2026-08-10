@@ -9,6 +9,7 @@ use crate::core::{
     port::{
         inbound::{
             Declaration, Declared, ExecutionUseCase, Listed, Page, Ran, Refusal, Report, Started,
+            Stopped,
         },
         outbound::{
             Agent, BacklogStore, Clock, Cut, Limit, Observed, Outcome, SessionStore, Spent, Work,
@@ -192,6 +193,54 @@ impl ExecutionUseCase for ExecutionService<'_> {
         })
     }
 
+    fn interrupt(&self) -> Result<Stopped, Refusal> {
+        let held = sessions::read(self.sessions)?;
+        let running = held.running().ok_or(Refusal::NoSessionRunning)?.id();
+
+        // Read before anything is ended. A task the vendor was still running
+        // will not report what it spent, and for a share the vendor's own
+        // figure has that in it.
+        let spent = self.spending_of(running)?;
+        let now = self.clock.now();
+        sessions::change(self.sessions, |sessions| {
+            sessions.record(running, spent, now);
+            Ok(())
+        })?;
+
+        // The runs end before the tasks do, so nothing is recorded as ended
+        // while its agent is still working.
+        for task in backlog::read(self.tasks)?.taken_by(running) {
+            if task.state() == TaskState::Running {
+                self.agent.stop(&task.id().to_string());
+            }
+        }
+
+        let interrupted = backlog::change(self.tasks, |tasks| {
+            Ok(tasks.interrupt(running, &StoppedReason::Interrupted.to_string()))
+        })?;
+        sessions::change(self.sessions, |sessions| {
+            sessions.stop(running, StoppedReason::Interrupted, now);
+            Ok(())
+        })?;
+
+        let held = sessions::read(self.sessions)?;
+        let session = held
+            .sessions()
+            .iter()
+            .find(|session| session.id() == running)
+            .ok_or(Refusal::NoSessionRunning)?;
+
+        Ok(Stopped {
+            session: running.labelled(),
+            state: session.state().to_string(),
+            interrupted_tasks: labelled(interrupted),
+            consumed: Declared {
+                usage: session.consumed().to_string(),
+                time: self.elapsed(session).to_string(),
+            },
+        })
+    }
+
     fn carry_on(&self, task: &str) -> Result<Vec<String>, Refusal> {
         let id = TaskId::parse(task).ok_or_else(|| Refusal::BadValue {
             key: "task".to_owned(),
@@ -230,6 +279,7 @@ impl ExecutionUseCase for ExecutionService<'_> {
         })?;
 
         let ended = self.agent.work(Work {
+            task: &id.to_string(),
             at: &at,
             instruction: &instruction,
             model: model.as_deref(),
@@ -482,6 +532,17 @@ impl ExecutionService<'_> {
             Ok(!tasks.interrupt(session, &why.to_string()).is_empty())
         })
         .map(|_: bool| ())
+    }
+
+    /// The same, for a session named only by its number.
+    fn spending_of(&self, session: SessionId) -> Result<Spending, Refusal> {
+        let held = sessions::read(self.sessions)?;
+        let held = held
+            .sessions()
+            .iter()
+            .find(|held| held.id() == session)
+            .ok_or(Refusal::NoSessionRunning)?;
+        self.spending(held)
     }
 
     /// What the session has consumed of its usage budget.
@@ -743,6 +804,8 @@ mod tests {
     struct Standing {
         ended: Ended,
         asked: Mutex<Vec<(String, String, Option<String>)>>,
+        /// The tasks whose runs were asked to end.
+        stopped: Mutex<Vec<String>>,
     }
 
     impl Standing {
@@ -750,6 +813,7 @@ mod tests {
             Standing {
                 ended,
                 asked: Mutex::new(Vec::new()),
+                stopped: Mutex::new(Vec::new()),
             }
         }
 
@@ -763,6 +827,13 @@ mod tests {
     }
 
     impl Agent for Standing {
+        fn stop(&self, task: &str) {
+            self.stopped
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(task.to_owned());
+        }
+
         fn work(&self, work: Work<'_>) -> Result<Ended, Unavailable> {
             self.asked.lock().unwrap().push((
                 work.at.to_owned(),
@@ -1429,6 +1500,87 @@ mod tests {
                 id: "session:7".to_owned()
             })
         );
+    }
+
+    #[test]
+    fn interrupting_stops_the_session_and_ends_what_was_running() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+        let areas = Areas::default();
+        let agent = Standing::finishing();
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+
+        execution.run(declaring("2M", "8h")).unwrap();
+        let stopped = execution.interrupt().unwrap();
+
+        assert_eq!(stopped.session, "session:1");
+        assert_eq!(stopped.state, "stopped");
+        assert_eq!(stopped.interrupted_tasks, ["task:1"]);
+
+        let session = sessions.load().sessions[0].clone();
+        assert_eq!(session.stopped_reason.as_deref(), Some("interrupted"));
+        assert_eq!(tasks.first().state, "Interrupted");
+        assert_eq!(tasks.first().reason.as_deref(), Some("interrupted"));
+    }
+
+    /// The run has to end before the task does. A task recorded as ended
+    /// while its agent still works is a task nobody is watching.
+    #[test]
+    fn interrupting_ends_the_run_of_every_task_it_interrupts() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+        let areas = Areas::default();
+        let agent = Standing::finishing();
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+
+        execution.run(declaring("2M", "8h")).unwrap();
+        execution.interrupt().unwrap();
+
+        assert_eq!(
+            agent
+                .stopped
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_slice(),
+            ["1"]
+        );
+    }
+
+    /// The thread waiting on a killed agent comes back to say it failed, and
+    /// the task has already ended for a better reason.
+    #[test]
+    fn what_the_agent_says_afterwards_does_not_undo_the_interruption() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+        let areas = Areas::default();
+        let agent = Standing::ending(Ended {
+            outcome: Outcome::Failed,
+            reason: Some("it was killed".to_owned()),
+            observed: spending(),
+        });
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+
+        execution.run(declaring("2M", "8h")).unwrap();
+        execution.interrupt().unwrap();
+        execution.carry_on("task:1").unwrap();
+
+        assert_eq!(tasks.first().state, "Interrupted");
+        assert_eq!(tasks.first().reason.as_deref(), Some("interrupted"));
+    }
+
+    #[test]
+    fn interrupting_with_nothing_running_says_so() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task()]);
+        let areas = Areas::default();
+        let agent = Standing::finishing();
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+
+        assert_eq!(execution.interrupt(), Err(Refusal::NoSessionRunning));
     }
 
     /// A session that has run as long as it declared stops, and whatever it

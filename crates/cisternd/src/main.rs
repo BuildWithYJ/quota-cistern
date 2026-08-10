@@ -16,7 +16,7 @@ mod platform;
 
 use adapter::{inbound, outbound};
 use core::{
-    port::inbound::{Declaration, ExecutionUseCase, Page, Refusal, Report, Started},
+    port::inbound::{Declaration, ExecutionUseCase, Page, Refusal, Report, Started, Stopped},
     service::{BacklogService, ConfigurationService, ExecutionService},
 };
 use platform::work::Queue;
@@ -136,6 +136,10 @@ impl<U: ExecutionUseCase> ExecutionUseCase for Queueing<'_, U> {
 
     fn session(&self, id: &str) -> Result<Report, Refusal> {
         self.execution.session(id)
+    }
+
+    fn interrupt(&self) -> Result<Stopped, Refusal> {
+        self.execution.interrupt()
     }
 
     fn carry_on(&self, task: &str) -> Result<Vec<String>, Refusal> {
