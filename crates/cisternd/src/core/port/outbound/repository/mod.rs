@@ -8,6 +8,6 @@ mod result;
 mod roots;
 mod worktree;
 
-pub use result::{Between, Changes, NotApplied, Results, Touched};
+pub use result::{Between, Changes, Counts, NotApplied, Results, Touched};
 pub use roots::RepositoryRoots;
 pub use worktree::{Cut, Worktrees};

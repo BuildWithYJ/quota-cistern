@@ -8,7 +8,9 @@ use std::{
     process::{Command, Output, Stdio},
 };
 
-use crate::core::port::outbound::{Between, Changes, NotApplied, Results, Touched, Unavailable};
+use crate::core::port::outbound::{
+    Between, Changes, Counts, NotApplied, Results, Touched, Unavailable,
+};
 
 /// Results read out of the repository the task was added from.
 ///
@@ -17,12 +19,8 @@ use crate::core::port::outbound::{Between, Changes, NotApplied, Results, Touched
 pub struct GitResults;
 
 impl Results for GitResults {
-    fn changes(&self, between: Between<'_>) -> Option<Changes> {
-        let range = diverged(between.base, between.branch);
-
-        Some(Changes {
-            files: touched(&git(between.repository, &["diff", "--numstat", &range])?),
-            patch: git(between.repository, &["diff", "--patch", &range])?,
+    fn counts(&self, between: Between<'_>) -> Option<Counts> {
+        Some(Counts {
             commits: counted(&git(
                 between.repository,
                 &["rev-list", "--count", &behind(between.base, between.branch)],
@@ -31,6 +29,15 @@ impl Results for GitResults {
                 between.repository,
                 &["rev-list", "--count", &behind(between.branch, between.base)],
             )?),
+        })
+    }
+
+    fn changes(&self, between: Between<'_>) -> Option<Changes> {
+        let range = diverged(between.base, between.branch);
+
+        Some(Changes {
+            files: touched(&git(between.repository, &["diff", "--numstat", &range])?),
+            patch: git(between.repository, &["diff", "--patch", &range])?,
         })
     }
 
@@ -265,13 +272,15 @@ mod tests {
         let at = path_of(&dir);
 
         let changes = GitResults.changes(between(&at, "cistern/1")).unwrap();
-        assert_eq!(changes.commits, "1");
-        assert_eq!(changes.base_ahead, "0");
         assert_eq!(changes.files.len(), 1);
         assert_eq!(changes.files[0].path, "verify.ts");
         assert_eq!(changes.files[0].added, "2");
         assert_eq!(changes.files[0].removed, "0");
         assert!(changes.patch.contains("verify.ts"), "{}", changes.patch);
+
+        let counts = GitResults.counts(between(&at, "cistern/1")).unwrap();
+        assert_eq!(counts.commits, "1");
+        assert_eq!(counts.base_ahead, "0");
     }
 
     /// Section 2.4 reports how far the base has moved since the task left it,
@@ -284,8 +293,14 @@ mod tests {
         run(dir.path(), &["add", "."]);
         run(dir.path(), &["commit", "-m", "moved on"]);
 
+        assert_eq!(
+            GitResults
+                .counts(between(&at, "cistern/1"))
+                .unwrap()
+                .base_ahead,
+            "1"
+        );
         let changes = GitResults.changes(between(&at, "cistern/1")).unwrap();
-        assert_eq!(changes.base_ahead, "1");
         assert!(!changes.patch.contains("elsewhere.ts"), "{}", changes.patch);
     }
 
@@ -296,6 +311,7 @@ mod tests {
         let dir = a_repository_with_a_result();
         let at = path_of(&dir);
         assert!(GitResults.changes(between(&at, "cistern/9")).is_none());
+        assert!(GitResults.counts(between(&at, "cistern/9")).is_none());
         assert_eq!(
             GitResults.apply(between(&at, "cistern/9")),
             Err(NotApplied::NotThere)

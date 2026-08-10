@@ -107,13 +107,14 @@ impl ReviewUseCase for ReviewService<'_> {
 
         let mut items = Vec::new();
         for task in backlog.awaiting_review() {
-            // Read rather than insisted on: a branch the user deleted leaves
-            // this task without counts, and the rest of the queue still has to
-            // be listed.
+            // Only the counts: a list says how many commits a branch holds
+            // and never shows what is in them. Read rather than insisted on,
+            // since a branch the user deleted leaves this task without counts
+            // and the rest of the queue still has to be listed.
             let lies = task.result_branch().map(|branch| Lies::of(task, branch));
-            let changes = lies
+            let counts = lies
                 .as_ref()
-                .and_then(|lies| self.results.changes(lies.asked()));
+                .and_then(|lies| self.results.counts(lies.asked()));
 
             items.push(Awaiting {
                 id: task.id().labelled(),
@@ -121,8 +122,8 @@ impl ReviewUseCase for ReviewService<'_> {
                 session: task.session().map(|id| id.labelled()),
                 branch: lies.map(|lies| lies.branch),
                 state: task.state().to_string(),
-                commit_count: changes.as_ref().and_then(|it| count(&it.commits)),
-                base_ahead: changes.as_ref().and_then(|it| count(&it.base_ahead)),
+                commit_count: counts.as_ref().and_then(|it| count(&it.commits)),
+                base_ahead: counts.as_ref().and_then(|it| count(&it.base_ahead)),
             });
         }
         Ok(Queue { items })
@@ -239,7 +240,7 @@ fn count(written: &str) -> Option<u64> {
 mod tests {
     use std::sync::Mutex;
 
-    use crate::core::port::outbound::{StoredBacklog, StoredTask, Unavailable};
+    use crate::core::port::outbound::{Counts, StoredBacklog, StoredTask, Unavailable};
 
     use super::*;
 
@@ -301,6 +302,7 @@ mod tests {
     /// branch reached it as the task holds them.
     struct Repository {
         changes: Option<Changes>,
+        counts: Option<Counts>,
         applies: Option<NotApplied>,
         reachable: bool,
         asked: Mutex<Vec<String>>,
@@ -316,6 +318,8 @@ mod tests {
                         removed: "3".to_owned(),
                     }],
                     patch: "diff --git a b".to_owned(),
+                }),
+                counts: Some(Counts {
                     commits: "3".to_owned(),
                     base_ahead: "2".to_owned(),
                 }),
@@ -330,6 +334,7 @@ mod tests {
         fn holding_nothing() -> Self {
             Repository {
                 changes: None,
+                counts: None,
                 ..Default::default()
             }
         }
@@ -343,9 +348,17 @@ mod tests {
     }
 
     impl Results for Repository {
+        fn counts(&self, between: Between<'_>) -> Option<Counts> {
+            self.asked.lock().unwrap().push(format!(
+                "counts {} {}..{}",
+                between.repository, between.base, between.branch
+            ));
+            self.counts.clone()
+        }
+
         fn changes(&self, between: Between<'_>) -> Option<Changes> {
             self.asked.lock().unwrap().push(format!(
-                "{} {}..{}",
+                "changes {} {}..{}",
                 between.repository, between.base, between.branch
             ));
             self.changes.clone()
@@ -353,7 +366,7 @@ mod tests {
 
         fn apply(&self, between: Between<'_>) -> Result<Vec<Touched>, NotApplied> {
             self.asked.lock().unwrap().push(format!(
-                "{} {}..{}",
+                "apply {} {}..{}",
                 between.repository, between.base, between.branch
             ));
             match self.applies.clone() {
@@ -400,6 +413,23 @@ mod tests {
         assert_eq!(queue.items[0].branch.as_deref(), Some("cistern/3"));
     }
 
+    /// A list says how many commits a branch holds and never shows what is in
+    /// them, so it must not build the patch to find out.
+    #[test]
+    fn listing_the_queue_asks_only_for_the_counts() {
+        let tasks = holding(vec![a_task("1", "Completed"), a_task("2", "Error")]);
+        let git = Repository::default();
+
+        ReviewService::new(&tasks, &git).queue().unwrap();
+        assert_eq!(
+            git.asked.lock().unwrap().as_slice(),
+            [
+                "counts /work/api main..cistern/1",
+                "counts /work/api main..cistern/2"
+            ]
+        );
+    }
+
     /// The repository belongs to whoever is using this, and a task they left
     /// no branch for still has to appear.
     #[test]
@@ -435,7 +465,7 @@ mod tests {
         assert_eq!(difference.files[0].added, Some(64));
         assert_eq!(
             git.asked.lock().unwrap().as_slice(),
-            ["/work/api main..cistern/1"]
+            ["changes /work/api main..cistern/1"]
         );
     }
 

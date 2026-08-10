@@ -20,12 +20,17 @@ pub struct Touched {
     pub removed: String,
 }
 
-/// What a task changed, and how far its base has moved since.
+/// What a task changed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Changes {
     pub files: Vec<Touched>,
     /// The whole of it, as a patch.
     pub patch: String,
+}
+
+/// How far the two branches have moved apart.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Counts {
     /// Commits the branch gained after it left the base.
     pub commits: String,
     /// Commits the base gained after the branch left it.
@@ -57,11 +62,20 @@ pub enum NotApplied {
 
 /// What a task left behind, and how it is taken up.
 pub trait Results: Sync {
-    /// What lies between the two branches.
+    /// How far the two branches have moved apart.
+    ///
+    /// Apart from [`Results::changes`] because a list only wants the counts,
+    /// and answering both together would build the whole of a task's patch to
+    /// print how many commits it holds.
     ///
     /// Nothing is answered for a branch or a repository that is not there.
     /// A task whose result has been deleted is still a task, and a list of
     /// them that failed over one of them would hide the rest.
+    fn counts(&self, between: Between<'_>) -> Option<Counts>;
+
+    /// What lies between the two branches.
+    ///
+    /// Nothing is answered for a branch or a repository that is not there.
     fn changes(&self, between: Between<'_>) -> Option<Changes>;
 
     /// Brings those changes into the repository's working tree.
