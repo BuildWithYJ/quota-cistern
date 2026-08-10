@@ -16,6 +16,8 @@ An inbound adapter names the inbound ports and nothing else.
 
 `port` declares both edges. `port::inbound` is what the core offers, one trait per command group with the values those commands answer with. `port::outbound` is what the core needs from outside. A vendor name, a file path, a git invocation, and a clock reading do not appear in either.
 
+One outside, one place. An outside that holds several conversations is a directory named after that outside, and one that holds a single conversation is a file. The vendor answers two questions, running a task and how much of its allowance is left, so `port::outbound::vendor` holds both. The repository a task was added from answers three, so `port::outbound::repository` holds those.
+
 `domain` holds the entities and the rules over them. `service` drives them: one service per command group, holding the outbound ports its own commands use and implementing the inbound trait those commands are declared as.
 
 `domain` is a private module, so nothing outside `core` names an entity. It is given values it can already take, never the text a store kept them as. Reading what a store hands back is `service`'s work, and so is writing it out again.
@@ -27,6 +29,8 @@ An adapter has a port on one side and something outside on the other. Code that 
 An inbound adapter turns an envelope into a use case call and the answer back into an envelope. Which exit code a refusal becomes is decided here; the core never names one.
 
 An outbound adapter is where a vendor's field names, a file format, and a git invocation belong. None of them cross back into the core, and `cisternd/tests/architecture.rs` checks the field names.
+
+Outbound adapters are grouped the way the ports are, but named for the means rather than for the outside: `claude` answers `vendor` and `git` answers `repository`. A second vendor is a directory beside `claude` and nothing else. Whatever a means needs in order to work — an invocation written as JSON, a prompt, a stand-in used in tests — sits in that directory too.
 
 ## Platform
 
@@ -47,6 +51,8 @@ cisternd/src/
   core/service/       one per command group
   adapter/inbound/    envelope to use case
   adapter/outbound/   port to file or git
+  adapter/outbound/claude/  what answers the vendor ports
+  adapter/outbound/git/     what answers the repository ports
   platform/           what touches no port
   main.rs             composition root
 ```

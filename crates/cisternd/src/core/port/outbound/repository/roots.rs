@@ -1,6 +1,6 @@
 //! Which repository a place belongs to.
 
-use super::Unavailable;
+use super::super::Unavailable;
 
 /// Answers which repository a directory sits in.
 pub trait RepositoryRoots: Sync {

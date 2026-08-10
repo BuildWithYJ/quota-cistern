@@ -1,6 +1,6 @@
 //! How much of the vendor's limit has been spent, as the core asks for it.
 
-use super::Unavailable;
+use super::super::Unavailable;
 
 /// What the vendor says about the limit a session runs against.
 ///

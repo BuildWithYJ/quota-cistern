@@ -1,6 +1,6 @@
 //! Where a task gets a place of its own to work in.
 
-use super::Unavailable;
+use super::super::Unavailable;
 
 /// What a work area is being made for.
 ///

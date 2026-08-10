@@ -1,6 +1,6 @@
 //! What a task left on its branch, as the core asks for it.
 
-use super::Unavailable;
+use super::super::Unavailable;
 
 /// Which branches a question is about.
 ///

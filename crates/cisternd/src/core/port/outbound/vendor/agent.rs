@@ -1,6 +1,6 @@
 //! The agent that does a task's work.
 
-use super::Unavailable;
+use super::super::Unavailable;
 
 /// What an agent is being asked to do.
 pub struct Work<'a> {

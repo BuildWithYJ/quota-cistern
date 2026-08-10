@@ -42,10 +42,10 @@ fn main() -> ExitCode {
     let Some(session_store) = outbound::session::FileSessions::in_data_home() else {
         return quit("neither XDG_DATA_HOME nor HOME is set");
     };
-    let Some(worktrees) = outbound::worktree::GitWorktrees::in_data_home() else {
+    let Some(worktrees) = outbound::git::worktree::GitWorktrees::in_data_home() else {
         return quit("neither XDG_DATA_HOME nor HOME is set");
     };
-    let Some(limit) = outbound::limit::ClaudeLimit::in_data_home() else {
+    let Some(limit) = outbound::claude::limit::ClaudeLimit::in_data_home() else {
         return quit("neither XDG_DATA_HOME nor HOME is set");
     };
     let limit = match limit {
@@ -55,10 +55,10 @@ fn main() -> ExitCode {
     let Some(traces) = outbound::trace::FileTraces::in_data_home() else {
         return quit("neither XDG_DATA_HOME nor HOME is set");
     };
-    let roots = outbound::repository::GitRoots;
-    let results = outbound::result::GitResults;
+    let roots = outbound::git::roots::GitRoots;
+    let results = outbound::git::result::GitResults;
     let clock = outbound::clock::SystemClock;
-    let agent = match outbound::agent::ClaudeAgent::new() {
+    let agent = match outbound::claude::agent::ClaudeAgent::new() {
         Ok(agent) => agent,
         Err(e) => return quit(e.reason),
     };
