@@ -122,6 +122,7 @@ version = "0.1.0-dev"
 dependencies = [
  "cistern-contract",
  "ctrlc",
+ "nix 0.31.3",
  "portable-pty",
  "serde",
  "serde_json",

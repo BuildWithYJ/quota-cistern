@@ -13,6 +13,10 @@ cistern-contract = { path = "crates/cistern-contract" }
 clap = { version = "4.6", features = ["derive"] }
 ctrlc = { version = "3.5", features = ["termination"] }
 interprocess = "2.4"
+# Ending a run means signalling its whole process group. The `kill` program
+# would do it, but the two systems this runs on disagree about what a negative
+# number on its command line means, so the call is made here instead.
+nix = { version = "0.31", default-features = false, features = ["signal"] }
 # The status line is drawn only where there is a terminal, and only the status
 # line carries how much of the vendor's limit is spent.
 portable-pty = { version = "0.9", default-features = false }

@@ -12,6 +12,10 @@ use std::{
     time::Duration,
 };
 
+use nix::{
+    sys::signal::{Signal, killpg},
+    unistd::Pid,
+};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -297,31 +301,31 @@ impl ClaudeAgent {
 /// still there after that is not going to act on it, and whoever asked for
 /// this is waiting.
 fn end(group: u32) {
-    signal("TERM", group);
+    signal(Signal::SIGTERM, group);
     if !still_there(group) {
         return;
     }
     thread::sleep(TIDIES_UP_IN);
-    signal("KILL", group);
+    signal(Signal::SIGKILL, group);
 }
 
 /// Whether anything in the group is still running.
 fn still_there(group: u32) -> bool {
-    signal("0", group)
+    signal(None, group)
 }
 
 /// Signals a whole process group, and says whether there was one.
 ///
-/// Through the program rather than the library call, which would be `unsafe`
-/// and is forbidden here. Signal 0 sends nothing and only asks.
-fn signal(with: &str, group: u32) -> bool {
-    Command::new("kill")
-        .arg(format!("-{with}"))
-        .arg(format!("-{group}"))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|said| said.success())
+/// Not through the `kill` program. The two systems this runs on disagree about
+/// what a negative number on its command line means: one reads it as the group
+/// to signal and the other as the signal to send, so on one of them nothing
+/// was signalled and nothing said so. Nothing is sent when no signal is given,
+/// which only asks whether the group is there.
+fn signal(with: impl Into<Option<Signal>>, group: u32) -> bool {
+    let Ok(group) = i32::try_from(group) else {
+        return false;
+    };
+    killpg(Pid::from_raw(group), with).is_ok()
 }
 
 /// Reads one of the run's pipes on a thread of its own.
