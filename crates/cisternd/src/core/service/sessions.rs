@@ -5,7 +5,7 @@
 //! than one command group.
 
 use crate::core::{
-    domain::{Budget, Held, NotASessionSet, Sessions, Span, Usage},
+    domain::{Budget, Held, NotASessionSet, Sessions, Span, Spending, Usage},
     port::{
         inbound::Refusal,
         outbound::{SessionStore, StoredSession, StoredSessions},
@@ -44,6 +44,13 @@ fn held_from(one: StoredSession) -> Result<Held, Refusal> {
 
     Ok(Held {
         started_at: stored_count("started_at", &one.started_at)?,
+        updated_at: stored_count("updated_at", &one.updated_at)?,
+        resets_at: one
+            .resets_at
+            .as_deref()
+            .map(|at| stored_count("resets_at", at))
+            .transpose()?,
+        consumed: spending("consumed", &one.consumed, &one.usage)?,
         limit_at_start: one
             .limit_at_start
             .as_deref()
@@ -66,6 +73,28 @@ fn held_from(one: StoredSession) -> Result<Held, Refusal> {
     })
 }
 
+/// What a session has consumed, in the unit its declaration is written in.
+///
+/// The unit is not stored beside the figure. It follows from the declaration,
+/// so a store holding a share against a count of tokens is not a thing that
+/// can be written.
+fn spending(field: &str, consumed: &str, usage: &str) -> Result<Spending, Refusal> {
+    let counted = consumed.parse().map_err(|_| unreadable(field, consumed))?;
+    match Usage::parse(usage) {
+        Some(Usage::Share(_)) => Ok(Spending::Share(counted)),
+        Some(Usage::Tokens(_)) => Ok(Spending::Tokens(counted)),
+        None => Err(unreadable("usage", usage)),
+    }
+}
+
+/// The figure a session's consumption is written as.
+fn counted(consumed: Spending) -> u64 {
+    match consumed {
+        Spending::Share(points) => points,
+        Spending::Tokens(tokens) => tokens,
+    }
+}
+
 /// Hands the sessions to a store as the text a user would have typed.
 fn written(sessions: &Sessions) -> StoredSessions {
     StoredSessions {
@@ -82,6 +111,9 @@ fn written(sessions: &Sessions) -> StoredSessions {
                 model: session.model().map(str::to_owned),
                 started_at: session.started_at().to_string(),
                 limit_at_start: session.limit_at_start().map(|used| used.to_string()),
+                consumed: counted(session.consumed()).to_string(),
+                updated_at: session.updated_at().to_string(),
+                resets_at: session.resets_at().map(|at| at.to_string()),
             })
             .collect(),
     }

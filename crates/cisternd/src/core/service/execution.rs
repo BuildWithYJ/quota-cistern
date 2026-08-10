@@ -233,6 +233,11 @@ impl ExecutionService<'_> {
     /// is the vendor that has to change its mind. The session stops, because
     /// every other task in it would be turned away the same way.
     fn turned_away(&self, id: TaskId, consumed: Observation) -> Result<Vec<String>, Refusal> {
+        let starts_over = self
+            .limit
+            .read()
+            .ok()
+            .and_then(|at| at.resets_at.parse().ok());
         let session = backlog::change(self.tasks, |tasks| {
             tasks.record(id, consumed.clone());
             let session = tasks.find(id).and_then(Task::session);
@@ -241,6 +246,12 @@ impl ExecutionService<'_> {
         })?;
 
         if let Some(session) = session {
+            if let Some(at) = starts_over {
+                sessions::change(self.sessions, |sessions| {
+                    sessions.resets_at(session, at);
+                    Ok(())
+                })?;
+            }
             self.stop(session, StoppedReason::VendorLimit)?;
         }
         Ok(Vec::new())
@@ -280,6 +291,14 @@ impl ExecutionService<'_> {
         };
 
         let spent = self.spending(&held)?;
+        // A share cannot be worked out again once the session has stopped, so
+        // what was read here is what is reported for it afterwards.
+        let now = self.clock.now();
+        sessions::change(self.sessions, |sessions| {
+            sessions.record(session, spent, now);
+            Ok(())
+        })?;
+
         let (left, running, waiting, cost) = backlog::read(self.tasks).map(|tasks| {
             let cost = match (held.budget().usage, spent) {
                 // Tokens mean the same in every session, so what a task costs
@@ -345,8 +364,9 @@ impl ExecutionService<'_> {
 
     /// Stops the session and ends whatever it still had running.
     fn stop(&self, session: SessionId, why: StoppedReason) -> Result<(), Refusal> {
+        let now = self.clock.now();
         sessions::change(self.sessions, |sessions| {
-            sessions.stop(session, why);
+            sessions.stop(session, why, now);
             Ok(())
         })?;
         backlog::change(self.tasks, |tasks| {
@@ -777,6 +797,9 @@ mod tests {
             sessions: vec![StoredSession {
                 started_at: "1000".to_owned(),
                 limit_at_start: None,
+                consumed: "0".to_owned(),
+                updated_at: "1000".to_owned(),
+                resets_at: None,
                 id: "1".to_owned(),
                 state: "sprinting".to_owned(),
                 stopped_reason: None,
