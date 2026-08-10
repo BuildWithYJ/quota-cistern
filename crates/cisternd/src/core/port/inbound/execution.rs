@@ -34,6 +34,50 @@ pub struct Started {
     pub budget: Declared,
 }
 
+/// One session, as `session ls` lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    pub id: String,
+    pub state: String,
+    /// What it consumed, in the unit it was declared in.
+    pub consumed: String,
+    pub task_count: usize,
+    pub updated_at: String,
+}
+
+/// A page of them, and which page it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Page {
+    pub page: u32,
+    pub limit: u32,
+    pub sessions: Vec<Listed>,
+}
+
+/// One of a session's tasks, as `session show` reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ran {
+    pub id: String,
+    pub state: String,
+    pub title: String,
+    pub branch: Option<String>,
+    pub reason: Option<String>,
+}
+
+/// One session in full, as `session show` reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Report {
+    pub session: String,
+    pub state: String,
+    pub budget: Declared,
+    /// What it consumed, in the unit the budget was declared in.
+    pub consumed: Declared,
+    pub stopped_reason: Option<String>,
+    /// When the vendor's limit starts over. Only a session it turned away.
+    pub resets_at: Option<String>,
+    pub updated_at: String,
+    pub tasks: Vec<Ran>,
+}
+
 /// `run`, and the work a run leaves behind.
 pub trait ExecutionUseCase {
     /// Opens a session and assigns what may start.
@@ -50,4 +94,13 @@ pub trait ExecutionUseCase {
     /// root's to arrange; what happens is here. What comes back has to be run
     /// the same way the tasks `run` answered with are.
     fn carry_on(&self, task: &str) -> Result<Vec<String>, Refusal>;
+
+    /// Lists sessions, newest first.
+    ///
+    /// Both arguments arrive as they were written, so a page number that is
+    /// not one is refused where every other argument is.
+    fn sessions(&self, page: Option<&str>, limit: Option<&str>) -> Result<Page, Refusal>;
+
+    /// One session and the tasks it held.
+    fn session(&self, id: &str) -> Result<Report, Refusal>;
 }

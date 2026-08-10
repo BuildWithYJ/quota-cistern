@@ -16,6 +16,11 @@ pub fn stored_count(field: &str, value: &str) -> Result<u64, Refusal> {
     value.parse().map_err(|_| unreadable(field, value))
 }
 
+/// Reads the sessions without changing them.
+pub fn read(store: &dyn SessionStore) -> Result<Sessions, Refusal> {
+    change(store, |sessions| Ok(sessions.clone()))
+}
+
 /// Reads the sessions and holds them to the same standard as an argument.
 ///
 /// Nobody is meant to write this file, so a set that does not add up is a store

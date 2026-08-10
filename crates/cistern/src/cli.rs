@@ -25,7 +25,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Sets the vendor and the plan.
+    /// Sets the vendor.
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
@@ -37,9 +37,14 @@ pub enum Command {
     },
     /// Lists the tasks waiting to be assigned.
     Backlog,
+    /// Reads sessions.
+    Session {
+        #[command(subcommand)]
+        command: SessionCommand,
+    },
     /// Declares a budget and starts the session's unattended loop.
     Run {
-        /// A share of the configured plan, or a count of tokens.
+        /// A share of the vendor's five-hour limit, or a count of tokens.
         #[arg(long)]
         usage: String,
         /// How long the session may run.
@@ -49,6 +54,21 @@ pub enum Command {
         #[arg(long)]
         model: Option<String>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SessionCommand {
+    /// Lists sessions, newest first.
+    Ls {
+        /// Page number. Defaults to 1.
+        #[arg(long)]
+        page: Option<String>,
+        /// Items per page. Defaults to 20.
+        #[arg(long)]
+        limit: Option<String>,
+    },
+    /// Reads one session and the tasks it held.
+    Show { session: String },
 }
 
 #[derive(Debug, Subcommand)]

@@ -248,6 +248,11 @@ impl Display for Usage {
 }
 
 impl Span {
+    /// A length of time from a number of seconds.
+    pub fn of(seconds: u64) -> Self {
+        Span(seconds)
+    }
+
     /// The length of time, in seconds.
     pub fn seconds(&self) -> u64 {
         self.0

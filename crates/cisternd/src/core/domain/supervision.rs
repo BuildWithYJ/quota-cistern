@@ -5,6 +5,8 @@
 //! arithmetic behind that decision is here, apart from the stores and the
 //! clock the decision is made against.
 
+use std::fmt::{self, Display};
+
 use super::{Budget, Usage};
 
 /// The most tasks that run at once, whatever the budget would allow.
@@ -31,6 +33,27 @@ pub enum Spending {
     /// Hundredths of a percent.
     Share(u64),
     Tokens(u64),
+}
+
+impl Display for Spending {
+    /// A share as the percentage a person declared, a count as the count.
+    ///
+    /// A share is held in hundredths so that a task smaller than a point can
+    /// be divided by, and shown as the percentage section 2.2 asks for. The
+    /// hundredths only appear when there is something in them.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Spending::Tokens(tokens) => write!(f, "{tokens}"),
+            Spending::Share(points) => {
+                let (whole, part) = (points / HUNDREDTHS, points % HUNDREDTHS);
+                match part {
+                    0 => write!(f, "{whole}%"),
+                    _ if part % 10 == 0 => write!(f, "{whole}.{}%", part / 10),
+                    _ => write!(f, "{whole}.{part:02}%"),
+                }
+            }
+        }
+    }
 }
 
 impl Budget {
@@ -103,6 +126,19 @@ mod tests {
             usage,
             time: Span::parse("8h").unwrap(),
         }
+    }
+
+    #[test]
+    fn a_share_is_shown_as_the_percentage_it_was_declared_in() {
+        assert_eq!(Spending::Share(400).to_string(), "4%");
+        assert_eq!(Spending::Share(350).to_string(), "3.5%");
+        assert_eq!(Spending::Share(405).to_string(), "4.05%");
+        assert_eq!(Spending::Share(0).to_string(), "0%");
+    }
+
+    #[test]
+    fn a_count_is_shown_as_the_count() {
+        assert_eq!(Spending::Tokens(2_000_000).to_string(), "2000000");
     }
 
     #[test]

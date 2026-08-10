@@ -13,7 +13,7 @@ mod execution;
 
 pub use backlog::{Added, BacklogUseCase, Detail, Listing, Registration, Removed, Waiting};
 pub use configuration::{Applied, ConfigurationUseCase, View};
-pub use execution::{Declaration, Declared, ExecutionUseCase, Started};
+pub use execution::{Declaration, Declared, ExecutionUseCase, Listed, Page, Ran, Report, Started};
 
 use super::outbound::Unavailable;
 
@@ -30,6 +30,8 @@ pub enum Refusal {
     BadValue { key: String, value: String },
     /// No task carries that number.
     NoSuchTask { id: String },
+    /// No session carries that identifier.
+    NoSuchSession { id: String },
     /// The task has been assigned, so the backlog no longer holds it.
     NotPending { id: String },
     /// The command was run somewhere that belongs to no repository.
