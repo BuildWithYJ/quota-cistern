@@ -10,6 +10,7 @@
 pub mod backlog;
 pub mod configuration;
 pub mod execution;
+pub mod review;
 
 use cistern_contract::{
     Answer, Failure, Request, Response,
@@ -55,11 +56,18 @@ fn code_for(refusal: &Refusal) -> u8 {
     match refusal {
         Refusal::UnknownKey { .. } | Refusal::BadValue { .. } => USAGE_ERROR,
         Refusal::NoSuchTask { .. } | Refusal::NoSuchSession { .. } => NOT_FOUND,
-        Refusal::NothingToAssign => GENERAL_FAILURE,
+        Refusal::NothingToAssign
+        | Refusal::NoChange { .. }
+        | Refusal::AlreadyApplied { .. }
+        | Refusal::Conflicts { .. }
+        | Refusal::NoResult { .. }
+        | Refusal::NoRepository { .. } => GENERAL_FAILURE,
         Refusal::NotPending { .. }
         | Refusal::NotARepository { .. }
         | Refusal::AlreadyRunning { .. }
-        | Refusal::NoSessionRunning => STATE_CONFLICT,
+        | Refusal::NoSessionRunning
+        | Refusal::NotEnded { .. }
+        | Refusal::Uncommitted { .. } => STATE_CONFLICT,
         Refusal::Unavailable { .. } => CORE_ERROR,
     }
 }
@@ -76,6 +84,15 @@ fn message_for(refusal: &Refusal) -> String {
         Refusal::AlreadyRunning { id } => format!("{id} is already running"),
         Refusal::NoSessionRunning => "no session is running".to_owned(),
         Refusal::NothingToAssign => "no task is waiting that may start".to_owned(),
+        Refusal::NotEnded { id } => format!("{id} has not ended"),
+        Refusal::Uncommitted { at } => format!("{at} holds changes nobody has committed"),
+        Refusal::NoChange { id } => format!("{id} left nothing on its branch"),
+        Refusal::AlreadyApplied { id } => {
+            format!("what {id} changed is in the working tree already")
+        }
+        Refusal::Conflicts { why } => format!("it does not go into the working tree: {why}"),
+        Refusal::NoResult { branch, at } => format!("{at} does not hold {branch}"),
+        Refusal::NoRepository { at } => format!("{at} cannot be read"),
         Refusal::Unavailable { reason } => format!("the store cannot be read: {reason}"),
     }
 }

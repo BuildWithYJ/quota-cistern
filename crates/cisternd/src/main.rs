@@ -17,7 +17,7 @@ mod platform;
 use adapter::{inbound, outbound};
 use core::{
     port::inbound::{Declaration, ExecutionUseCase, Page, Refusal, Report, Started, Stopped},
-    service::{BacklogService, ConfigurationService, ExecutionService},
+    service::{BacklogService, ConfigurationService, ExecutionService, ReviewService},
 };
 use platform::work::Queue;
 
@@ -56,6 +56,7 @@ fn main() -> ExitCode {
         return quit("neither XDG_DATA_HOME nor HOME is set");
     };
     let roots = outbound::repository::GitRoots;
+    let results = outbound::result::GitResults;
     let clock = outbound::clock::SystemClock;
     let agent = match outbound::agent::ClaudeAgent::new() {
         Ok(agent) => agent,
@@ -64,6 +65,7 @@ fn main() -> ExitCode {
 
     let configuration = ConfigurationService::new(&configuration_store);
     let backlog = BacklogService::new(&backlog_store, &roots, &traces);
+    let review = ReviewService::new(&backlog_store, &results);
     let execution = ExecutionService::new(
         &session_store,
         &backlog_store,
@@ -110,6 +112,7 @@ fn main() -> ExitCode {
             inbound::configuration::respond(&configuration, request)
                 .or_else(|request| inbound::backlog::respond(&backlog, request))
                 .or_else(|request| inbound::execution::respond(&execution, request))
+                .or_else(|request| inbound::review::respond(&review, request))
                 .unwrap_or_else(inbound::unknown)
         };
         platform::serve::serve(&server, answer)

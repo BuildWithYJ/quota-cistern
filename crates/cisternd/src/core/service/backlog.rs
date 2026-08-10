@@ -2,8 +2,8 @@
 
 use crate::core::{
     domain::{
-        Backlog, Consumption, NotABacklog, Observation, RemovalRefused, Repository, Restored,
-        SessionId, TaskId, TaskState,
+        Backlog, Consumption, Disposition, NotABacklog, Observation, RemovalRefused, Repository,
+        Restored, SessionId, TaskId, TaskState,
     },
     port::{
         inbound::{
@@ -163,8 +163,7 @@ impl BacklogUseCase for BacklogService<'_> {
             branch: task.result_branch(),
             reason: task.reason().map(str::to_owned),
             worktree: task.worktree().map(str::to_owned),
-            // Nothing disposes of a result yet.
-            disposition: None,
+            disposition: task.disposition().map(|it| it.to_string()),
         })
     }
 
@@ -287,6 +286,11 @@ fn restored_from(held: StoredTask) -> Result<Restored, Refusal> {
         worktree: held.worktree,
         reason: held.reason,
         consumed: observed(held.consumed, held.unreadable)?,
+        disposition: held
+            .disposition
+            .as_deref()
+            .map(|it| Disposition::parse(it).ok_or_else(|| unreadable("disposition", it)))
+            .transpose()?,
     })
 }
 
@@ -314,6 +318,7 @@ fn written(backlog: &Backlog) -> StoredBacklog {
                     Observation::Unreadable { why } => Some(why.clone()),
                     _ => None,
                 },
+                disposition: task.disposition().map(|it| it.to_string()),
             })
             .collect(),
     }
@@ -752,6 +757,7 @@ mod tests {
                 reason: None,
                 consumed: None,
                 unreadable: None,
+                disposition: None,
                 id: "1".to_owned(),
                 title: "first".to_owned(),
                 instruction: "do it".to_owned(),
@@ -767,6 +773,7 @@ mod tests {
                 reason: None,
                 consumed: None,
                 unreadable: None,
+                disposition: None,
                 id: "2".to_owned(),
                 title: "second".to_owned(),
                 instruction: "do it".to_owned(),
@@ -795,6 +802,7 @@ mod tests {
             reason: None,
             consumed: None,
             unreadable: None,
+            disposition: None,
             id: "1".to_owned(),
             title: "first".to_owned(),
             instruction: "do it".to_owned(),
@@ -841,6 +849,7 @@ mod tests {
                 cost: "92170".to_owned(),
             }),
             unreadable: Some("the answer said nothing about it".to_owned()),
+            disposition: None,
             id: "1".to_owned(),
             title: "first".to_owned(),
             instruction: "do it".to_owned(),
@@ -874,6 +883,7 @@ mod tests {
                 cost: "92170".to_owned(),
             }),
             unreadable: None,
+            disposition: None,
             id: "1".to_owned(),
             title: "first".to_owned(),
             instruction: "do it".to_owned(),

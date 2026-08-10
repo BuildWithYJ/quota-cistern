@@ -54,6 +54,22 @@ pub enum Command {
         #[command(subcommand)]
         command: SessionCommand,
     },
+    /// Prints what a task changed on its branch.
+    Diff {
+        task: String,
+        /// Per-file summary only.
+        #[arg(long)]
+        stat: bool,
+    },
+    /// Lists what is waiting to be disposed of.
+    Review {
+        #[command(subcommand)]
+        command: ReviewCommand,
+    },
+    /// Brings a task's changes into the working tree, without committing.
+    Apply { task: String },
+    /// Takes a task out of the review queue, leaving its branch alone.
+    Discard { task: String },
     /// Declares a budget and starts the session's unattended loop.
     Run {
         /// A share of the vendor's five-hour limit, or a count of tokens.
@@ -66,6 +82,12 @@ pub enum Command {
         #[arg(long)]
         model: Option<String>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ReviewCommand {
+    /// Lists tasks waiting for disposition, across sessions.
+    Ls,
 }
 
 #[derive(Debug, Subcommand)]
