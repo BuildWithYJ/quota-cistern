@@ -331,7 +331,14 @@ fn result_branch_of(id: TaskId) -> String {
 }
 
 impl Backlog {
-    /// Registers a task and hands back the number it was given.
+    /// Registers a task and hands back a copy of it.
+    ///
+    /// The task rather than its number, so that whoever registered it can
+    /// answer with what was registered without looking it up again. Looking it
+    /// up would have to answer for not finding it, and there is no such answer.
+    ///
+    /// A copy rather than a reference, so that handing it back needs no line
+    /// that says what to do when the task that was just pushed is not there.
     pub fn add(
         &mut self,
         title: String,
@@ -340,10 +347,10 @@ impl Backlog {
         after: Option<TaskId>,
         model: Option<String>,
         repository: Repository,
-    ) -> TaskId {
+    ) -> Task {
         let id = TaskId(self.next_id);
         self.next_id += 1;
-        self.tasks.push(Task {
+        let registered = Task {
             id,
             title,
             instruction,
@@ -357,8 +364,9 @@ impl Backlog {
             reason: None,
             consumed: Observation::NotYet,
             disposition: None,
-        });
-        id
+        };
+        self.tasks.push(registered.clone());
+        registered
     }
 
     /// Takes a task out of the backlog.
@@ -726,14 +734,16 @@ mod tests {
     }
 
     fn registered(backlog: &mut Backlog, branch: Option<&str>, after: Option<TaskId>) -> TaskId {
-        backlog.add(
-            "a task".to_owned(),
-            "do it".to_owned(),
-            branch.map(str::to_owned),
-            after,
-            None,
-            Repository::new("/work/api"),
-        )
+        backlog
+            .add(
+                "a task".to_owned(),
+                "do it".to_owned(),
+                branch.map(str::to_owned),
+                after,
+                None,
+                Repository::new("/work/api"),
+            )
+            .id()
     }
 
     #[test]

@@ -55,7 +55,7 @@ impl BacklogUseCase for BacklogService<'_> {
                 });
             }
 
-            let id = backlog.add(
+            let registered = backlog.add(
                 given.title.to_owned(),
                 given.instruction.to_owned(),
                 given.branch.map(str::to_owned),
@@ -64,9 +64,6 @@ impl BacklogUseCase for BacklogService<'_> {
                 Repository::new(root),
             );
 
-            let Some(registered) = backlog.find(id) else {
-                return Err(Refusal::NoSuchTask { id: id.labelled() });
-            };
             Ok(Added {
                 id: registered.id().labelled(),
                 title: registered.title().to_owned(),
