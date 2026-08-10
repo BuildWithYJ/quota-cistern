@@ -34,6 +34,20 @@ pub struct StoredSession {
     /// from has to be kept. Absent for a session declared in tokens, which is
     /// measured against nothing outside itself.
     pub limit_at_start: Option<String>,
+    /// What it has consumed, in the unit it was declared in.
+    ///
+    /// Kept rather than worked out again. A share is how far the vendor's own
+    /// limit moved, which can only be read while it is there to read: a
+    /// session that stopped an hour ago cannot be measured now, because the
+    /// limit has moved on without it.
+    pub consumed: String,
+    /// When it last changed, in seconds since the epoch.
+    pub updated_at: String,
+    /// When the vendor's limit starts over, in seconds since the epoch.
+    ///
+    /// Kept only for a session the vendor turned away, which is the one case
+    /// section 2.2 reports it for.
+    pub resets_at: Option<String>,
 }
 
 /// Where the sessions are kept between runs.

@@ -2,20 +2,22 @@
 
 use crate::core::{
     domain::{
-        Budget, Consumption, Cost, HUNDREDTHS, Held, NotASessionSet, NotOpened, Observation,
-        Opening, Session, SessionId, SessionState, Sessions, Span, Spending, StoppedReason, Task,
-        TaskId, TaskState, Usage, cost_of, room_for,
+        Budget, Consumption, Cost, HUNDREDTHS, NotOpened, Observation, Opening, Session, SessionId,
+        SessionState, Span, Spending, StoppedReason, Task, TaskId, TaskState, Usage, cost_of,
+        room_for,
     },
     port::{
-        inbound::{Declaration, Declared, ExecutionUseCase, Refusal, Started},
+        inbound::{
+            Declaration, Declared, ExecutionUseCase, Listed, Page, Ran, Refusal, Report, Started,
+        },
         outbound::{
-            Agent, BacklogStore, Clock, Cut, Limit, Observed, Outcome, SessionStore, Spent,
-            StoredSession, StoredSessions, Work, Worktrees,
+            Agent, BacklogStore, Clock, Cut, Limit, Observed, Outcome, SessionStore, Spent, Work,
+            Worktrees,
         },
     },
 };
 
-use super::backlog;
+use super::{backlog, sessions};
 
 /// The commands over sessions, and what they need from outside.
 pub struct ExecutionService<'a> {
@@ -55,7 +57,7 @@ impl<'a> ExecutionService<'a> {
         reading
             .used
             .parse()
-            .map_err(|_| unreadable("used", &reading.used))
+            .map_err(|_| sessions::unreadable("used", &reading.used))
     }
 }
 
@@ -87,7 +89,7 @@ impl ExecutionUseCase for ExecutionService<'_> {
             Usage::Tokens(_) => None,
         };
 
-        let opened = change(self.sessions, |sessions| {
+        let opened = sessions::change(self.sessions, |sessions| {
             sessions
                 .open(Opening {
                     budget,
@@ -110,6 +112,83 @@ impl ExecutionUseCase for ExecutionService<'_> {
                 usage: usage.to_string(),
                 time: time.to_string(),
             },
+        })
+    }
+
+    fn sessions(&self, page: Option<&str>, limit: Option<&str>) -> Result<Page, Refusal> {
+        let page = counted_from("page", page, 1)?;
+        let limit = counted_from("limit", limit, 20)?;
+
+        let held = sessions::read(self.sessions)?;
+        let tasks = backlog::read(self.tasks)?;
+
+        // Newest first, which is the order the numbers were handed out in.
+        let mut newest: Vec<&Session> = held.sessions().iter().collect();
+        newest.sort_by_key(|session| std::cmp::Reverse(session.id()));
+
+        let sessions = newest
+            .into_iter()
+            .skip(((page - 1) * limit) as usize)
+            .take(limit as usize)
+            .map(|session| Listed {
+                id: session.id().labelled(),
+                state: session.state().to_string(),
+                consumed: session.consumed().to_string(),
+                task_count: tasks.taken_by(session.id()).len(),
+                updated_at: session.updated_at().to_string(),
+            })
+            .collect();
+
+        Ok(Page {
+            page,
+            limit,
+            sessions,
+        })
+    }
+
+    fn session(&self, id: &str) -> Result<Report, Refusal> {
+        let wanted = SessionId::parse(id).ok_or_else(|| Refusal::BadValue {
+            key: "session".to_owned(),
+            value: id.to_owned(),
+        })?;
+
+        let held = sessions::read(self.sessions)?;
+        let session = held
+            .sessions()
+            .iter()
+            .find(|session| session.id() == wanted)
+            .ok_or_else(|| Refusal::NoSuchSession {
+                id: wanted.labelled(),
+            })?;
+
+        let tasks = backlog::read(self.tasks)?;
+        let ran = tasks
+            .taken_by(wanted)
+            .into_iter()
+            .map(|task| Ran {
+                id: task.id().labelled(),
+                state: task.state().to_string(),
+                title: task.title().to_owned(),
+                branch: task.result_branch(),
+                reason: task.reason().map(str::to_owned),
+            })
+            .collect();
+
+        Ok(Report {
+            session: session.id().labelled(),
+            state: session.state().to_string(),
+            budget: Declared {
+                usage: session.budget().usage.to_string(),
+                time: session.budget().time.to_string(),
+            },
+            consumed: Declared {
+                usage: session.consumed().to_string(),
+                time: self.elapsed(session).to_string(),
+            },
+            stopped_reason: session.stopped_reason().map(|why| why.to_string()),
+            resets_at: session.resets_at().map(|at| at.to_string()),
+            updated_at: session.updated_at().to_string(),
+            tasks: ran,
         })
     }
 
@@ -211,6 +290,24 @@ fn counted(spent: &Spent) -> Option<Consumption> {
     })
 }
 
+/// A count a caller wrote, or what it defaults to when nobody wrote one.
+///
+/// Zero is refused for both. Section 2.2 names `--page 0` as an argument
+/// error, and a page of nothing is the same kind of nothing.
+fn counted_from(key: &str, written: Option<&str>, unless: u32) -> Result<u32, Refusal> {
+    let Some(written) = written else {
+        return Ok(unless);
+    };
+    written
+        .parse()
+        .ok()
+        .filter(|&count| count > 0)
+        .ok_or_else(|| Refusal::BadValue {
+            key: key.to_owned(),
+            value: written.to_owned(),
+        })
+}
+
 /// The reason section 1 gives a task stopped at the ceiling on one run.
 const AT_CEILING: &str = "task ceiling";
 
@@ -218,6 +315,18 @@ const AT_CEILING: &str = "task ceiling";
 const FULL: u64 = 100 * HUNDREDTHS;
 
 impl ExecutionService<'_> {
+    /// How long the session has run.
+    ///
+    /// A session still running has run until now. One that stopped ran until
+    /// the moment it last changed, which is the moment it stopped.
+    fn elapsed(&self, session: &Session) -> Span {
+        let until = match session.state() {
+            SessionState::Running => self.clock.now(),
+            SessionState::Stopped => session.updated_at(),
+        };
+        Span::of(until.saturating_sub(session.started_at()))
+    }
+
     /// Whether the vendor has nothing left to give.
     ///
     /// A reading this cannot take is not a limit that has been reached. The
@@ -233,6 +342,11 @@ impl ExecutionService<'_> {
     /// is the vendor that has to change its mind. The session stops, because
     /// every other task in it would be turned away the same way.
     fn turned_away(&self, id: TaskId, consumed: Observation) -> Result<Vec<String>, Refusal> {
+        let starts_over = self
+            .limit
+            .read()
+            .ok()
+            .and_then(|at| at.resets_at.parse().ok());
         let session = backlog::change(self.tasks, |tasks| {
             tasks.record(id, consumed.clone());
             let session = tasks.find(id).and_then(Task::session);
@@ -241,6 +355,12 @@ impl ExecutionService<'_> {
         })?;
 
         if let Some(session) = session {
+            if let Some(at) = starts_over {
+                sessions::change(self.sessions, |sessions| {
+                    sessions.resets_at(session, at);
+                    Ok(())
+                })?;
+            }
             self.stop(session, StoppedReason::VendorLimit)?;
         }
         Ok(Vec::new())
@@ -280,6 +400,14 @@ impl ExecutionService<'_> {
         };
 
         let spent = self.spending(&held)?;
+        // A share cannot be worked out again once the session has stopped, so
+        // what was read here is what is reported for it afterwards.
+        let now = self.clock.now();
+        sessions::change(self.sessions, |sessions| {
+            sessions.record(session, spent, now);
+            Ok(())
+        })?;
+
         let (left, running, waiting, cost) = backlog::read(self.tasks).map(|tasks| {
             let cost = match (held.budget().usage, spent) {
                 // Tokens mean the same in every session, so what a task costs
@@ -345,8 +473,9 @@ impl ExecutionService<'_> {
 
     /// Stops the session and ends whatever it still had running.
     fn stop(&self, session: SessionId, why: StoppedReason) -> Result<(), Refusal> {
-        change(self.sessions, |sessions| {
-            sessions.stop(session, why);
+        let now = self.clock.now();
+        sessions::change(self.sessions, |sessions| {
+            sessions.stop(session, why, now);
             Ok(())
         })?;
         backlog::change(self.tasks, |tasks| {
@@ -378,7 +507,7 @@ impl ExecutionService<'_> {
     /// The session, if it is one this still decides for.
     fn held(&self, session: SessionId) -> Result<Option<Session>, Refusal> {
         let mut found = None;
-        change(self.sessions, |sessions| {
+        sessions::change(self.sessions, |sessions| {
             found = sessions
                 .sessions()
                 .iter()
@@ -395,144 +524,15 @@ fn labelled(ids: Vec<TaskId>) -> Vec<String> {
     ids.iter().map(TaskId::labelled).collect()
 }
 
-fn stored_count(field: &str, value: &str) -> Result<u64, Refusal> {
-    value.parse().map_err(|_| unreadable(field, value))
-}
-
-/// Reads the sessions and holds them to the same standard as an argument.
-///
-/// Nobody is meant to write this file, so a set that does not add up is a store
-/// this core cannot use rather than something the user typed wrong. This is
-/// what `service::backlog` does for the backlog, and the two stay apart because
-/// neither store knows what the other holds.
-fn read_from(stored: StoredSessions) -> Result<Sessions, Refusal> {
-    let next_id = stored
-        .next_id
-        .parse()
-        .map_err(|_| unreadable("next_id", &stored.next_id))?;
-
-    let mut held = Vec::with_capacity(stored.sessions.len());
-    for one in stored.sessions {
-        held.push(held_from(one)?);
-    }
-
-    Sessions::restore(next_id, held).map_err(|e| Refusal::Unavailable {
-        reason: unusable(&e),
-    })
-}
-
-/// Reads one session as a store handed it over.
-fn held_from(one: StoredSession) -> Result<Held, Refusal> {
-    use crate::core::domain::{SessionId, SessionState, StoppedReason};
-
-    Ok(Held {
-        started_at: stored_count("started_at", &one.started_at)?,
-        limit_at_start: one
-            .limit_at_start
-            .as_deref()
-            .map(|used| stored_count("limit_at_start", used))
-            .transpose()?,
-        id: SessionId::parse(&one.id).ok_or_else(|| unreadable("id", &one.id))?,
-        state: SessionState::parse(&one.state).ok_or_else(|| unreadable("state", &one.state))?,
-        stopped_reason: one
-            .stopped_reason
-            .as_deref()
-            .map(|reason| {
-                StoppedReason::parse(reason).ok_or_else(|| unreadable("stopped_reason", reason))
-            })
-            .transpose()?,
-        budget: Budget {
-            usage: Usage::parse(&one.usage).ok_or_else(|| unreadable("usage", &one.usage))?,
-            time: Span::parse(&one.time).ok_or_else(|| unreadable("time", &one.time))?,
-        },
-        model: one.model,
-    })
-}
-
-/// Hands the sessions to a store as the text a user would have typed.
-fn written(sessions: &Sessions) -> StoredSessions {
-    StoredSessions {
-        next_id: sessions.next_id().to_string(),
-        sessions: sessions
-            .sessions()
-            .iter()
-            .map(|session| StoredSession {
-                id: session.id().to_string(),
-                state: session.state().to_string(),
-                stopped_reason: session.stopped_reason().map(|why| why.to_string()),
-                usage: session.budget().usage.to_string(),
-                time: session.budget().time.to_string(),
-                model: session.model().map(str::to_owned),
-                started_at: session.started_at().to_string(),
-                limit_at_start: session.limit_at_start().map(|used| used.to_string()),
-            })
-            .collect(),
-    }
-}
-
-/// Reads the sessions, changes them, and writes them back as one step, for the
-/// reason `service::backlog` gives.
-fn change<T>(
-    store: &dyn SessionStore,
-    with: impl FnOnce(&mut Sessions) -> Result<T, Refusal>,
-) -> Result<T, Refusal> {
-    let mut with = Some(with);
-    let mut answer = None;
-
-    store.update(&mut |stored| {
-        let Some(with) = with.take() else {
-            return false;
-        };
-
-        let done = read_from(stored.clone()).and_then(|mut sessions| {
-            let got = with(&mut sessions)?;
-            Ok((got, sessions))
-        });
-        match done {
-            Ok((got, sessions)) => {
-                *stored = written(&sessions);
-                answer = Some(Ok(got));
-                true
-            }
-            Err(e) => {
-                answer = Some(Err(e));
-                false
-            }
-        }
-    })?;
-
-    answer.unwrap_or_else(|| {
-        Err(Refusal::Unavailable {
-            reason: "the store did not run the change it was given".to_owned(),
-        })
-    })
-}
-
-fn unreadable(field: &str, value: &str) -> Refusal {
-    Refusal::Unavailable {
-        reason: format!("the sessions hold {value} where {field} belongs"),
-    }
-}
-
-fn unusable(e: &NotASessionSet) -> String {
-    match e {
-        NotASessionSet::RepeatedId { id } => format!("the sessions hold session:{id} twice"),
-        NotASessionSet::TwoRunning { first, second } => {
-            format!("session:{first} and session:{second} are both running")
-        }
-        NotASessionSet::ReasonDoesNotMatchState { id } => {
-            format!("session:{id} does not say why it stopped, or says so while running")
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::{Mutex, PoisonError};
 
     use crate::core::{
         domain::SessionId,
-        port::outbound::{Ended, Reading, StoredBacklog, StoredTask, Unavailable},
+        port::outbound::{
+            Ended, Reading, StoredBacklog, StoredSession, StoredSessions, StoredTask, Unavailable,
+        },
     };
 
     use super::*;
@@ -906,6 +906,9 @@ mod tests {
             sessions: vec![StoredSession {
                 started_at: "1000".to_owned(),
                 limit_at_start: None,
+                consumed: "0".to_owned(),
+                updated_at: "1000".to_owned(),
+                resets_at: None,
                 id: "1".to_owned(),
                 state: "sprinting".to_owned(),
                 stopped_reason: None,
@@ -1273,6 +1276,159 @@ mod tests {
         assert_eq!(session.state, "stopped");
         assert_eq!(session.stopped_reason.as_deref(), Some("budget hardlock"));
         assert_eq!(tasks.load().unwrap().tasks[1].state, "Pending");
+    }
+
+    /// Section 2.2 lists them newest first, which is the order the numbers
+    /// were handed out in.
+    #[test]
+    fn sessions_are_listed_newest_first() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+        let areas = Areas::default();
+        let agent = Standing::finishing();
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+
+        // A budget one task overruns, so the first session ends after one and
+        // the second task is left for a session of its own.
+        execution.run(declaring("1000", "8h")).unwrap();
+        execution.carry_on("task:1").unwrap();
+        execution.run(declaring("1000", "2h")).unwrap();
+
+        let listed = execution.sessions(None, None).unwrap();
+        let ids: Vec<&str> = listed.sessions.iter().map(|one| one.id.as_str()).collect();
+        assert_eq!(ids, ["session:2", "session:1"]);
+        assert_eq!(listed.page, 1);
+        assert_eq!(listed.limit, 20);
+    }
+
+    #[test]
+    fn a_page_holds_what_it_was_given_room_for() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+        let areas = Areas::default();
+        let agent = Standing::finishing();
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+
+        execution.run(declaring("1000", "8h")).unwrap();
+        execution.carry_on("task:1").unwrap();
+        execution.run(declaring("1000", "2h")).unwrap();
+
+        let second = execution.sessions(Some("2"), Some("1")).unwrap();
+        assert_eq!(second.sessions.len(), 1);
+        assert_eq!(second.sessions[0].id, "session:1");
+    }
+
+    #[test]
+    fn a_page_that_is_not_a_page_is_refused_as_a_bad_argument() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task()]);
+        let areas = Areas::default();
+        let agent = Standing::finishing();
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+
+        for (page, limit) in [(Some("0"), None), (None, Some("0")), (Some("one"), None)] {
+            assert!(matches!(
+                execution.sessions(page, limit),
+                Err(Refusal::BadValue { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn nothing_has_run_and_the_list_is_empty() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task()]);
+        let areas = Areas::default();
+        let agent = Standing::finishing();
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+
+        assert_eq!(execution.sessions(None, None).unwrap().sessions, Vec::new());
+    }
+
+    #[test]
+    fn a_session_reports_what_it_declared_beside_what_it_consumed() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+        let areas = Areas::default();
+        let agent = Standing::finishing();
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+
+        execution.run(declaring("2M", "8h")).unwrap();
+        execution.carry_on("task:1").unwrap();
+
+        let report = execution.session("1").unwrap();
+        assert_eq!(report.budget.usage, "2000000");
+        assert_eq!(report.budget.time, "8h");
+        // The stand-in agent reports the same count for every task.
+        assert_eq!(report.consumed.usage, "295816");
+        assert_eq!(report.tasks.len(), 2);
+        assert_eq!(report.tasks[0].id, "task:1");
+        assert_eq!(report.tasks[0].state, "Completed");
+        assert_eq!(report.tasks[0].branch.as_deref(), Some("cistern/1"));
+    }
+
+    /// Section 2.2 leaves the reason empty while a session runs.
+    #[test]
+    fn a_running_session_says_nothing_about_why_it_stopped() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+        let areas = Areas::default();
+        let agent = Standing::finishing();
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+
+        execution.run(declaring("2M", "8h")).unwrap();
+
+        let report = execution.session("1").unwrap();
+        assert_eq!(report.state, "running");
+        assert_eq!(report.stopped_reason, None);
+        assert_eq!(report.resets_at, None);
+    }
+
+    #[test]
+    fn a_session_the_vendor_turned_away_says_when_the_limit_starts_over() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+        let areas = Areas::default();
+        let agent = Standing::ending(Ended {
+            outcome: Outcome::Failed,
+            reason: Some("it stopped".to_owned()),
+            observed: spending(),
+        });
+        let full = AtPercent {
+            used: Mutex::new(100 * HUNDREDTHS),
+            refuse: false,
+        };
+        let execution = ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &full);
+
+        execution.run(declaring("2M", "8h")).unwrap();
+        execution.carry_on("task:1").unwrap();
+
+        let report = execution.session("1").unwrap();
+        assert_eq!(report.stopped_reason.as_deref(), Some("vendor limit"));
+        assert_eq!(report.resets_at.as_deref(), Some("1786285800"));
+    }
+
+    #[test]
+    fn a_session_nobody_opened_is_not_there() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task()]);
+        let areas = Areas::default();
+        let agent = Standing::finishing();
+        let execution =
+            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+
+        assert_eq!(
+            execution.session("7"),
+            Err(Refusal::NoSuchSession {
+                id: "session:7".to_owned()
+            })
+        );
     }
 
     /// A session that has run as long as it declared stops, and whatever it

@@ -49,6 +49,10 @@ struct Entry {
     started_at: Value,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     limit_at_start: Value,
+    consumed: Value,
+    updated_at: Value,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    resets_at: Value,
 }
 
 impl FileSessions {
@@ -97,6 +101,9 @@ impl FileSessions {
                     model: as_optional(entry.model),
                     started_at: as_text(entry.started_at),
                     limit_at_start: as_optional(entry.limit_at_start),
+                    consumed: as_text(entry.consumed),
+                    updated_at: as_text(entry.updated_at),
+                    resets_at: as_optional(entry.resets_at),
                 })
                 .collect(),
         })
@@ -122,6 +129,9 @@ impl FileSessions {
                         .limit_at_start
                         .as_deref()
                         .map_or(Value::Null, as_number),
+                    consumed: as_number(&session.consumed),
+                    updated_at: as_number(&session.updated_at),
+                    resets_at: session.resets_at.as_deref().map_or(Value::Null, as_number),
                 })
                 .collect(),
         };
@@ -220,7 +230,10 @@ mod tests {
             time: "8h".to_owned(),
             model: None,
             started_at: "1000".to_owned(),
-            limit_at_start: Some("11".to_owned()),
+            limit_at_start: Some("1100".to_owned()),
+            consumed: "0".to_owned(),
+            updated_at: "1000".to_owned(),
+            resets_at: None,
         }
     }
 
@@ -302,7 +315,7 @@ mod tests {
         fs::write(
             dir.path().join("sessions.json"),
             r#"{"next_id":2,"sessions":[{"id":1,"state":"running","stopped_reason":null,
-                "usage":"50%","time":"8h","started_at":1000}]}"#,
+                "usage":"50%","time":"8h","started_at":1000,"consumed":0,"updated_at":1000}]}"#,
         )
         .unwrap();
 

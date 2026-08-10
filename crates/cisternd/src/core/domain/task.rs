@@ -494,8 +494,15 @@ impl Backlog {
         self.tasks
             .iter()
             .filter(|task| task.session == Some(session) && task.state != TaskState::Running)
-            .filter(|task| task.session == Some(session))
             .count()
+    }
+
+    /// Every task a session took, in the order they were registered.
+    pub fn taken_by(&self, session: SessionId) -> Vec<&Task> {
+        self.tasks
+            .iter()
+            .filter(|task| task.session == Some(session))
+            .collect()
     }
 
     pub fn find(&self, id: TaskId) -> Option<&Task> {

@@ -6,6 +6,8 @@
 
 use std::fmt::{self, Display};
 
+use super::Spending;
+
 /// A session number.
 ///
 /// The core issues these. Sessions count on a sequence of their own, so
@@ -89,6 +91,12 @@ pub struct Session {
     /// already held, so the reading it opened on is kept. A session declared
     /// in tokens has none.
     limit_at_start: Option<u64>,
+    /// What it has consumed, in the unit it was declared in.
+    consumed: Spending,
+    /// When it last changed.
+    updated_at: u64,
+    /// When the vendor's limit starts over, for a session it turned away.
+    resets_at: Option<u64>,
 }
 
 /// A session on its way back from a store, with every value already read.
@@ -101,6 +109,9 @@ pub struct Held {
     pub model: Option<String>,
     pub started_at: u64,
     pub limit_at_start: Option<u64>,
+    pub consumed: Spending,
+    pub updated_at: u64,
+    pub resets_at: Option<u64>,
 }
 
 /// Every session, and the number the next one will get.
@@ -237,6 +248,11 @@ impl Display for Usage {
 }
 
 impl Span {
+    /// A length of time from a number of seconds.
+    pub fn of(seconds: u64) -> Self {
+        Span(seconds)
+    }
+
     /// The length of time, in seconds.
     pub fn seconds(&self) -> u64 {
         self.0
@@ -311,6 +327,19 @@ impl Session {
         self.limit_at_start
     }
 
+    /// What it has consumed, in the unit it was declared in.
+    pub fn consumed(&self) -> Spending {
+        self.consumed
+    }
+
+    pub fn updated_at(&self) -> u64 {
+        self.updated_at
+    }
+
+    pub fn resets_at(&self) -> Option<u64> {
+        self.resets_at
+    }
+
     /// Whether the session has run for as long as it declared.
     pub fn out_of_time(&self, now: u64) -> bool {
         now.saturating_sub(self.started_at) >= self.budget.time.seconds()
@@ -337,6 +366,12 @@ impl Sessions {
             model: opening.model,
             started_at: opening.started_at,
             limit_at_start: opening.limit_at_start,
+            consumed: match opening.budget.usage {
+                Usage::Share(_) => Spending::Share(0),
+                Usage::Tokens(_) => Spending::Tokens(0),
+            },
+            updated_at: opening.started_at,
+            resets_at: None,
         });
         Ok(id)
     }
@@ -345,11 +380,34 @@ impl Sessions {
     ///
     /// A session that already stopped keeps the reason it stopped for, since
     /// the first one is what happened and the second is what noticed.
-    pub fn stop(&mut self, id: SessionId, reason: StoppedReason) {
+    pub fn stop(&mut self, id: SessionId, reason: StoppedReason, now: u64) {
         for session in &mut self.sessions {
             if session.id == id && session.state == SessionState::Running {
                 session.state = SessionState::Stopped;
                 session.stopped_reason = Some(reason);
+                session.updated_at = now;
+            }
+        }
+    }
+
+    /// Records what a session has consumed, and when the reading was taken.
+    ///
+    /// A share cannot be worked out later, so what was read while the session
+    /// ran is what is reported for it afterwards.
+    pub fn record(&mut self, id: SessionId, consumed: Spending, now: u64) {
+        for session in &mut self.sessions {
+            if session.id == id {
+                session.consumed = consumed;
+                session.updated_at = now;
+            }
+        }
+    }
+
+    /// Records when the vendor's limit starts over.
+    pub fn resets_at(&mut self, id: SessionId, at: u64) {
+        for session in &mut self.sessions {
+            if session.id == id {
+                session.resets_at = Some(at);
             }
         }
     }
@@ -403,6 +461,9 @@ impl Sessions {
                 model: one.model,
                 started_at: one.started_at,
                 limit_at_start: one.limit_at_start,
+                consumed: one.consumed,
+                updated_at: one.updated_at,
+                resets_at: one.resets_at,
             });
         }
 
@@ -487,7 +548,7 @@ mod tests {
         let first = sessions.open(opening()).unwrap();
         assert_eq!(first.labelled(), "session:1");
 
-        sessions.stop(first, StoppedReason::AllDone);
+        sessions.stop(first, StoppedReason::AllDone, 2_000);
         let second = sessions.open(opening()).unwrap();
         assert_eq!(second.labelled(), "session:2");
     }
@@ -513,6 +574,9 @@ mod tests {
             model: None,
             started_at: 1_000,
             limit_at_start: Some(1_100),
+            consumed: Spending::Share(0),
+            updated_at: 1_000,
+            resets_at: None,
         };
 
         assert_eq!(
@@ -534,6 +598,9 @@ mod tests {
             model: None,
             started_at: 1_000,
             limit_at_start: Some(1_100),
+            consumed: Spending::Share(0),
+            updated_at: 1_000,
+            resets_at: None,
         };
 
         assert_eq!(
@@ -578,8 +645,8 @@ mod tests {
         let mut sessions = Sessions::default();
         let id = sessions.open(opening()).unwrap();
 
-        sessions.stop(id, StoppedReason::ObservationUnreadable);
-        sessions.stop(id, StoppedReason::AllDone);
+        sessions.stop(id, StoppedReason::ObservationUnreadable, 2_000);
+        sessions.stop(id, StoppedReason::AllDone, 3_000);
 
         let stopped = sessions.sessions().first().unwrap();
         assert_eq!(stopped.state(), SessionState::Stopped);

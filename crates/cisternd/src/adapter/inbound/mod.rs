@@ -54,7 +54,7 @@ pub(super) fn answer(command: String, outcome: Result<Value, Refusal>) -> Respon
 fn code_for(refusal: &Refusal) -> u8 {
     match refusal {
         Refusal::UnknownKey { .. } | Refusal::BadValue { .. } => USAGE_ERROR,
-        Refusal::NoSuchTask { .. } => NOT_FOUND,
+        Refusal::NoSuchTask { .. } | Refusal::NoSuchSession { .. } => NOT_FOUND,
         Refusal::NothingToAssign => GENERAL_FAILURE,
         Refusal::NotPending { .. }
         | Refusal::NotARepository { .. }
@@ -67,7 +67,9 @@ fn message_for(refusal: &Refusal) -> String {
     match refusal {
         Refusal::UnknownKey { key } => format!("no such key {key}"),
         Refusal::BadValue { key, value } => format!("{key} does not take {value}"),
-        Refusal::NoSuchTask { id } => format!("{id} does not exist"),
+        Refusal::NoSuchTask { id } | Refusal::NoSuchSession { id } => {
+            format!("{id} does not exist")
+        }
         Refusal::NotPending { id } => format!("{id} is not pending"),
         Refusal::NotARepository { at } => format!("{at} is not inside a repository"),
         Refusal::AlreadyRunning { id } => format!("{id} is already running"),

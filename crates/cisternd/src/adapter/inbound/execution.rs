@@ -1,9 +1,9 @@
-//! The envelope for `run`.
+//! The envelope for `run` and the two session queries.
 
 use cistern_contract::{Request, Response};
 use serde_json::Value;
 
-use crate::core::port::inbound::{Declaration, ExecutionUseCase, Started};
+use crate::core::port::inbound::{Declaration, ExecutionUseCase, Page, Report, Started};
 
 use super::{answer, missing, text};
 
@@ -12,6 +12,8 @@ use super::{answer, missing, text};
 pub fn respond(execution: &impl ExecutionUseCase, request: Request) -> Result<Response, Request> {
     match request.command.as_str() {
         "run" => Ok(run(execution, request)),
+        "session_ls" => Ok(list(execution, request)),
+        "session_show" => Ok(show(execution, request)),
         _ => Err(request),
     }
 }
@@ -38,6 +40,54 @@ fn run(execution: &impl ExecutionUseCase, request: Request) -> Response {
         _ => return missing("run takes a usage and a time, both strings"),
     };
     answer(request.command, outcome)
+}
+
+fn list(execution: &impl ExecutionUseCase, request: Request) -> Response {
+    let outcome = execution
+        .sessions(text(&request, "page"), text(&request, "limit"))
+        .map(page);
+    answer(request.command, outcome)
+}
+
+fn show(execution: &impl ExecutionUseCase, request: Request) -> Response {
+    let Some(session) = text(&request, "session") else {
+        return missing("session show takes a session, a string");
+    };
+    let outcome = execution.session(session).map(report);
+    answer(request.command, outcome)
+}
+
+fn page(page: Page) -> Value {
+    serde_json::json!({
+        "page": page.page,
+        "limit": page.limit,
+        "sessions": page.sessions.into_iter().map(|one| serde_json::json!({
+            "id": one.id,
+            "state": one.state,
+            "consumed": one.consumed,
+            "task_count": one.task_count,
+            "updated_at": one.updated_at,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn report(report: Report) -> Value {
+    serde_json::json!({
+        "session": report.session,
+        "state": report.state,
+        "budget": { "usage": report.budget.usage, "time": report.budget.time },
+        "consumed": { "usage": report.consumed.usage, "time": report.consumed.time },
+        "stopped_reason": report.stopped_reason,
+        "resets_at": report.resets_at,
+        "updated_at": report.updated_at,
+        "tasks": report.tasks.into_iter().map(|one| serde_json::json!({
+            "id": one.id,
+            "state": one.state,
+            "title": one.title,
+            "branch": one.branch,
+            "reason": one.reason,
+        })).collect::<Vec<_>>(),
+    })
 }
 
 fn started(started: Started) -> Value {
@@ -93,6 +143,18 @@ mod tests {
         /// what reaches this, which is the composition root's.
         fn carry_on(&self, _task: &str) -> Result<Vec<String>, Refusal> {
             Ok(Vec::new())
+        }
+
+        fn sessions(&self, _page: Option<&str>, _limit: Option<&str>) -> Result<Page, Refusal> {
+            Ok(Page {
+                page: 1,
+                limit: 20,
+                sessions: Vec::new(),
+            })
+        }
+
+        fn session(&self, id: &str) -> Result<Report, Refusal> {
+            Err(Refusal::NoSuchSession { id: id.to_owned() })
         }
     }
 
