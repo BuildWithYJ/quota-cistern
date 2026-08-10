@@ -3,7 +3,7 @@
 use cistern_contract::{Request, Response};
 use serde_json::Value;
 
-use crate::core::port::inbound::{Declaration, ExecutionUseCase, Page, Report, Started};
+use crate::core::port::inbound::{Declaration, ExecutionUseCase, Page, Report, Started, Stopped};
 
 use super::{answer, missing, text};
 
@@ -14,6 +14,7 @@ pub fn respond(execution: &impl ExecutionUseCase, request: Request) -> Result<Re
         "run" => Ok(run(execution, request)),
         "session_ls" => Ok(list(execution, request)),
         "session_show" => Ok(show(execution, request)),
+        "interrupt" => Ok(interrupt(execution, request)),
         _ => Err(request),
     }
 }
@@ -55,6 +56,20 @@ fn show(execution: &impl ExecutionUseCase, request: Request) -> Response {
     };
     let outcome = execution.session(session).map(report);
     answer(request.command, outcome)
+}
+
+fn interrupt(execution: &impl ExecutionUseCase, request: Request) -> Response {
+    let outcome = execution.interrupt().map(stopped);
+    answer(request.command, outcome)
+}
+
+fn stopped(stopped: Stopped) -> Value {
+    serde_json::json!({
+        "session": stopped.session,
+        "state": stopped.state,
+        "interrupted_tasks": stopped.interrupted_tasks,
+        "consumed": { "usage": stopped.consumed.usage, "time": stopped.consumed.time },
+    })
 }
 
 fn page(page: Page) -> Value {
@@ -155,6 +170,10 @@ mod tests {
 
         fn session(&self, id: &str) -> Result<Report, Refusal> {
             Err(Refusal::NoSuchSession { id: id.to_owned() })
+        }
+
+        fn interrupt(&self) -> Result<Stopped, Refusal> {
+            Err(Refusal::NoSessionRunning)
         }
     }
 

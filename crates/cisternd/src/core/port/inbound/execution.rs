@@ -78,6 +78,17 @@ pub struct Report {
     pub tasks: Vec<Ran>,
 }
 
+/// A session that was stopped by hand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stopped {
+    pub session: String,
+    pub state: String,
+    /// The tasks that were running and now are not.
+    pub interrupted_tasks: Vec<String>,
+    /// What it consumed, in the unit the budget was declared in.
+    pub consumed: Declared,
+}
+
 /// `run`, and the work a run leaves behind.
 pub trait ExecutionUseCase {
     /// Opens a session and assigns what may start.
@@ -103,4 +114,9 @@ pub trait ExecutionUseCase {
 
     /// One session and the tasks it held.
     fn session(&self, id: &str) -> Result<Report, Refusal>;
+
+    /// Stops the running session.
+    ///
+    /// Section 2.2 allows one session at a time, so it takes no target.
+    fn interrupt(&self) -> Result<Stopped, Refusal>;
 }

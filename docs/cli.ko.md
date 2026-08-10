@@ -390,6 +390,7 @@ cistern interrupt [-o <fmt>]
 | `session`           | string | 중단한 세션                 |
 | `state`             | enum   | `stopped`              |
 | `interrupted_tasks` | array  | Interrupted로 종료된 작업 id |
+| `consumed`          | object | 실측 소비 (usage·time)      |
 
 
 **종료 코드**

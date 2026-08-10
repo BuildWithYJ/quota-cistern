@@ -13,7 +13,9 @@ mod execution;
 
 pub use backlog::{Added, BacklogUseCase, Detail, Listing, Registration, Removed, Waiting};
 pub use configuration::{Applied, ConfigurationUseCase, View};
-pub use execution::{Declaration, Declared, ExecutionUseCase, Listed, Page, Ran, Report, Started};
+pub use execution::{
+    Declaration, Declared, ExecutionUseCase, Listed, Page, Ran, Report, Started, Stopped,
+};
 
 use super::outbound::Unavailable;
 
@@ -38,6 +40,8 @@ pub enum Refusal {
     NotARepository { at: String },
     /// A session is running, and section 2.2 allows one at a time.
     AlreadyRunning { id: String },
+    /// Nothing is running, and the command only makes sense while one is.
+    NoSessionRunning,
     /// Nothing in the backlog may start.
     NothingToAssign,
     /// The store could not be reached or could not be understood.

@@ -355,6 +355,7 @@ cistern interrupt [-o <fmt>]
 | `session` | string | The session that was stopped |
 | `state` | enum | `stopped` |
 | `interrupted_tasks` | array | Ids of tasks that ended as `Interrupted` |
+| `consumed` | object | Measured consumption (usage, time) |
 
 **Exit codes**
 

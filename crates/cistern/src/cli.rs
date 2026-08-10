@@ -37,6 +37,8 @@ pub enum Command {
     },
     /// Lists the tasks waiting to be assigned.
     Backlog,
+    /// Stops the running session.
+    Interrupt,
     /// Reads sessions.
     Session {
         #[command(subcommand)]
