@@ -16,7 +16,9 @@ mod platform;
 
 use adapter::{inbound, outbound};
 use core::{
-    port::inbound::{Declaration, ExecutionUseCase, Page, Refusal, Report, Started, Stopped},
+    port::inbound::{
+        Declaration, ExecutionUseCase, Page, Refusal, Report, Started, Stopped, Trail,
+    },
     service::{BacklogService, ConfigurationService, ExecutionService, ReviewService},
 };
 use platform::work::Queue;
@@ -64,7 +66,7 @@ fn main() -> ExitCode {
     };
 
     let configuration = ConfigurationService::new(&configuration_store);
-    let backlog = BacklogService::new(&backlog_store, &roots, &traces);
+    let backlog = BacklogService::new(&backlog_store, &roots);
     let review = ReviewService::new(&backlog_store, &results);
     let execution = ExecutionService::new(
         &session_store,
@@ -143,6 +145,10 @@ impl<U: ExecutionUseCase> ExecutionUseCase for Queueing<'_, U> {
 
     fn session(&self, id: &str) -> Result<Report, Refusal> {
         self.execution.session(id)
+    }
+
+    fn trace(&self, id: &str, since: Option<&str>) -> Result<Trail, Refusal> {
+        self.execution.trace(id, since)
     }
 
     fn interrupt(&self) -> Result<Stopped, Refusal> {

@@ -3,7 +3,9 @@
 use cistern_contract::{Request, Response};
 use serde_json::Value;
 
-use crate::core::port::inbound::{Declaration, ExecutionUseCase, Page, Report, Started, Stopped};
+use crate::core::port::inbound::{
+    Declaration, ExecutionUseCase, Page, Report, Started, Stopped, Trail,
+};
 
 use super::{answer, missing, text};
 
@@ -15,6 +17,7 @@ pub fn respond(execution: &impl ExecutionUseCase, request: Request) -> Result<Re
         "session_ls" => Ok(list(execution, request)),
         "session_show" => Ok(show(execution, request)),
         "interrupt" => Ok(interrupt(execution, request)),
+        "trace" => Ok(trace(execution, request)),
         _ => Err(request),
     }
 }
@@ -56,6 +59,25 @@ fn show(execution: &impl ExecutionUseCase, request: Request) -> Response {
     };
     let outcome = execution.session(session).map(report);
     answer(request.command, outcome)
+}
+
+fn trace(execution: &impl ExecutionUseCase, request: Request) -> Response {
+    let Some(task) = text(&request, "task") else {
+        return missing("trace takes a task, a string");
+    };
+    let outcome = execution.trace(task, text(&request, "since")).map(trailed);
+    answer(request.command, outcome)
+}
+
+fn trailed(trail: Trail) -> Value {
+    serde_json::json!({
+        "events": trail.events.into_iter().map(|one| serde_json::json!({
+            "at": one.at,
+            "said": one.said,
+        })).collect::<Vec<_>>(),
+        "cursor": trail.cursor,
+        "done": trail.done,
+    })
 }
 
 fn interrupt(execution: &impl ExecutionUseCase, request: Request) -> Response {
@@ -123,7 +145,7 @@ mod tests {
 
     use cistern_contract::code::{STATE_CONFLICT, USAGE_ERROR};
 
-    use crate::core::port::inbound::{Declared, Refusal};
+    use crate::core::port::inbound::{Declared, Happened, Refusal};
 
     use super::super::tests::{asked, data, failure};
     use super::*;
@@ -165,6 +187,17 @@ mod tests {
                 page: 1,
                 limit: 20,
                 sessions: Vec::new(),
+            })
+        }
+
+        fn trace(&self, _id: &str, _since: Option<&str>) -> Result<Trail, Refusal> {
+            Ok(Trail {
+                events: vec![Happened {
+                    at: "1770000000".to_owned(),
+                    said: "Read SPEC.md".to_owned(),
+                }],
+                cursor: "000000000149".to_owned(),
+                done: true,
             })
         }
 

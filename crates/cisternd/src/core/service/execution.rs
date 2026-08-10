@@ -8,8 +8,8 @@ use crate::core::{
     },
     port::{
         inbound::{
-            Declaration, Declared, ExecutionUseCase, Listed, Page, Ran, Refusal, Report, Started,
-            Stopped,
+            Declaration, Declared, ExecutionUseCase, Happened, Listed, Page, Ran, Refusal, Report,
+            Started, Stopped, Trail,
         },
         outbound::{
             Agent, BacklogStore, Clock, Cut, Limit, Observed, Outcome, SessionStore, Spent, Traces,
@@ -193,6 +193,37 @@ impl ExecutionUseCase for ExecutionService<'_> {
             resets_at: session.resets_at().map(|at| at.to_string()),
             updated_at: session.updated_at().to_string(),
             tasks: ran,
+        })
+    }
+
+    fn trace(&self, id: &str, since: Option<&str>) -> Result<Trail, Refusal> {
+        let wanted = TaskId::parse(id).ok_or_else(|| Refusal::BadValue {
+            key: "task".to_owned(),
+            value: id.to_owned(),
+        })?;
+        let held = backlog::read(self.tasks)?;
+        let task = held.find(wanted).ok_or_else(|| Refusal::NoSuchTask {
+            id: wanted.labelled(),
+        })?;
+        // Asked before the trace is read. A run that ends between the two
+        // would leave a reader told the task was still going with the last of
+        // what it wrote already in hand, and nothing would fetch it again.
+        let done = task.state() != TaskState::Running;
+
+        let read = self
+            .traces
+            .read(&wanted.to_string(), since.unwrap_or_default())?;
+        Ok(Trail {
+            events: read
+                .events
+                .into_iter()
+                .map(|one| Happened {
+                    at: one.at,
+                    said: one.said,
+                })
+                .collect(),
+            cursor: read.cursor,
+            done,
         })
     }
 
@@ -1945,5 +1976,57 @@ mod tests {
         assert_eq!(held.state, "Error");
         assert_eq!(held.reason.as_deref(), Some("no such base branch"));
         assert!(agent.asked.lock().unwrap().is_empty());
+    }
+
+    /// A reader is told whether more can still arrive. The run's state answers
+    /// that, and the run is this service's to know.
+    #[test]
+    fn a_trace_says_whether_it_can_still_grow() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![StoredTask {
+            session: Some("1".to_owned()),
+            state: "Running".to_owned(),
+            ..a_pending_task()
+        }]);
+        let areas = Areas::default();
+        let agent = Standing::finishing();
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
+
+        assert!(!execution.trace("1", None).unwrap().done);
+
+        tasks.stored.lock().unwrap().tasks[0].state = "Completed".to_owned();
+        assert!(execution.trace("1", None).unwrap().done);
+    }
+
+    #[test]
+    fn the_trace_of_a_task_nobody_registered_says_so() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(Vec::new());
+        let areas = Areas::default();
+        let agent = Standing::finishing();
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
+
+        assert_eq!(
+            execution.trace("7", None),
+            Err(Refusal::NoSuchTask {
+                id: "task:7".to_owned()
+            })
+        );
     }
 }

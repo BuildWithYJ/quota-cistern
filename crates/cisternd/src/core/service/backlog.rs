@@ -7,12 +7,9 @@ use crate::core::{
     },
     port::{
         inbound::{
-            Added, BacklogUseCase, Detail, Happened, Listing, Refusal, Registration, Removed,
-            Trail, Waiting,
+            Added, BacklogUseCase, Detail, Listing, Refusal, Registration, Removed, Waiting,
         },
-        outbound::{
-            BacklogStore, RepositoryRoots, StoredBacklog, StoredConsumption, StoredTask, Traces,
-        },
+        outbound::{BacklogStore, RepositoryRoots, StoredBacklog, StoredConsumption, StoredTask},
     },
 };
 
@@ -23,20 +20,11 @@ use crate::core::{
 pub struct BacklogService<'a> {
     store: &'a dyn BacklogStore,
     roots: &'a dyn RepositoryRoots,
-    traces: &'a dyn Traces,
 }
 
 impl<'a> BacklogService<'a> {
-    pub fn new(
-        store: &'a dyn BacklogStore,
-        roots: &'a dyn RepositoryRoots,
-        traces: &'a dyn Traces,
-    ) -> Self {
-        BacklogService {
-            store,
-            roots,
-            traces,
-        }
+    pub fn new(store: &'a dyn BacklogStore, roots: &'a dyn RepositoryRoots) -> Self {
+        BacklogService { store, roots }
     }
 }
 
@@ -108,37 +96,6 @@ impl BacklogUseCase for BacklogService<'_> {
                 id: removed.id().labelled(),
                 title: removed.title().to_owned(),
             })
-        })
-    }
-
-    fn trace(&self, id: &str, since: Option<&str>) -> Result<Trail, Refusal> {
-        let wanted = TaskId::parse(id).ok_or_else(|| Refusal::BadValue {
-            key: "task".to_owned(),
-            value: id.to_owned(),
-        })?;
-        let held = read(self.store)?;
-        let task = held.find(wanted).ok_or_else(|| Refusal::NoSuchTask {
-            id: wanted.labelled(),
-        })?;
-        // Asked before the trace is read. A run that ends between the two
-        // would leave a reader told the task was still going with the last of
-        // what it wrote already in hand, and nothing would fetch it again.
-        let done = task.state() != TaskState::Running;
-
-        let read = self
-            .traces
-            .read(&wanted.to_string(), since.unwrap_or_default())?;
-        Ok(Trail {
-            events: read
-                .events
-                .into_iter()
-                .map(|one| Happened {
-                    at: one.at,
-                    said: one.said,
-                })
-                .collect(),
-            cursor: read.cursor,
-            done,
         })
     }
 
@@ -473,34 +430,12 @@ mod tests {
     };
     static NOWHERE: Somewhere = Somewhere { root: None };
 
-    /// A trace store that was never written to.
-    struct Kept;
-
-    impl Traces for Kept {
-        fn at(&self, task: &str) -> Result<String, Unavailable> {
-            Ok(format!("/traces/{task}.jsonl"))
-        }
-
-        fn read(
-            &self,
-            _task: &str,
-            _from: &str,
-        ) -> Result<crate::core::port::outbound::Read, Unavailable> {
-            Ok(crate::core::port::outbound::Read {
-                events: Vec::new(),
-                cursor: "000000000000".to_owned(),
-            })
-        }
-    }
-
-    static NOTHING_KEPT: Kept = Kept;
-
     fn in_a_repository(tasks: &Remembered) -> BacklogService<'_> {
-        BacklogService::new(tasks, &IN_A_REPOSITORY, &NOTHING_KEPT)
+        BacklogService::new(tasks, &IN_A_REPOSITORY)
     }
 
     fn outside_one(tasks: &Remembered) -> BacklogService<'_> {
-        BacklogService::new(tasks, &NOWHERE, &NOTHING_KEPT)
+        BacklogService::new(tasks, &NOWHERE)
     }
 
     fn registering(title: &str) -> Registration<'_> {
@@ -790,45 +725,6 @@ mod tests {
             in_a_repository(&tasks).list(),
             Err(Refusal::Unavailable { .. })
         ));
-    }
-
-    #[test]
-    fn a_trace_says_whether_it_can_still_grow() {
-        let tasks = Remembered::default();
-        let mut held = tasks.stored.lock().unwrap().clone();
-        held.tasks = vec![crate::core::port::outbound::StoredTask {
-            session: Some("1".to_owned()),
-            worktree: None,
-            reason: None,
-            consumed: None,
-            unreadable: None,
-            disposition: None,
-            id: "1".to_owned(),
-            title: "first".to_owned(),
-            instruction: "do it".to_owned(),
-            branch: None,
-            after: None,
-            model: None,
-            repository: "/work/api".to_owned(),
-            state: "Running".to_owned(),
-        }];
-        *tasks.stored.lock().unwrap() = held.clone();
-        assert!(!in_a_repository(&tasks).trace("1", None).unwrap().done);
-
-        held.tasks[0].state = "Completed".to_owned();
-        *tasks.stored.lock().unwrap() = held;
-        assert!(in_a_repository(&tasks).trace("1", None).unwrap().done);
-    }
-
-    #[test]
-    fn the_trace_of_a_task_nobody_registered_says_so() {
-        let tasks = Remembered::default();
-        assert_eq!(
-            in_a_repository(&tasks).trace("7", None),
-            Err(Refusal::NoSuchTask {
-                id: "task:7".to_owned()
-            })
-        );
     }
 
     /// A count and a reason it could not be counted are two answers to one

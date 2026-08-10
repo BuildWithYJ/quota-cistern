@@ -14,7 +14,7 @@ An inbound adapter names the inbound ports and nothing else.
 
 ## The core
 
-`port` declares both edges. `port::inbound` is what the core offers, one trait per command group with the values those commands answer with. `port::outbound` is what the core needs from outside. A vendor name, a file path, a git invocation, and a clock reading do not appear in either.
+`port` declares both edges. `port::inbound` is what the core offers, one trait per command group with the values those commands answer with. A command group is the commands that are about the same thing: a task, a session, a result, the configuration. Sharing an identifier is not being about the same thing, which is why reading what a run wrote sits beside the session rather than beside the task it names. `port::outbound` is what the core needs from outside. A vendor name, a file path, a git invocation, and a clock reading do not appear in either.
 
 One outside, one place. An outside that holds several conversations is a directory named after that outside, and one that holds a single conversation is a file. The vendor answers two questions, running a task and how much of its allowance is left, so `port::outbound::vendor` holds both. The repository a task was added from answers three, so `port::outbound::repository` holds those.
 

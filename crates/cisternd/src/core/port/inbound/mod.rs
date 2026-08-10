@@ -12,12 +12,11 @@ mod configuration;
 mod execution;
 mod review;
 
-pub use backlog::{
-    Added, BacklogUseCase, Detail, Happened, Listing, Registration, Removed, Trail, Waiting,
-};
+pub use backlog::{Added, BacklogUseCase, Detail, Listing, Registration, Removed, Waiting};
 pub use configuration::{Applied, ConfigurationUseCase, View};
 pub use execution::{
-    Declaration, Declared, ExecutionUseCase, Listed, Page, Ran, Report, Started, Stopped,
+    Declaration, Declared, ExecutionUseCase, Happened, Listed, Page, Ran, Report, Started, Stopped,
+    Trail,
 };
 pub use review::{Awaiting, Changed, Difference, Dropped, Queue, ReviewUseCase, Taken};
 

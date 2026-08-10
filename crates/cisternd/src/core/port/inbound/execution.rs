@@ -1,8 +1,27 @@
-//! What the core offers over sessions and execution.
+//! What the core offers over a session and what it runs.
 //!
-//! Section 2.2 of `docs/cli.md` fixes the arguments and the output.
+//! Section 2.2 of `docs/cli.md` fixes the arguments and the output, and
+//! section 2.3 fixes `trace`. A trace is what a run wrote, so it is answered
+//! here rather than beside the task that was registered.
 
 use super::Refusal;
+
+/// One thing a run did or said, as `trace` reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Happened {
+    pub at: String,
+    pub said: String,
+}
+
+/// A stretch of what a run wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Trail {
+    pub events: Vec<Happened>,
+    /// Where to carry on from.
+    pub cursor: String,
+    /// True once the task has ended and the trace can grow no more.
+    pub done: bool,
+}
 
 /// What `run` was given.
 pub struct Declaration<'a> {
@@ -114,6 +133,12 @@ pub trait ExecutionUseCase {
 
     /// One session and the tasks it held.
     fn session(&self, id: &str) -> Result<Report, Refusal>;
+
+    /// What a task's run has written so far, from `since` onwards.
+    ///
+    /// Section 2.3 answers the same way whether the run is still going or has
+    /// ended, so nothing here asks which.
+    fn trace(&self, id: &str, since: Option<&str>) -> Result<Trail, Refusal>;
 
     /// Stops the running session.
     ///
