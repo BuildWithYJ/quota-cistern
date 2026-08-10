@@ -5,12 +5,14 @@
 
 use std::{
     io::Write,
-    process::{Command, Output, Stdio},
+    process::{Command, Stdio},
 };
 
 use crate::core::port::outbound::{
     Between, Changes, Counts, NotApplied, Results, Touched, Unavailable,
 };
+
+use super::said;
 
 /// Results read out of the repository the task was added from.
 ///
@@ -168,7 +170,9 @@ fn putting(repository: &str, patch: &str, asking: Asking) -> Result<(), String> 
 
     match done.status.success() {
         true => Ok(()),
-        false => Err(said(&done)),
+        // One line of it. What this becomes is a sentence printed beside the
+        // task it is about, and git's detail runs to several.
+        false => Err(said(&done).lines().next().unwrap_or_default().to_owned()),
     }
 }
 
@@ -196,19 +200,6 @@ fn counted(written: &str) -> String {
         "" => "0".to_owned(),
         said => said.to_owned(),
     }
-}
-
-/// What a failed command complained about, in one line.
-///
-/// git writes the reason first and the detail after it, and a refusal that
-/// reaches a terminal is read rather than parsed.
-fn said(done: &Output) -> String {
-    let complained = String::from_utf8_lossy(&done.stderr).trim().to_owned();
-    let said = match complained.is_empty() {
-        false => complained,
-        true => String::from_utf8_lossy(&done.stdout).trim().to_owned(),
-    };
-    said.lines().next().unwrap_or_default().to_owned()
 }
 
 #[cfg(test)]

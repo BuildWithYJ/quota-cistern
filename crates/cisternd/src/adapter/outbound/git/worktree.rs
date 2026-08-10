@@ -3,14 +3,11 @@
 //! The only place that knows the command and where a work area lands. Neither
 //! reaches the core.
 
-use std::{
-    env,
-    ffi::OsString,
-    path::PathBuf,
-    process::{Command, Output},
-};
+use std::{env, ffi::OsString, path::PathBuf, process::Command};
 
 use crate::core::port::outbound::{Cut, Unavailable, Worktrees};
+
+use super::said;
 
 /// Work areas kept under a directory fixed when this is built.
 ///
@@ -66,20 +63,6 @@ fn under_of(data_home: Option<OsString>, home: Option<OsString>) -> Option<PathB
         None => PathBuf::from(home?).join(".local").join("share"),
     };
     Some(base.join("cistern").join("worktrees"))
-}
-
-/// What git said about a command that failed.
-///
-/// git writes its complaint to standard error and says nothing on standard
-/// output, but a command that fails without a word is worse than one that
-/// repeats itself, so both are read.
-fn said(done: &Output) -> String {
-    let complained = String::from_utf8_lossy(&done.stderr);
-    let complained = complained.trim();
-    match complained.is_empty() {
-        false => complained.to_owned(),
-        true => String::from_utf8_lossy(&done.stdout).trim().to_owned(),
-    }
 }
 
 #[cfg(test)]

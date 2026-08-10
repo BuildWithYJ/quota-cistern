@@ -10,7 +10,10 @@ use serde_json::Value;
 
 use crate::core::port::outbound::{SessionStore, StoredSession, StoredSessions, Unavailable};
 
-use super::kept::Kept;
+use super::{
+    kept::Kept,
+    {as_number, as_optional, as_text, as_value},
+};
 
 /// The sessions, kept as JSON at a path fixed when this is built.
 pub struct FileSessions {
@@ -140,31 +143,6 @@ impl SessionStore for FileSessions {
             false => Ok(()),
         }
     }
-}
-
-fn as_text(value: Value) -> String {
-    match value {
-        Value::String(text) => text,
-        other => other.to_string(),
-    }
-}
-
-fn as_optional(value: Value) -> Option<String> {
-    match value {
-        Value::Null => None,
-        other => Some(as_text(other)),
-    }
-}
-
-fn as_number(text: &str) -> Value {
-    match text.parse::<u64>() {
-        Ok(number) => Value::from(number),
-        Err(_) => Value::String(text.to_owned()),
-    }
-}
-
-fn as_value(text: Option<String>) -> Value {
-    text.map_or(Value::Null, Value::String)
 }
 
 #[cfg(test)]

@@ -12,7 +12,10 @@ use crate::core::port::outbound::{
     BacklogStore, StoredBacklog, StoredConsumption, StoredTask, Unavailable,
 };
 
-use super::kept::Kept;
+use super::{
+    kept::Kept,
+    {as_number, as_optional, as_text, as_value},
+};
 
 /// The backlog, kept as JSON at a path fixed when this is built.
 pub struct FileBacklog {
@@ -90,43 +93,6 @@ impl FileBacklog {
         Kept::in_data_home(env::var_os("XDG_DATA_HOME"), env::var_os("HOME"), NAMED)
             .map(FileBacklog::at)
     }
-}
-
-/// The text a user would have typed for what JSON holds.
-///
-/// A string keeps its contents; everything else is rendered as the file writes
-/// it, so a number, a boolean, and an object all reach the core as something it
-/// can read and refuse.
-fn as_text(value: Value) -> String {
-    match value {
-        Value::String(text) => text,
-        other => other.to_string(),
-    }
-}
-
-/// A field that may be absent. JSON null and a missing key mean the same here.
-fn as_optional(value: Value) -> Option<String> {
-    match value {
-        Value::Null => None,
-        other => Some(as_text(other)),
-    }
-}
-
-/// A number as the file holds one.
-///
-/// What the file looks like is this module's business, so an identifier goes
-/// back as a JSON number rather than as the text the core handed over. Text
-/// that is not one is written as it stands, since the core refuses such a value
-/// long before it reaches here.
-fn as_number(text: &str) -> Value {
-    match text.parse::<u64>() {
-        Ok(number) => Value::from(number),
-        Err(_) => Value::String(text.to_owned()),
-    }
-}
-
-fn as_value(text: Option<String>) -> Value {
-    text.map_or(Value::Null, Value::String)
 }
 
 impl FileBacklog {
