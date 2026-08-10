@@ -30,7 +30,9 @@ An inbound adapter turns an envelope into a use case call and the answer back in
 
 An outbound adapter is where a vendor's field names, a file format, and a git invocation belong. None of them cross back into the core, and `cisternd/tests/architecture.rs` checks the field names.
 
-Outbound adapters are grouped the way the ports are, but named for the means rather than for the outside: `claude` answers `vendor` and `git` answers `repository`. A second vendor is a directory beside `claude` and nothing else. Whatever a means needs in order to work — an invocation written as JSON, a prompt, a stand-in used in tests — sits in that directory too.
+Outbound adapters are grouped by the means rather than by the outside: `claude`, `git`, `file`, and the clock. A second vendor is a directory beside `claude` and nothing else. Whatever a means needs in order to work — an invocation written as JSON, a prompt, a stand-in used in tests, the part every file store shares — sits in that directory too.
+
+The two edges are named differently on purpose. A port says who is on the other side, because that is what the core is talking to. An adapter says how, because that is what changes when the same conversation is held another way.
 
 ## Platform
 
@@ -50,9 +52,7 @@ cisternd/src/
   core/port/outbound/ what the core needs from outside
   core/service/       one per command group
   adapter/inbound/    envelope to use case
-  adapter/outbound/   port to file or git
-  adapter/outbound/claude/  what answers the vendor ports
-  adapter/outbound/git/     what answers the repository ports
+  adapter/outbound/   port to file or git, one directory per means
   platform/           what touches no port
   main.rs             composition root
 ```

@@ -34,14 +34,15 @@ fn main() -> ExitCode {
     }
 
     // Failing once here beats failing on every request that arrives.
-    let Some(configuration_store) = outbound::configuration::FileConfiguration::in_config_home()
+    let Some(configuration_store) =
+        outbound::file::configuration::FileConfiguration::in_config_home()
     else {
         return quit("neither XDG_CONFIG_HOME nor HOME is set");
     };
-    let Some(backlog_store) = outbound::backlog::FileBacklog::in_data_home() else {
+    let Some(backlog_store) = outbound::file::backlog::FileBacklog::in_data_home() else {
         return quit("neither XDG_DATA_HOME nor HOME is set");
     };
-    let Some(session_store) = outbound::session::FileSessions::in_data_home() else {
+    let Some(session_store) = outbound::file::session::FileSessions::in_data_home() else {
         return quit("neither XDG_DATA_HOME nor HOME is set");
     };
     let Some(worktrees) = outbound::git::worktree::GitWorktrees::in_data_home() else {
@@ -54,7 +55,7 @@ fn main() -> ExitCode {
         Ok(limit) => limit,
         Err(e) => return quit(e.reason),
     };
-    let Some(traces) = outbound::trace::FileTraces::in_data_home() else {
+    let Some(traces) = outbound::file::trace::FileTraces::in_data_home() else {
         return quit("neither XDG_DATA_HOME nor HOME is set");
     };
     let roots = outbound::git::roots::GitRoots;
