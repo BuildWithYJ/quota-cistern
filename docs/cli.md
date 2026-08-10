@@ -541,7 +541,7 @@ cistern diff <task> [--stat] [-o <fmt>]
 | Code | Condition |
 | --- | --- |
 | 0 | Success |
-| 1 | No change on the branch (empty diff) |
+| 1 | The branch holds no change, or it cannot be read |
 | 3 | No such task |
 | 5 | Core error |
 
@@ -580,7 +580,7 @@ cistern review ls [-o <fmt>]
 
 `json` prints `{ "review_queue": [...] }` and `text` prints one task per line.
 
-A disposed task leaves the queue. `base_ahead` is computed on every query.
+A disposed task leaves the queue. `base_ahead` is computed on every query. A task whose branch cannot be read stays in the queue, with both counts absent.
 
 **Exit codes**
 
@@ -622,7 +622,7 @@ The command is refused if the working tree has uncommitted changes, and if apply
 | Code | Condition |
 | --- | --- |
 | 0 | Success |
-| 1 | Nothing to apply, or refused because of a conflict |
+| 1 | Nothing to apply, or it is in the working tree already, or applying would conflict |
 | 3 | No such task |
 | 4 | The task has not ended, or the working tree has uncommitted changes |
 | 5 | Core error |

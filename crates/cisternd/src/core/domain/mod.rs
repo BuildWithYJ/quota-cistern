@@ -17,5 +17,6 @@ pub use session::{
 };
 pub use supervision::{Cost, HUNDREDTHS, Spending, cost_of, room_for};
 pub use task::{
-    Backlog, NotABacklog, RemovalRefused, Repository, Restored, Task, TaskId, TaskState,
+    Backlog, DisposalRefused, Disposition, NotABacklog, RemovalRefused, Repository, Restored, Task,
+    TaskId, TaskState,
 };

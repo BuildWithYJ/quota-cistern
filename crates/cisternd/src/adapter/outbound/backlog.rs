@@ -62,6 +62,8 @@ struct Entry {
     consumed: Option<Counted>,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     unreadable: Value,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    disposition: Value,
 }
 
 /// What a task consumed, as the file holds it.
@@ -192,6 +194,7 @@ impl FileBacklog {
                         cost: as_text(counted.cost),
                     }),
                     unreadable: as_optional(entry.unreadable),
+                    disposition: as_optional(entry.disposition),
                 })
                 .collect(),
         })
@@ -225,6 +228,7 @@ impl FileBacklog {
                         cost: as_number(&counted.cost),
                     }),
                     unreadable: as_value(task.unreadable.clone()),
+                    disposition: as_value(task.disposition.clone()),
                 })
                 .collect(),
         };
@@ -298,6 +302,7 @@ mod tests {
             reason: None,
             consumed: None,
             unreadable: None,
+            disposition: None,
         }
     }
 

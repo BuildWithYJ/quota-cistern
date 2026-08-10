@@ -709,6 +709,7 @@ mod tests {
             reason: None,
             consumed: None,
             unreadable: None,
+            disposition: None,
         }
     }
 

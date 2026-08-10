@@ -10,6 +10,7 @@
 mod backlog;
 mod configuration;
 mod execution;
+mod review;
 
 pub use backlog::{
     Added, BacklogUseCase, Detail, Happened, Listing, Registration, Removed, Trail, Waiting,
@@ -18,6 +19,7 @@ pub use configuration::{Applied, ConfigurationUseCase, View};
 pub use execution::{
     Declaration, Declared, ExecutionUseCase, Listed, Page, Ran, Report, Started, Stopped,
 };
+pub use review::{Awaiting, Changed, Difference, Dropped, Queue, ReviewUseCase, Taken};
 
 use super::outbound::Unavailable;
 
@@ -46,6 +48,20 @@ pub enum Refusal {
     NoSessionRunning,
     /// Nothing in the backlog may start.
     NothingToAssign,
+    /// The run has not ended, so there is no result to decide about.
+    NotEnded { id: String },
+    /// The repository holds changes nobody has committed.
+    Uncommitted { at: String },
+    /// The task left nothing on its branch.
+    NoChange { id: String },
+    /// What the task changed is in the working tree already.
+    AlreadyApplied { id: String },
+    /// What the task changed does not go into the working tree as it stands.
+    Conflicts { why: String },
+    /// The result branch is not in the repository the task was added from.
+    NoResult { branch: String, at: String },
+    /// The repository the task was added from cannot be read.
+    NoRepository { at: String },
     /// The store could not be reached or could not be understood.
     Unavailable { reason: String },
 }

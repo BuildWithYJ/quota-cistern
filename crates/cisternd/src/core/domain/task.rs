@@ -33,6 +33,17 @@ pub enum TaskState {
     Error,
 }
 
+/// What was decided about a task's result.
+///
+/// Kept apart from the state, since the state says how the run ended and this
+/// says what was done about it afterwards. A discarded result can still be
+/// applied, so neither is the other's consequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Disposition {
+    Applied,
+    Discarded,
+}
+
 /// The repository a task was added from.
 ///
 /// The core never reads this as a path. It does not join, open, or walk it; it
@@ -64,6 +75,8 @@ pub struct Task {
     reason: Option<String>,
     /// What running it consumed, as far as that is known.
     consumed: Observation,
+    /// What was decided about its result, once anyone decided.
+    disposition: Option<Disposition>,
 }
 
 /// A task on its way back from a store, with every value already read.
@@ -85,6 +98,7 @@ pub struct Restored {
     pub worktree: Option<String>,
     pub reason: Option<String>,
     pub consumed: Observation,
+    pub disposition: Option<Disposition>,
 }
 
 /// Every task, and the number the next one will get.
@@ -117,6 +131,14 @@ pub enum NotABacklog {
 pub enum RemovalRefused {
     NoSuchTask,
     NotPending,
+}
+
+/// Why a task's result could not be disposed of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DisposalRefused {
+    NoSuchTask,
+    /// The run has not ended, so there is no result to decide about.
+    NotEnded,
 }
 
 impl TaskId {
@@ -158,6 +180,17 @@ impl TaskState {
             _ => None,
         }
     }
+
+    /// Whether the run is over, whatever it ended as.
+    ///
+    /// Section 1 calls these the terminal states, and says every one of them
+    /// leaves a branch and enters the review queue.
+    pub fn ended(self) -> bool {
+        matches!(
+            self,
+            TaskState::Completed | TaskState::Interrupted | TaskState::Error
+        )
+    }
 }
 
 impl Display for TaskState {
@@ -168,6 +201,27 @@ impl Display for TaskState {
             TaskState::Completed => "Completed",
             TaskState::Interrupted => "Interrupted",
             TaskState::Error => "Error",
+        })
+    }
+}
+
+impl Disposition {
+    /// Reads a disposition. One spelling is read and written, so what a store
+    /// holds and what is printed cannot drift apart.
+    pub fn parse(disposition: &str) -> Option<Self> {
+        match disposition {
+            "applied" => Some(Disposition::Applied),
+            "discarded" => Some(Disposition::Discarded),
+            _ => None,
+        }
+    }
+}
+
+impl Display for Disposition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Disposition::Applied => "applied",
+            Disposition::Discarded => "discarded",
         })
     }
 }
@@ -238,6 +292,11 @@ impl Task {
         &self.consumed
     }
 
+    /// What was decided about its result, once anyone decided.
+    pub fn disposition(&self) -> Option<Disposition> {
+        self.disposition
+    }
+
     /// The branch this task's result is kept on, once one has been cut.
     ///
     /// A task that was never assigned has none, which is what section 2.1
@@ -297,6 +356,7 @@ impl Backlog {
             worktree: None,
             reason: None,
             consumed: Observation::NotYet,
+            disposition: None,
         });
         id
     }
@@ -398,6 +458,33 @@ impl Backlog {
                 task.consumed = consumed.clone();
             }
         }
+    }
+
+    /// Records what was decided about a task's result.
+    ///
+    /// A task that was disposed of once may be disposed of again, since section
+    /// 2.4 keeps the branch either way and a discarded result can be applied
+    /// later. What is refused is deciding about a run that has not ended.
+    pub fn dispose(&mut self, id: TaskId, disposition: Disposition) -> Result<(), DisposalRefused> {
+        let Some(task) = self.tasks.iter_mut().find(|task| task.id == id) else {
+            return Err(DisposalRefused::NoSuchTask);
+        };
+        if !task.state.ended() {
+            return Err(DisposalRefused::NotEnded);
+        }
+        task.disposition = Some(disposition);
+        Ok(())
+    }
+
+    /// Every task waiting to be disposed of, in the order they were registered.
+    ///
+    /// Across sessions rather than within one: what is waiting for the user is
+    /// waiting whichever run left it.
+    pub fn awaiting_review(&self) -> Vec<&Task> {
+        self.tasks
+            .iter()
+            .filter(|task| task.state.ended() && task.disposition.is_none())
+            .collect()
     }
 
     /// What a session has consumed, added up over the tasks it assigned.
@@ -554,6 +641,7 @@ impl Backlog {
                 worktree: held.worktree,
                 reason: held.reason,
                 consumed: held.consumed,
+                disposition: held.disposition,
             })
             .collect();
 
@@ -621,6 +709,7 @@ mod tests {
             worktree: None,
             reason: None,
             consumed: Observation::NotYet,
+            disposition: None,
             id: TaskId::parse(id).unwrap(),
             title: "a task".to_owned(),
             instruction: "do it".to_owned(),
@@ -943,6 +1032,82 @@ mod tests {
         let mut backlog = Backlog::default();
         let id = registered(&mut backlog, None, None);
         assert_eq!(backlog.find(id).unwrap().consumed(), &Observation::NotYet);
+    }
+
+    #[test]
+    fn every_task_that_ended_and_was_not_decided_about_is_waiting_for_review() {
+        let backlog = holding(vec![
+            held("1", None, "Pending"),
+            held("2", None, "Running"),
+            held("3", None, "Completed"),
+            held("4", None, "Interrupted"),
+            held("5", None, "Error"),
+        ])
+        .unwrap();
+
+        let waiting: Vec<String> = backlog
+            .awaiting_review()
+            .iter()
+            .map(|task| task.id().labelled())
+            .collect();
+        assert_eq!(waiting, ["task:3", "task:4", "task:5"]);
+    }
+
+    #[test]
+    fn a_task_that_was_decided_about_leaves_the_queue() {
+        let mut backlog = holding(vec![held("1", None, "Completed")]).unwrap();
+        let id = TaskId::parse("1").unwrap();
+
+        backlog.dispose(id, Disposition::Applied).unwrap();
+        assert!(backlog.awaiting_review().is_empty());
+        assert_eq!(
+            backlog.find(id).unwrap().disposition(),
+            Some(Disposition::Applied)
+        );
+    }
+
+    /// Section 2.4 keeps the branch either way, so a discarded result is still
+    /// there to be applied.
+    #[test]
+    fn a_discarded_result_can_be_applied_afterwards() {
+        let mut backlog = holding(vec![held("1", None, "Completed")]).unwrap();
+        let id = TaskId::parse("1").unwrap();
+
+        backlog.dispose(id, Disposition::Discarded).unwrap();
+        backlog.dispose(id, Disposition::Applied).unwrap();
+        assert_eq!(
+            backlog.find(id).unwrap().disposition(),
+            Some(Disposition::Applied)
+        );
+    }
+
+    #[test]
+    fn a_run_that_has_not_ended_cannot_be_decided_about() {
+        let mut backlog = holding(vec![held("1", None, "Running")]).unwrap();
+        assert_eq!(
+            backlog.dispose(TaskId::parse("1").unwrap(), Disposition::Applied),
+            Err(DisposalRefused::NotEnded)
+        );
+    }
+
+    #[test]
+    fn deciding_about_a_task_nobody_registered_says_so() {
+        let mut backlog = Backlog::default();
+        assert_eq!(
+            backlog.dispose(TaskId::parse("7").unwrap(), Disposition::Applied),
+            Err(DisposalRefused::NoSuchTask)
+        );
+    }
+
+    /// A disposition says nothing about the state, and section 2.4 says
+    /// `discard` leaves the task state alone.
+    #[test]
+    fn deciding_about_a_result_leaves_the_state_where_it_was() {
+        let mut backlog = holding(vec![held("1", None, "Interrupted")]).unwrap();
+        let id = TaskId::parse("1").unwrap();
+
+        backlog.dispose(id, Disposition::Discarded).unwrap();
+        assert_eq!(backlog.find(id).unwrap().state(), TaskState::Interrupted);
     }
 
     #[test]

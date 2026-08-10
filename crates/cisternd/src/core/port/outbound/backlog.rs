@@ -40,6 +40,8 @@ pub struct StoredTask {
     /// This and `consumed` are both absent for a task that has not run, which
     /// is the third thing they tell apart.
     pub unreadable: Option<String>,
+    /// What was decided about its result, once anyone decided.
+    pub disposition: Option<String>,
 }
 
 /// What a task consumed, as a store holds it.
