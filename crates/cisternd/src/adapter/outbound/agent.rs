@@ -5,6 +5,7 @@
 
 use std::{
     collections::HashMap,
+    fs,
     os::unix::process::CommandExt,
     process::{Command, Stdio},
     sync::{Mutex, PoisonError},
@@ -49,10 +50,15 @@ const AT_SPEND: &str = "error_max_budget";
 
 /// The format the answer arrives in.
 ///
-/// This stands here rather than beside the other arguments because [`said`]
-/// reads that one format. Two places holding one agreement is two places to
-/// forget.
-const FORMAT: [&str; 2] = ["--output-format", "json"];
+/// One object per line, the last of which is the answer. The lines before it
+/// are what the run did on the way, which is what a trace is made of. This
+/// stands here rather than beside the other arguments because what reads the
+/// output expects this one format, and two places holding one agreement is
+/// two places to forget.
+///
+/// The vendor refuses the format without `--verbose` when it is not talking
+/// to a person.
+const FORMAT: [&str; 3] = ["--output-format", "stream-json", "--verbose"];
 
 /// How long a run has to end on its own before it is made to.
 ///
@@ -238,7 +244,9 @@ impl Agent for ClaudeAgent {
 
         // Both pipes are read while the child writes, so a child that writes
         // more than a pipe holds carries on rather than stopping where it is.
-        let stdout = reading(child.stdout.take());
+        // What comes back on the first is kept as it arrives, since whoever
+        // is watching the run reads it before the run has ended.
+        let stdout = keeping(child.stdout.take(), work.trace.to_owned());
         let stderr = reading(child.stderr.take());
 
         let status = child
@@ -326,6 +334,51 @@ fn signal(with: impl Into<Option<Signal>>, group: u32) -> bool {
         return false;
     };
     killpg(Pid::from_raw(group), with).is_ok()
+}
+
+/// Reads what the run says on a thread of its own, keeping each line as it
+/// arrives and handing back the last one.
+///
+/// The last line is the answer. Everything before it is what the run did on
+/// the way there, which nobody waits for.
+fn keeping<R: std::io::Read + Send + 'static>(
+    held: Option<R>,
+    at: String,
+) -> thread::JoinHandle<Vec<u8>> {
+    use std::io::{BufRead, BufReader, Write};
+
+    thread::spawn(move || {
+        let Some(held) = held else {
+            return Vec::new();
+        };
+        let mut keeping = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&at)
+            .ok();
+        let mut last = String::new();
+
+        for line in BufReader::new(held).lines().map_while(Result::ok) {
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Some(keeping) = keeping.as_mut() {
+                let _ = writeln!(keeping, "{}\t{line}", now());
+            }
+            last = line;
+        }
+        last.into_bytes()
+    })
+}
+
+/// Seconds since the epoch, for stamping a line as it arrives.
+///
+/// The vendor stamps some of its lines and not others, and a trace is read in
+/// one order however it was written.
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
 }
 
 /// Reads one of the run's pipes on a thread of its own.
@@ -469,8 +522,11 @@ mod tests {
     /// Written to a file and read back rather than quoted into the command, so
     /// that an answer can be kept as an object a person can read.
     fn answering(held: &TempDir, written: &str) -> String {
+        // One line, as the vendor writes it. The file it comes from is laid
+        // out for a person to read.
+        let one: Value = serde_json::from_str(written).unwrap();
         let at = held.path().join("answer.json");
-        fs::write(&at, written).unwrap();
+        fs::write(&at, one.to_string()).unwrap();
         format!("cat '{}'", at.display())
     }
 
@@ -482,10 +538,16 @@ mod tests {
         Work {
             task: "1",
             at,
+            // Kept beside the work area, so a test that looks at what was
+            // written knows where to look.
+            trace: TRACE.get_or_init(|| format!("{at}/trace.jsonl")),
             instruction,
             model: None,
         }
     }
+
+    /// Where the stand-in's runs keep what they wrote.
+    static TRACE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
     #[test]
     fn an_agent_that_finished_is_answered_as_done() {

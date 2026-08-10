@@ -13,6 +13,7 @@ mod clock;
 mod configuration;
 mod repository;
 mod session;
+mod trace;
 mod window;
 mod worktree;
 
@@ -22,6 +23,7 @@ pub use clock::Clock;
 pub use configuration::{ConfigurationStore, StoredConfiguration};
 pub use repository::RepositoryRoots;
 pub use session::{SessionStore, StoredSession, StoredSessions};
+pub use trace::{Event, Read, Traces};
 pub use window::{Limit, Reading};
 pub use worktree::{Cut, Worktrees};
 

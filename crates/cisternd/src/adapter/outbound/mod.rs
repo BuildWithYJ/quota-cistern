@@ -7,4 +7,5 @@ pub mod configuration;
 pub mod limit;
 pub mod repository;
 pub mod session;
+pub mod trace;
 pub mod worktree;

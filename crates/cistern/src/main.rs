@@ -18,6 +18,11 @@ fn main() -> ExitCode {
         Some(cli::Command::Config { command }) => config::run(command),
         Some(cli::Command::Task { command }) => task::run(command),
         Some(cli::Command::Backlog) => task::backlog(),
+        Some(cli::Command::Trace {
+            task,
+            follow,
+            since,
+        }) => task::trace(&task, follow, since),
         Some(cli::Command::Interrupt) => session::interrupt(),
         Some(cli::Command::Session { command }) => session::query(command),
         Some(cli::Command::Run { usage, time, model }) => session::run(&usage, &time, model),

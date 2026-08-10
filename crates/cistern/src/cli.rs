@@ -37,6 +37,16 @@ pub enum Command {
     },
     /// Lists the tasks waiting to be assigned.
     Backlog,
+    /// Reads what a task's run has written.
+    Trace {
+        task: String,
+        /// Keeps printing until the task ends.
+        #[arg(long)]
+        follow: bool,
+        /// Prints only what follows that point.
+        #[arg(long)]
+        since: Option<String>,
+    },
     /// Stops the running session.
     Interrupt,
     /// Reads sessions.

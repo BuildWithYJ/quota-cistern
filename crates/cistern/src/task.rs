@@ -83,6 +83,106 @@ fn read_instruction(given: &str) -> std::io::Result<String> {
     Ok(read)
 }
 
+/// How long to leave the core alone between asks while following.
+///
+/// The core answers one connection at a time and a task that is working has
+/// nothing new to say most of the time. Asking oftener would take the core
+/// away from the run being followed.
+const BETWEEN_ASKS: std::time::Duration = std::time::Duration::from_secs(2);
+
+pub fn trace(task: &str, follow: bool, since: Option<String>) -> ExitCode {
+    let mut since = since.unwrap_or_default();
+    loop {
+        let asked = exchange::ask("trace", serde_json::json!({ "task": task, "since": since }));
+        let answer = match asked {
+            Ok(Response::Data(answer)) => answer.data,
+            Ok(Response::Error(failure)) => {
+                eprintln!("cistern: {}", failure.message);
+                return ExitCode::from(failure.code);
+            }
+            Err(e) => {
+                eprintln!("cistern: the core is not running: {e}");
+                return ExitCode::from(CORE_ERROR);
+            }
+        };
+
+        happened(&answer);
+        let done = answer.get("done").and_then(Value::as_bool).unwrap_or(true);
+        let carried_on = match text(&answer, "cursor") {
+            Some(cursor) if cursor != since => {
+                since = cursor.to_owned();
+                true
+            }
+            _ => false,
+        };
+
+        // The core answers with as much as it will hold at once, so reaching
+        // the end takes as many asks as it takes. Each is printed as it comes
+        // rather than gathered up, so a long run costs no more to read than a
+        // short one.
+        if carried_on {
+            continue;
+        }
+        if !follow || done {
+            return ExitCode::SUCCESS;
+        }
+        std::thread::sleep(BETWEEN_ASKS);
+    }
+}
+
+/// How far this machine's clock stands from the count, in seconds.
+///
+/// Asked of `date`, which is the one place here that knows what time zone
+/// this machine keeps, and asked once.
+fn offset() -> i64 {
+    static OFFSET: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+    *OFFSET.get_or_init(|| {
+        let Ok(asked) = std::process::Command::new("date").arg("+%z").output() else {
+            return 0;
+        };
+        let said = String::from_utf8_lossy(&asked.stdout);
+        let said = said.trim();
+        if said.len() != 5 {
+            return 0;
+        }
+        let (sign, digits) = said.split_at(1);
+        let hours: i64 = digits[..2].parse().unwrap_or(0);
+        let minutes: i64 = digits[2..].parse().unwrap_or(0);
+        let away = hours * 3_600 + minutes * 60;
+        if sign == "-" { -away } else { away }
+    })
+}
+
+/// One event per line, the time it happened and what happened.
+fn happened(data: &Value) {
+    let Some(events) = data.get("events").and_then(Value::as_array) else {
+        return;
+    };
+    for one in events {
+        let at = one.get("at").and_then(Value::as_str).unwrap_or("");
+        let said = one.get("said").and_then(Value::as_str).unwrap_or("");
+        println!("[{}] {said}", clock_of(at));
+    }
+}
+
+/// A moment as the clock on this machine reads it.
+///
+/// Section 2.3 prints the time of day rather than a count of seconds. The
+/// count is the same everywhere and the time of day is not, and whoever is
+/// reading is looking at their own clock.
+fn clock_of(at: &str) -> String {
+    let Ok(at) = at.parse::<i64>() else {
+        return "--:--:--".to_owned();
+    };
+    let day = (at + offset()).rem_euclid(86_400);
+    format!(
+        "{:02}:{:02}:{:02}",
+        day / 3_600,
+        (day % 3_600) / 60,
+        day % 60
+    )
+}
+
 /// Asks the core and prints what came back.
 fn send(command: &str, params: Value, print: fn(&Value)) -> ExitCode {
     match exchange::ask(command, params) {

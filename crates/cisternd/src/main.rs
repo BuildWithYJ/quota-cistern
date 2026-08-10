@@ -52,6 +52,9 @@ fn main() -> ExitCode {
         Ok(limit) => limit,
         Err(e) => return quit(e.reason),
     };
+    let Some(traces) = outbound::trace::FileTraces::in_data_home() else {
+        return quit("neither XDG_DATA_HOME nor HOME is set");
+    };
     let roots = outbound::repository::GitRoots;
     let clock = outbound::clock::SystemClock;
     let agent = match outbound::agent::ClaudeAgent::new() {
@@ -60,7 +63,7 @@ fn main() -> ExitCode {
     };
 
     let configuration = ConfigurationService::new(&configuration_store);
-    let backlog = BacklogService::new(&backlog_store, &roots);
+    let backlog = BacklogService::new(&backlog_store, &roots, &traces);
     let execution = ExecutionService::new(
         &session_store,
         &backlog_store,
@@ -68,6 +71,7 @@ fn main() -> ExitCode {
         &agent,
         &clock,
         &limit,
+        &traces,
     );
 
     let server = match exchange::listen() {

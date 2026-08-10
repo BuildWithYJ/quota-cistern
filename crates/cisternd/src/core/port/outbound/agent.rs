@@ -11,6 +11,11 @@ pub struct Work<'a> {
     pub task: &'a str,
     /// The work area it runs in.
     pub at: &'a str,
+    /// Where to keep what the run writes.
+    ///
+    /// The core takes this from `Traces` and does not read it. Keeping the
+    /// run's output is one job and interpreting it is another.
+    pub trace: &'a str,
     pub instruction: &'a str,
     /// The model to run, when the task or the session named one.
     pub model: Option<&'a str>,
