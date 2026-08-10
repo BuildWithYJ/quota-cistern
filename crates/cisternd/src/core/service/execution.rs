@@ -2,20 +2,20 @@
 
 use crate::core::{
     domain::{
-        Budget, Consumption, Cost, HUNDREDTHS, Held, NotASessionSet, NotOpened, Observation,
-        Opening, Session, SessionId, SessionState, Sessions, Span, Spending, StoppedReason, Task,
-        TaskId, TaskState, Usage, cost_of, room_for,
+        Budget, Consumption, Cost, HUNDREDTHS, NotOpened, Observation, Opening, Session, SessionId,
+        SessionState, Span, Spending, StoppedReason, Task, TaskId, TaskState, Usage, cost_of,
+        room_for,
     },
     port::{
         inbound::{Declaration, Declared, ExecutionUseCase, Refusal, Started},
         outbound::{
-            Agent, BacklogStore, Clock, Cut, Limit, Observed, Outcome, SessionStore, Spent,
-            StoredSession, StoredSessions, Work, Worktrees,
+            Agent, BacklogStore, Clock, Cut, Limit, Observed, Outcome, SessionStore, Spent, Work,
+            Worktrees,
         },
     },
 };
 
-use super::backlog;
+use super::{backlog, sessions};
 
 /// The commands over sessions, and what they need from outside.
 pub struct ExecutionService<'a> {
@@ -55,7 +55,7 @@ impl<'a> ExecutionService<'a> {
         reading
             .used
             .parse()
-            .map_err(|_| unreadable("used", &reading.used))
+            .map_err(|_| sessions::unreadable("used", &reading.used))
     }
 }
 
@@ -87,7 +87,7 @@ impl ExecutionUseCase for ExecutionService<'_> {
             Usage::Tokens(_) => None,
         };
 
-        let opened = change(self.sessions, |sessions| {
+        let opened = sessions::change(self.sessions, |sessions| {
             sessions
                 .open(Opening {
                     budget,
@@ -345,7 +345,7 @@ impl ExecutionService<'_> {
 
     /// Stops the session and ends whatever it still had running.
     fn stop(&self, session: SessionId, why: StoppedReason) -> Result<(), Refusal> {
-        change(self.sessions, |sessions| {
+        sessions::change(self.sessions, |sessions| {
             sessions.stop(session, why);
             Ok(())
         })?;
@@ -378,7 +378,7 @@ impl ExecutionService<'_> {
     /// The session, if it is one this still decides for.
     fn held(&self, session: SessionId) -> Result<Option<Session>, Refusal> {
         let mut found = None;
-        change(self.sessions, |sessions| {
+        sessions::change(self.sessions, |sessions| {
             found = sessions
                 .sessions()
                 .iter()
@@ -395,144 +395,15 @@ fn labelled(ids: Vec<TaskId>) -> Vec<String> {
     ids.iter().map(TaskId::labelled).collect()
 }
 
-fn stored_count(field: &str, value: &str) -> Result<u64, Refusal> {
-    value.parse().map_err(|_| unreadable(field, value))
-}
-
-/// Reads the sessions and holds them to the same standard as an argument.
-///
-/// Nobody is meant to write this file, so a set that does not add up is a store
-/// this core cannot use rather than something the user typed wrong. This is
-/// what `service::backlog` does for the backlog, and the two stay apart because
-/// neither store knows what the other holds.
-fn read_from(stored: StoredSessions) -> Result<Sessions, Refusal> {
-    let next_id = stored
-        .next_id
-        .parse()
-        .map_err(|_| unreadable("next_id", &stored.next_id))?;
-
-    let mut held = Vec::with_capacity(stored.sessions.len());
-    for one in stored.sessions {
-        held.push(held_from(one)?);
-    }
-
-    Sessions::restore(next_id, held).map_err(|e| Refusal::Unavailable {
-        reason: unusable(&e),
-    })
-}
-
-/// Reads one session as a store handed it over.
-fn held_from(one: StoredSession) -> Result<Held, Refusal> {
-    use crate::core::domain::{SessionId, SessionState, StoppedReason};
-
-    Ok(Held {
-        started_at: stored_count("started_at", &one.started_at)?,
-        limit_at_start: one
-            .limit_at_start
-            .as_deref()
-            .map(|used| stored_count("limit_at_start", used))
-            .transpose()?,
-        id: SessionId::parse(&one.id).ok_or_else(|| unreadable("id", &one.id))?,
-        state: SessionState::parse(&one.state).ok_or_else(|| unreadable("state", &one.state))?,
-        stopped_reason: one
-            .stopped_reason
-            .as_deref()
-            .map(|reason| {
-                StoppedReason::parse(reason).ok_or_else(|| unreadable("stopped_reason", reason))
-            })
-            .transpose()?,
-        budget: Budget {
-            usage: Usage::parse(&one.usage).ok_or_else(|| unreadable("usage", &one.usage))?,
-            time: Span::parse(&one.time).ok_or_else(|| unreadable("time", &one.time))?,
-        },
-        model: one.model,
-    })
-}
-
-/// Hands the sessions to a store as the text a user would have typed.
-fn written(sessions: &Sessions) -> StoredSessions {
-    StoredSessions {
-        next_id: sessions.next_id().to_string(),
-        sessions: sessions
-            .sessions()
-            .iter()
-            .map(|session| StoredSession {
-                id: session.id().to_string(),
-                state: session.state().to_string(),
-                stopped_reason: session.stopped_reason().map(|why| why.to_string()),
-                usage: session.budget().usage.to_string(),
-                time: session.budget().time.to_string(),
-                model: session.model().map(str::to_owned),
-                started_at: session.started_at().to_string(),
-                limit_at_start: session.limit_at_start().map(|used| used.to_string()),
-            })
-            .collect(),
-    }
-}
-
-/// Reads the sessions, changes them, and writes them back as one step, for the
-/// reason `service::backlog` gives.
-fn change<T>(
-    store: &dyn SessionStore,
-    with: impl FnOnce(&mut Sessions) -> Result<T, Refusal>,
-) -> Result<T, Refusal> {
-    let mut with = Some(with);
-    let mut answer = None;
-
-    store.update(&mut |stored| {
-        let Some(with) = with.take() else {
-            return false;
-        };
-
-        let done = read_from(stored.clone()).and_then(|mut sessions| {
-            let got = with(&mut sessions)?;
-            Ok((got, sessions))
-        });
-        match done {
-            Ok((got, sessions)) => {
-                *stored = written(&sessions);
-                answer = Some(Ok(got));
-                true
-            }
-            Err(e) => {
-                answer = Some(Err(e));
-                false
-            }
-        }
-    })?;
-
-    answer.unwrap_or_else(|| {
-        Err(Refusal::Unavailable {
-            reason: "the store did not run the change it was given".to_owned(),
-        })
-    })
-}
-
-fn unreadable(field: &str, value: &str) -> Refusal {
-    Refusal::Unavailable {
-        reason: format!("the sessions hold {value} where {field} belongs"),
-    }
-}
-
-fn unusable(e: &NotASessionSet) -> String {
-    match e {
-        NotASessionSet::RepeatedId { id } => format!("the sessions hold session:{id} twice"),
-        NotASessionSet::TwoRunning { first, second } => {
-            format!("session:{first} and session:{second} are both running")
-        }
-        NotASessionSet::ReasonDoesNotMatchState { id } => {
-            format!("session:{id} does not say why it stopped, or says so while running")
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::{Mutex, PoisonError};
 
     use crate::core::{
         domain::SessionId,
-        port::outbound::{Ended, Reading, StoredBacklog, StoredTask, Unavailable},
+        port::outbound::{
+            Ended, Reading, StoredBacklog, StoredSession, StoredSessions, StoredTask, Unavailable,
+        },
     };
 
     use super::*;

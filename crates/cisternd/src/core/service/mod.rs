@@ -7,6 +7,7 @@
 mod backlog;
 mod configuration;
 mod execution;
+mod sessions;
 
 pub use backlog::BacklogService;
 pub use configuration::ConfigurationService;
