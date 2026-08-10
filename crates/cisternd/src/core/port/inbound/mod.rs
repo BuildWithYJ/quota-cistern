@@ -11,7 +11,9 @@ mod backlog;
 mod configuration;
 mod execution;
 
-pub use backlog::{Added, BacklogUseCase, Detail, Listing, Registration, Removed, Waiting};
+pub use backlog::{
+    Added, BacklogUseCase, Detail, Happened, Listing, Registration, Removed, Trail, Waiting,
+};
 pub use configuration::{Applied, ConfigurationUseCase, View};
 pub use execution::{
     Declaration, Declared, ExecutionUseCase, Listed, Page, Ran, Report, Started, Stopped,

@@ -12,8 +12,8 @@ use crate::core::{
             Stopped,
         },
         outbound::{
-            Agent, BacklogStore, Clock, Cut, Limit, Observed, Outcome, SessionStore, Spent, Work,
-            Worktrees,
+            Agent, BacklogStore, Clock, Cut, Limit, Observed, Outcome, SessionStore, Spent, Traces,
+            Work, Worktrees,
         },
     },
 };
@@ -28,6 +28,7 @@ pub struct ExecutionService<'a> {
     agent: &'a dyn Agent,
     clock: &'a dyn Clock,
     limit: &'a dyn Limit,
+    traces: &'a dyn Traces,
 }
 
 impl<'a> ExecutionService<'a> {
@@ -38,6 +39,7 @@ impl<'a> ExecutionService<'a> {
         agent: &'a dyn Agent,
         clock: &'a dyn Clock,
         limit: &'a dyn Limit,
+        traces: &'a dyn Traces,
     ) -> Self {
         ExecutionService {
             sessions,
@@ -46,6 +48,7 @@ impl<'a> ExecutionService<'a> {
             agent,
             clock,
             limit,
+            traces,
         }
     }
 
@@ -278,9 +281,11 @@ impl ExecutionUseCase for ExecutionService<'_> {
             Ok(())
         })?;
 
+        let trace = self.traces.at(&id.to_string())?;
         let ended = self.agent.work(Work {
             task: &id.to_string(),
             at: &at,
+            trace: &trace,
             instruction: &instruction,
             model: model.as_deref(),
         });
@@ -728,6 +733,28 @@ mod tests {
         }
     }
 
+    /// A trace store nothing looks at.
+    struct Kept;
+
+    impl Traces for Kept {
+        fn at(&self, task: &str) -> Result<String, Unavailable> {
+            Ok(format!("/traces/{task}.jsonl"))
+        }
+
+        fn read(
+            &self,
+            _task: &str,
+            _from: &str,
+        ) -> Result<crate::core::port::outbound::Read, Unavailable> {
+            Ok(crate::core::port::outbound::Read {
+                events: Vec::new(),
+                cursor: "000000000000".to_owned(),
+            })
+        }
+    }
+
+    static NOTHING_KEPT: Kept = Kept;
+
     /// A clock that does not move, for the tests that do not care.
     struct Frozen(u64);
 
@@ -858,8 +885,15 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
 
         let started = execution.run(declaring("50%", "8h")).unwrap();
         assert_eq!(started.session, "session:1");
@@ -875,8 +909,15 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
         execution.run(declaring("2M", "30m")).unwrap();
 
         let held = sessions.load();
@@ -894,8 +935,15 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
         execution.run(declaring("50%", "8h")).unwrap();
 
         let held = tasks.first();
@@ -909,8 +957,15 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task(), a_second_pending_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
         execution.run(declaring("50%", "8h")).unwrap();
 
         assert_eq!(
@@ -935,8 +990,15 @@ mod tests {
         let tasks = Tasks::holding(Vec::new());
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
 
         assert_eq!(
             execution.run(declaring("50%", "8h")),
@@ -951,8 +1013,15 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
 
         assert_eq!(
             execution.run(declaring("50%", "8x")),
@@ -991,8 +1060,15 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
 
         let refused = execution.run(declaring("50%", "8h")).unwrap_err();
         assert!(matches!(refused, Refusal::Unavailable { reason } if reason.contains("sprinting")));
@@ -1004,8 +1080,15 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
 
         execution.run(declaring("50%", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();
@@ -1035,8 +1118,15 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
 
         execution.run(declaring("50%", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();
@@ -1067,8 +1157,15 @@ mod tests {
             ..Areas::default()
         };
         let agent = Standing::finishing();
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
 
         execution.run(declaring("50%", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();
@@ -1093,8 +1190,15 @@ mod tests {
                 why: "the answer said nothing about it".to_owned(),
             },
         });
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
 
         execution.run(declaring("50%", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();
@@ -1131,8 +1235,15 @@ mod tests {
                 cost: "92170".to_owned(),
             }),
         });
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
 
         execution.run(declaring("50%", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();
@@ -1151,8 +1262,15 @@ mod tests {
             reason: Some("it went wrong".to_owned()),
             observed: spending(),
         });
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
 
         execution.run(declaring("50%", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();
@@ -1174,8 +1292,15 @@ mod tests {
             reason: Some("the agent was cut off after 200 turns".to_owned()),
             observed: spending(),
         });
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
 
         execution.run(declaring("2M", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();
@@ -1202,7 +1327,15 @@ mod tests {
             used: Mutex::new(100 * HUNDREDTHS),
             refuse: false,
         };
-        let execution = ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &full);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &full,
+            &NOTHING_KEPT,
+        );
 
         execution.run(declaring("2M", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();
@@ -1233,7 +1366,15 @@ mod tests {
             used: Mutex::new(40 * HUNDREDTHS),
             refuse: false,
         };
-        let execution = ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &room);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &room,
+            &NOTHING_KEPT,
+        );
 
         execution.run(declaring("2M", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();
@@ -1259,7 +1400,15 @@ mod tests {
             used: Mutex::new(0),
             refuse: true,
         };
-        let execution = ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &silent);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &silent,
+            &NOTHING_KEPT,
+        );
 
         execution.run(declaring("2M", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();
@@ -1275,8 +1424,15 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
 
         // The stand-in agent reports far more than this budget allows, so the
         // first task spends the whole of it.
@@ -1312,7 +1468,15 @@ mod tests {
             used: Mutex::new(0),
             step: 50,
         };
-        let execution = ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &moving);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &moving,
+            &NOTHING_KEPT,
+        );
 
         // The first decision has no task to go on, so one starts alone.
         let started = execution.run(declaring("5%", "8h")).unwrap();
@@ -1337,7 +1501,15 @@ mod tests {
             used: Mutex::new(0),
             step: 100,
         };
-        let execution = ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &moving);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &moving,
+            &NOTHING_KEPT,
+        );
 
         execution.run(declaring("1%", "8h")).unwrap();
         let assigned = execution.carry_on("task:1").unwrap();
@@ -1357,8 +1529,15 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
 
         // A budget one task overruns, so the first session ends after one and
         // the second task is left for a session of its own.
@@ -1379,8 +1558,15 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
 
         execution.run(declaring("1000", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();
@@ -1397,8 +1583,15 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
 
         for (page, limit) in [(Some("0"), None), (None, Some("0")), (Some("one"), None)] {
             assert!(matches!(
@@ -1414,8 +1607,15 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
 
         assert_eq!(execution.sessions(None, None).unwrap().sessions, Vec::new());
     }
@@ -1426,8 +1626,15 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
 
         execution.run(declaring("2M", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();
@@ -1450,8 +1657,15 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
 
         execution.run(declaring("2M", "8h")).unwrap();
 
@@ -1475,7 +1689,15 @@ mod tests {
             used: Mutex::new(100 * HUNDREDTHS),
             refuse: false,
         };
-        let execution = ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &full);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &full,
+            &NOTHING_KEPT,
+        );
 
         execution.run(declaring("2M", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();
@@ -1491,8 +1713,15 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
 
         assert_eq!(
             execution.session("7"),
@@ -1508,8 +1737,15 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
 
         execution.run(declaring("2M", "8h")).unwrap();
         let stopped = execution.interrupt().unwrap();
@@ -1532,8 +1768,15 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
 
         execution.run(declaring("2M", "8h")).unwrap();
         execution.interrupt().unwrap();
@@ -1560,8 +1803,15 @@ mod tests {
             reason: Some("it was killed".to_owned()),
             observed: spending(),
         });
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
 
         execution.run(declaring("2M", "8h")).unwrap();
         execution.interrupt().unwrap();
@@ -1577,8 +1827,15 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
 
         assert_eq!(execution.interrupt(), Err(Refusal::NoSessionRunning));
     }
@@ -1592,10 +1849,26 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let late = Frozen(1_000 + 8 * 3_600);
-        let opened = ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let opened = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
         opened.run(declaring("2M", "8h")).unwrap();
 
-        let execution = ExecutionService::new(&sessions, &tasks, &areas, &agent, &late, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &late,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
         let assigned = execution.carry_on("task:1").unwrap();
 
         assert!(assigned.is_empty());
@@ -1613,8 +1886,15 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task(), a_second_pending_task()]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
 
         // The supervisor is what assigns more than one; until it exists a test
         // stands in for it by assigning the second task itself.
@@ -1647,8 +1927,15 @@ mod tests {
             ..Areas::default()
         };
         let agent = Standing::finishing();
-        let execution =
-            ExecutionService::new(&sessions, &tasks, &areas, &agent, &STILL, &UNTOUCHED);
+        let execution = ExecutionService::new(
+            &sessions,
+            &tasks,
+            &areas,
+            &agent,
+            &STILL,
+            &UNTOUCHED,
+            &NOTHING_KEPT,
+        );
 
         execution.run(declaring("50%", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();

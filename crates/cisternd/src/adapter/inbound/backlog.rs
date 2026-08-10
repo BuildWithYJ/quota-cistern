@@ -3,7 +3,9 @@
 use cistern_contract::{Request, Response};
 use serde_json::Value;
 
-use crate::core::port::inbound::{Added, BacklogUseCase, Detail, Listing, Registration, Removed};
+use crate::core::port::inbound::{
+    Added, BacklogUseCase, Detail, Listing, Registration, Removed, Trail,
+};
 
 use super::{answer, missing, text};
 
@@ -17,6 +19,7 @@ pub fn respond(backlog: &impl BacklogUseCase, request: Request) -> Result<Respon
         "task_rm" => Ok(remove(backlog, request)),
         "task_show" => Ok(show(backlog, request)),
         "backlog" => Ok(list(backlog, request)),
+        "trace" => Ok(trace(backlog, request)),
         _ => Err(request),
     }
 }
@@ -62,6 +65,25 @@ fn show(backlog: &impl BacklogUseCase, request: Request) -> Response {
 fn list(backlog: &impl BacklogUseCase, request: Request) -> Response {
     let outcome = backlog.list().map(waiting);
     answer(request.command, outcome)
+}
+
+fn trace(backlog: &impl BacklogUseCase, request: Request) -> Response {
+    let Some(task) = text(&request, "task") else {
+        return missing("trace takes a task, a string");
+    };
+    let outcome = backlog.trace(task, text(&request, "since")).map(trailed);
+    answer(request.command, outcome)
+}
+
+fn trailed(trail: Trail) -> Value {
+    serde_json::json!({
+        "events": trail.events.into_iter().map(|one| serde_json::json!({
+            "at": one.at,
+            "said": one.said,
+        })).collect::<Vec<_>>(),
+        "cursor": trail.cursor,
+        "done": trail.done,
+    })
 }
 
 fn registered(added: Added) -> Value {
@@ -184,6 +206,14 @@ mod tests {
                 worktree: None,
                 disposition: None,
             }))
+        }
+
+        fn trace(&self, _id: &str, _since: Option<&str>) -> Result<Trail, Refusal> {
+            Ok(Trail {
+                events: Vec::new(),
+                cursor: "000000000000".to_owned(),
+                done: true,
+            })
         }
 
         fn list(&self) -> Result<Listing, Refusal> {

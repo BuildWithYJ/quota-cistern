@@ -555,9 +555,13 @@ cistern trace <task> [--follow] [--since <cursor>] [-o <fmt>]
 
 ```console
 $ cistern trace 1
-[23:05:12] read src/utils/*.ts
-[23:11:44] identified circular dep: index → legacy → graph
-[23:37:50] done · 3 files changed
+[11:19:36] I'll start implementing app/scoring.py based on the specification.
+[11:19:37] Read SPEC.md
+[11:20:13] Read app/scoring.py
+[11:20:13] failed: File does not exist
+[11:20:20] Write app/scoring.py
+[11:20:23] Bash python3 -m pytest tests/test_scoring.py -v
+[11:20:36] All done! I've implemented app/scoring.py with two functions.
 ```
 
 #### `cistern diff`
