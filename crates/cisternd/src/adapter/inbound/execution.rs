@@ -9,8 +9,8 @@ use crate::core::port::inbound::{
 
 use super::{answer, missing, text};
 
-/// Answers the commands this group owns, for the reason
-/// `inbound::configuration` gives.
+/// Answers the commands this group owns. A command it does not own comes back
+/// untouched, so that whoever is routing can offer it to the next group.
 pub fn respond(execution: &impl ExecutionUseCase, request: Request) -> Result<Response, Request> {
     match request.command.as_str() {
         "run" => Ok(run(execution, request)),

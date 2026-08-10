@@ -18,7 +18,7 @@ use serde_json::Value;
 
 use crate::core::port::outbound::{Limit, Reading, Unavailable};
 
-/// How the vendor is asked. Content, for the reason `adapter::agent` gives.
+/// How the vendor is asked. Content, for the reason `claude::agent` gives.
 const INVOCATION: &str = include_str!("claude-limit.json");
 
 /// How long to wait for the status line to carry the limit.

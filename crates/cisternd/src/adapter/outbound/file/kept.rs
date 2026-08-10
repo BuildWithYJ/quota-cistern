@@ -4,8 +4,7 @@
 //! it, hand it over, and put the whole of it back. What they do not share is the
 //! format and the fields, which stay with each of them.
 //!
-//! This touches no port, so it is not an adapter. It is what the three of them
-//! are written on top of.
+//! This touches no port, so it is not an adapter.
 
 use std::{
     ffi::OsString,
@@ -18,6 +17,9 @@ use std::{
 use crate::core::port::outbound::Unavailable;
 
 /// Where a file is and the lock over it.
+///
+/// The directories are arguments rather than reads, so that which one is used
+/// can be tested without setting a variable the whole process sees.
 pub struct Kept {
     path: PathBuf,
     /// Held from a read to the write that follows it, so that two writers do
@@ -39,10 +41,6 @@ impl Kept {
     /// Data rather than state, because the XDG specification keeps state for
     /// what is not worth carrying between machines, and what a user registered
     /// is not that.
-    ///
-    /// The directories are arguments rather than reads, so that the choice
-    /// between them can be tested without setting a variable the whole process
-    /// sees.
     pub fn in_data_home(
         data_home: Option<OsString>,
         home: Option<OsString>,
@@ -70,9 +68,9 @@ impl Kept {
 
     /// What the file holds, or nothing when there is no file yet.
     ///
-    /// A file nobody has written is not a failure. Every one of these has to
-    /// answer before anyone has written anything, and each of them says for
-    /// itself what nothing means.
+    /// A file nobody has written is not a failure. Each store says for itself
+    /// what nothing means, since each has to answer before anything is
+    /// written.
     pub fn read(&self) -> Result<Option<String>, Unavailable> {
         match fs::read_to_string(&self.path) {
             Ok(written) => Ok(Some(written)),

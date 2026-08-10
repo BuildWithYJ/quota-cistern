@@ -20,7 +20,7 @@ pub struct FileSessions {
 /// The whole file, as JSON sees it.
 ///
 /// A value is held as whatever JSON found rather than as what the field is
-/// supposed to take, for the reason `adapter::backlog` gives.
+/// supposed to take, for the reason `file::backlog` gives.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Written {
@@ -48,8 +48,8 @@ struct Entry {
     resets_at: Value,
 }
 
-/// What the file is called. Beside the backlog, for the reason
-/// `adapter::backlog` gives.
+/// What the file is called. `file::backlog` gives the reason it sits beside
+/// the backlog.
 const NAMED: &str = "sessions.json";
 
 impl FileSessions {
