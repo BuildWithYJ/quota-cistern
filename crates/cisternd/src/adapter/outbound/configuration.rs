@@ -3,23 +3,20 @@
 //! The only place that knows the path and the file format. Neither reaches the
 //! core.
 
-use std::{
-    env,
-    ffi::OsString,
-    fs, io,
-    path::{Path, PathBuf},
-};
+use std::{env, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::core::port::outbound::{ConfigurationStore, StoredConfiguration, Unavailable};
 
+use super::kept::Kept;
+
 /// The configuration, kept as TOML at a path fixed when this is built.
 pub struct FileConfiguration {
-    path: PathBuf,
+    kept: Kept,
 }
 
-/// The file, as TOML sees it.
+/// The whole file, as TOML sees it.
 ///
 /// It stands apart from the port's type because the key spelling, the
 /// absent-field rules, and which TOML type a value is written as all belong to
@@ -30,7 +27,7 @@ pub struct FileConfiguration {
 /// file holding the wrong sort of one reaches it and is refused there.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Document {
+struct Written {
     #[serde(skip_serializing_if = "Option::is_none")]
     vendor: Option<toml::Value>,
 }
@@ -47,92 +44,53 @@ fn as_text(value: toml::Value) -> String {
     }
 }
 
+/// What the file is called where `docs/cli.md` says it is kept.
+const NAMED: &str = "config.toml";
+
 impl FileConfiguration {
     /// Takes the path it is given. This is how a test reaches a temporary one.
     pub fn at(path: PathBuf) -> Self {
-        FileConfiguration { path }
+        FileConfiguration {
+            kept: Kept::at(path),
+        }
     }
 
     /// The path `docs/cli.md` names, or nothing when there is nowhere for it.
     pub fn in_config_home() -> Option<Self> {
-        path_of(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME")).map(FileConfiguration::at)
+        Kept::in_config_home(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME"), NAMED)
+            .map(FileConfiguration::at)
     }
-
-    fn failing(&self, e: impl std::fmt::Display) -> Unavailable {
-        Unavailable::new(format!("{}: {e}", self.path.display()))
-    }
-}
-
-/// `$XDG_CONFIG_HOME/cistern/config.toml`, or `~/.config/cistern/config.toml`.
-///
-/// The two are arguments rather than reads, so that the choice between them
-/// can be tested without setting a variable the whole process sees.
-fn path_of(config_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
-    let base = match config_home {
-        Some(dir) => PathBuf::from(dir),
-        None => PathBuf::from(home?).join(".config"),
-    };
-    Some(base.join("cistern").join("config.toml"))
 }
 
 impl ConfigurationStore for FileConfiguration {
     fn load(&self) -> Result<StoredConfiguration, Unavailable> {
-        let written = match fs::read_to_string(&self.path) {
-            Ok(written) => written,
-            // Nothing stored yet. Any other read failure is worth saying.
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                return Ok(StoredConfiguration::default());
-            }
-            Err(e) => return Err(self.failing(e)),
+        // Nothing stored yet is an empty configuration rather than a failure.
+        let Some(written) = self.kept.read()? else {
+            return Ok(StoredConfiguration::default());
         };
 
-        let document: Document = toml::from_str(&written).map_err(|e| self.failing(e))?;
+        let document: Written = toml::from_str(&written).map_err(|e| self.kept.failing(e))?;
         Ok(StoredConfiguration {
             vendor: document.vendor.map(as_text),
         })
     }
 
-    /// Writes beside the file and renames it into place.
-    ///
-    /// Opening the file truncates it first, so a process that stops after that
-    /// leaves an empty one behind, and we would be the ones writing the file
-    /// `load` then refuses. A rename within one filesystem is atomic, so a
-    /// reader sees the old contents or the new ones and nothing between.
     fn store(&self, stored: &StoredConfiguration) -> Result<(), Unavailable> {
-        let document = Document {
+        let document = Written {
             vendor: stored.vendor.clone().map(toml::Value::String),
         };
-        let written = toml::to_string(&document).map_err(|e| self.failing(e))?;
-
-        // Beside the file, because a rename is atomic only within a filesystem
-        // and a temporary directory may be on another one.
-        let staged = self.path.with_extension("toml.new");
-        replace(&self.path, &staged, &written).map_err(|e| self.failing(e))
+        let written = toml::to_string(&document).map_err(|e| self.kept.failing(e))?;
+        self.kept.write(&written)
     }
-}
-
-fn replace(path: &Path, staged: &Path, written: &str) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    if let Err(e) = fs::write(staged, written) {
-        // Leaving it would make the next run wonder what this half-written
-        // file is.
-        let _ = fs::remove_file(staged);
-        return Err(e);
-    }
-    fs::rename(staged, path)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use tempfile::TempDir;
 
     use super::*;
-
-    fn some(s: &str) -> Option<OsString> {
-        Some(OsString::from(s))
-    }
 
     fn in_a_temporary_directory() -> (TempDir, FileConfiguration) {
         let dir = TempDir::new().unwrap();
@@ -146,25 +104,12 @@ mod tests {
         }
     }
 
+    /// Where the file goes is `kept`'s; which file it is belongs here.
     #[test]
-    fn the_config_directory_wins() {
-        assert_eq!(
-            path_of(some("/x/.config"), some("/home/a")),
-            Some(PathBuf::from("/x/.config/cistern/config.toml"))
-        );
-    }
-
-    #[test]
-    fn home_stands_in_where_there_is_no_config_directory() {
-        assert_eq!(
-            path_of(None, some("/home/a")),
-            Some(PathBuf::from("/home/a/.config/cistern/config.toml"))
-        );
-    }
-
-    #[test]
-    fn neither_leaves_nowhere_to_put_it() {
-        assert_eq!(path_of(None, None), None);
+    fn the_file_is_the_one_the_specification_names() {
+        let path = Kept::in_config_home(Some(std::ffi::OsString::from("/x/.config")), None, NAMED)
+            .unwrap();
+        assert_eq!(path, PathBuf::from("/x/.config/cistern/config.toml"));
     }
 
     #[test]
