@@ -7,6 +7,7 @@ mod backlog;
 mod configuration;
 mod execution;
 mod review;
+mod work;
 
 pub use backlog::{Added, BacklogUseCase, Detail, Listing, Registration, Removed, Waiting};
 pub use configuration::{Applied, ConfigurationUseCase, View};
@@ -15,6 +16,7 @@ pub use execution::{
     Trail,
 };
 pub use review::{Awaiting, Changed, Difference, Dropped, Queue, ReviewUseCase, Taken};
+pub use work::{Carrying, NotCarried};
 
 use super::outbound::Unavailable;
 

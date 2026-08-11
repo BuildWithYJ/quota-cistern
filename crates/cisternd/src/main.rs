@@ -18,7 +18,8 @@ use adapter::{inbound, outbound};
 use core::port::outbound::ConfigurationStore;
 use core::{
     port::inbound::{
-        Declaration, ExecutionUseCase, Page, Refusal, Report, Started, Stopped, Trail,
+        Carrying, Declaration, ExecutionUseCase, NotCarried, Page, Refusal, Report, Started,
+        Stopped, Trail,
     },
     service::{BacklogService, ConfigurationService, ExecutionService, Outside, ReviewService},
 };
@@ -113,7 +114,7 @@ fn main() -> ExitCode {
                 loop {
                     let task = queued.take();
                     if let Err(e) = execution.carry_on(&task) {
-                        eprintln!("cisternd: {task} could not be carried on: {e:?}");
+                        eprintln!("cisternd: {task} was not carried on: {}", why(&e));
                     }
                 }
             });
@@ -134,7 +135,7 @@ fn main() -> ExitCode {
 /// The core's own execution, with what it assigned put on the queue.
 ///
 /// It stands between the adapter and the service so that neither has to know there are threads.
-struct Queueing<'a, U: ExecutionUseCase> {
+struct Queueing<'a, U> {
     execution: &'a U,
     queued: &'a Queue,
 }
@@ -163,8 +164,10 @@ impl<U: ExecutionUseCase> ExecutionUseCase for Queueing<'_, U> {
     fn interrupt(&self) -> Result<Stopped, Refusal> {
         self.execution.interrupt()
     }
+}
 
-    fn carry_on(&self, task: &str) -> Result<Vec<String>, Refusal> {
+impl<U: Carrying> Carrying for Queueing<'_, U> {
+    fn carry_on(&self, task: &str) -> Result<Vec<String>, NotCarried> {
         let assigned = self.execution.carry_on(task)?;
         for task in &assigned {
             self.queued.add(task.clone());
@@ -188,6 +191,17 @@ fn runnable(store: &dyn ConfigurationStore, known: &[String]) -> Result<(), Stri
         "the configuration says vendor {name}, which this build cannot run; it runs {}",
         known.join(", ")
     ))
+}
+
+/// What a worker says when a task could not be carried on.
+///
+/// It goes to the daemon's own output rather than to a surface, so it is one sentence for
+/// whoever is reading the log.
+fn why(e: &NotCarried) -> String {
+    match e {
+        NotCarried::NoSuchTask { id } => format!("{id} is no longer in the backlog"),
+        NotCarried::Unavailable { reason } => format!("a store could not be read: {reason}"),
+    }
 }
 
 /// Says why the daemon is stopping, and stops.

@@ -115,12 +115,6 @@ pub trait ExecutionUseCase {
     /// Section 2.2 says the command returns at once and the tasks keep running.
     fn run(&self, declared: Declaration<'_>) -> Result<Started, Refusal>;
 
-    /// Runs one assigned task to the end, and answers with whatever the decision that followed assigned next.
-    ///
-    /// This does not return until the task has, so whoever calls it is not the thread that answered `run`.
-    /// What comes back has to be run the same way as what `run` answered with.
-    fn carry_on(&self, task: &str) -> Result<Vec<String>, Refusal>;
-
     /// Lists sessions, newest first.
     ///
     /// Both arguments arrive as they were written.

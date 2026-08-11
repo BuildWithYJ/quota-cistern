@@ -8,8 +8,8 @@ use crate::core::{
     },
     port::{
         inbound::{
-            Declaration, Declared, ExecutionUseCase, Happened, Listed, Page, Ran, Refusal, Report,
-            Started, Stopped, Trail,
+            Carrying, Declaration, Declared, ExecutionUseCase, Happened, Listed, NotCarried, Page,
+            Ran, Refusal, Report, Started, Stopped, Trail,
         },
         outbound::{
             Agent, BacklogStore, Clock, Cut, Limit, Observed, Outcome, SessionStore, Spent, Traces,
@@ -271,8 +271,69 @@ impl ExecutionUseCase for ExecutionService<'_> {
             },
         })
     }
+}
 
-    fn carry_on(&self, task: &str) -> Result<Vec<String>, Refusal> {
+/// Reads what the agent said it consumed.
+///
+/// The port answers in the core's own words already, so this only tells the two answers apart.
+/// A count the adapter could not read is not a count of nothing.
+/// Section 1 keeps the two apart as far as the reason a session stops.
+fn observed(observed: Observed) -> Observation {
+    match observed {
+        Observed::Unreadable { why } => Observation::Unreadable { why },
+        Observed::Spent(spent) => match counted(&spent) {
+            Some(counted) => Observation::Spent(counted),
+            None => Observation::Unreadable {
+                why: "what the agent counted does not read as a number".to_owned(),
+            },
+        },
+    }
+}
+
+/// A count as the port hands it over, if every figure in it is one.
+fn counted(spent: &Spent) -> Option<Consumption> {
+    Some(Consumption {
+        input: spent.input.parse().ok()?,
+        output: spent.output.parse().ok()?,
+        cache_written: spent.cache_written.parse().ok()?,
+        cache_read: spent.cache_read.parse().ok()?,
+        cost: spent.cost.parse().ok()?,
+    })
+}
+
+/// A count a caller wrote, or what it defaults to when nobody wrote one.
+///
+/// Zero is refused for both.
+/// Section 2.2 names `--page 0` as an argument error, and a page of nothing is the same kind of nothing.
+fn counted_from(key: &str, written: Option<&str>, unless: u32) -> Result<u32, Refusal> {
+    let Some(written) = written else {
+        return Ok(unless);
+    };
+    written
+        .parse()
+        .ok()
+        .filter(|&count| count > 0)
+        .ok_or_else(|| Refusal::BadValue {
+            key: key.to_owned(),
+            value: written.to_owned(),
+        })
+}
+
+/// The reason section 1 gives a task stopped at the ceiling on one run.
+const AT_CEILING: &str = "task ceiling";
+
+/// The reading at which the vendor has nothing left to give.
+const FULL: u64 = 100 * HUNDREDTHS;
+
+impl Carrying for ExecutionService<'_> {
+    fn carry_on(&self, task: &str) -> Result<Vec<String>, NotCarried> {
+        self.carrying(task).map_err(not_carried)
+    }
+}
+
+impl ExecutionService<'_> {
+    /// Everything `carry_on` does, in the words the rest of this file speaks.
+    fn carrying(&self, task: &str) -> Result<Vec<String>, Refusal> {
         let id = TaskId::parse(task).ok_or_else(|| Refusal::BadValue {
             key: "task".to_owned(),
             value: task.to_owned(),
@@ -340,57 +401,17 @@ impl ExecutionUseCase for ExecutionService<'_> {
     }
 }
 
-/// Reads what the agent said it consumed.
-///
-/// The port answers in the core's own words already, so this only tells the two answers apart.
-/// A count the adapter could not read is not a count of nothing.
-/// Section 1 keeps the two apart as far as the reason a session stops.
-fn observed(observed: Observed) -> Observation {
-    match observed {
-        Observed::Unreadable { why } => Observation::Unreadable { why },
-        Observed::Spent(spent) => match counted(&spent) {
-            Some(counted) => Observation::Spent(counted),
-            None => Observation::Unreadable {
-                why: "what the agent counted does not read as a number".to_owned(),
-            },
+/// A refusal nobody asked for, as what it is to a worker.
+fn not_carried(why: Refusal) -> NotCarried {
+    match why {
+        Refusal::NoSuchTask { id } => NotCarried::NoSuchTask { id },
+        Refusal::Unavailable { reason } => NotCarried::Unavailable { reason },
+        // Nothing else can reach here: the task was named by a session of this core.
+        other => NotCarried::Unavailable {
+            reason: format!("{other:?}"),
         },
     }
 }
-
-/// A count as the port hands it over, if every figure in it is one.
-fn counted(spent: &Spent) -> Option<Consumption> {
-    Some(Consumption {
-        input: spent.input.parse().ok()?,
-        output: spent.output.parse().ok()?,
-        cache_written: spent.cache_written.parse().ok()?,
-        cache_read: spent.cache_read.parse().ok()?,
-        cost: spent.cost.parse().ok()?,
-    })
-}
-
-/// A count a caller wrote, or what it defaults to when nobody wrote one.
-///
-/// Zero is refused for both.
-/// Section 2.2 names `--page 0` as an argument error, and a page of nothing is the same kind of nothing.
-fn counted_from(key: &str, written: Option<&str>, unless: u32) -> Result<u32, Refusal> {
-    let Some(written) = written else {
-        return Ok(unless);
-    };
-    written
-        .parse()
-        .ok()
-        .filter(|&count| count > 0)
-        .ok_or_else(|| Refusal::BadValue {
-            key: key.to_owned(),
-            value: written.to_owned(),
-        })
-}
-
-/// The reason section 1 gives a task stopped at the ceiling on one run.
-const AT_CEILING: &str = "task ceiling";
-
-/// The reading at which the vendor has nothing left to give.
-const FULL: u64 = 100 * HUNDREDTHS;
 
 impl ExecutionService<'_> {
     /// How long the session has run.

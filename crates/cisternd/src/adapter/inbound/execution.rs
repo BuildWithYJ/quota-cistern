@@ -176,12 +176,6 @@ mod tests {
             self.outcome.clone()
         }
 
-        /// Nothing here calls this: the adapter answers `run` and the queue is what reaches this.
-        /// That is the composition root's.
-        fn carry_on(&self, _task: &str) -> Result<Vec<String>, Refusal> {
-            Ok(Vec::new())
-        }
-
         fn sessions(&self, _page: Option<&str>, _limit: Option<&str>) -> Result<Page, Refusal> {
             Ok(Page {
                 page: 1,
