@@ -1,33 +1,26 @@
 //! What the core requires of the outside, in the core's own terms.
 //!
-//! One file per outside. `Unavailable` stands here rather than in one of them,
-//! because reaching something outside is what all of them do.
-//!
-//! Every one of these is safe to share between threads. A task runs beside the
-//! commands a user is still typing, so more than one thread reaches the same
-//! outside at once.
+//! One outside, one place.
+//! An outside that holds several conversations gets a directory of its own and an outside that holds one gets a file.
+//! `Unavailable` stands here rather than in one of them, because reaching something outside is what all of them do.
 
-mod agent;
 mod backlog;
 mod clock;
 mod configuration;
 mod repository;
-mod result;
 mod session;
 mod trace;
-mod window;
-mod worktree;
+mod vendor;
 
-pub use agent::{Agent, Ended, Observed, Outcome, Spent, Work};
 pub use backlog::{BacklogStore, StoredBacklog, StoredConsumption, StoredTask};
 pub use clock::Clock;
-pub use configuration::{ConfigurationStore, StoredConfiguration};
-pub use repository::RepositoryRoots;
-pub use result::{Between, Changes, NotApplied, Results, Touched};
+pub use configuration::ConfigurationStore;
+pub use repository::{
+    Between, Changes, Commit, Counts, Cut, NotApplied, RepositoryRoots, Results, Touched, Worktrees,
+};
 pub use session::{SessionStore, StoredSession, StoredSessions};
-pub use trace::{Event, Read, Traces};
-pub use window::{Limit, Reading};
-pub use worktree::{Cut, Worktrees};
+pub use trace::{Event, Keeping, Read, Traces};
+pub use vendor::{Agent, Ended, Limit, Observed, Outcome, Reading, Spent, Work};
 
 /// The outside could not be reached or could not be understood.
 #[derive(Debug, Clone, PartialEq, Eq)]

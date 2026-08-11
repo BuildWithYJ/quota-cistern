@@ -1,8 +1,7 @@
 //! What the commands do.
 //!
-//! One service per command group, named for the section of `docs/cli.md` it
-//! answers. Each holds the outbound ports its own commands need and implements
-//! the use case those commands are declared as.
+//! One service per command group, named for the section of `docs/cli.md` it answers.
+//! Each holds the outbound ports its own commands need and implements the use case those commands are declared as.
 
 mod backlog;
 mod configuration;
@@ -12,5 +11,5 @@ mod sessions;
 
 pub use backlog::BacklogService;
 pub use configuration::ConfigurationService;
-pub use execution::ExecutionService;
+pub use execution::{ExecutionService, Outside};
 pub use review::ReviewService;

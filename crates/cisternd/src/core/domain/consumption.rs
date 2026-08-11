@@ -1,9 +1,9 @@
 //! What running a task consumed.
 //!
-//! Section 1 of `docs/cli.md` declares a budget in tokens, and a vendor reports
-//! tokens in kinds that are not worth the same. The kinds are kept apart here
-//! rather than added together, because which of them a budget counts is the
-//! supervisor's to decide and nothing here should decide it early.
+//! Section 1 of `docs/cli.md` declares a budget in tokens.
+//! A vendor reports tokens in kinds that are not worth the same.
+//! The kinds are kept apart here rather than added together.
+//! Which of them a budget counts is the supervisor's to decide, and nothing here should decide it early.
 
 use std::{
     fmt::{self, Display},
@@ -23,18 +23,15 @@ pub struct Consumption {
     pub cache_read: u64,
     /// What the vendor priced this at, in millionths of its currency.
     ///
-    /// A whole number rather than a fraction, because these are added up over a
-    /// session and a fraction added a hundred times is no longer the figure it
-    /// started as.
+    /// Whole rather than fractional.
+    /// A fraction added a hundred times over a session is no longer the figure it started as.
     pub cost: u64,
 }
 
 /// What is known about what a task consumed.
 ///
-/// A task that has not run and a task whose answer could not be read are
-/// different things, and neither is a task that consumed nothing. A vendor that
-/// renames a field would otherwise report a full session as having spent
-/// nothing.
+/// A task that has not run, one whose answer could not be read, and one that consumed nothing are three things.
+/// A vendor that renamed a field would otherwise report a full session as having spent nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Observation {
     /// The task has not run.
@@ -48,10 +45,8 @@ pub enum Observation {
 impl Consumption {
     /// Every kind of token added together.
     ///
-    /// A budget declared as a count of tokens is measured against this. Which
-    /// kinds a budget counts was left open by #9 and answered here: all of
-    /// them. Every kind is charged for and every kind moves the vendor's own
-    /// limit, so leaving one out reports a session as cheaper than it was.
+    /// All of them, since every kind is charged for and moves the vendor's limit.
+    /// Leaving one out reports a session as cheaper than it was.
     pub fn tokens(&self) -> u64 {
         self.input
             .saturating_add(self.output)
@@ -82,8 +77,7 @@ impl Add for Consumption {
 }
 
 impl Display for Consumption {
-    /// The kinds in the order a vendor reports them, for a person reading a
-    /// store by hand.
+    /// The kinds in the order a vendor reports them, for a person reading a store by hand.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -136,8 +130,7 @@ mod tests {
         assert_eq!(Consumption::total([]), Consumption::default());
     }
 
-    /// A session runs for hours and nobody should have to think about what
-    /// happens at the top of a counter.
+    /// A session runs for hours and nobody should have to think about what happens at the top of a counter.
     #[test]
     fn a_count_that_would_pass_the_top_stops_there() {
         let most = Consumption {

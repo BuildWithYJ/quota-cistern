@@ -1,8 +1,7 @@
 //! The `run` command and the two session queries.
 //!
-//! What was typed goes to the core as it was given. Whether a budget can be
-//! read and whether a session may open are the core's to decide, so this file
-//! judges neither.
+//! What was typed goes to the core as it was given.
+//! Whether a budget can be read and whether a session may open are the core's to decide, so this file judges neither.
 
 use std::process::ExitCode;
 
@@ -221,8 +220,8 @@ fn marked(state: &str) -> &'static str {
 
 /// How long ago a moment was, in the words section 2.2 prints.
 ///
-/// The surface reads its own clock. What the core answers with is the moment
-/// itself, so nothing has to be recomputed when it is read again.
+/// The surface reads its own clock.
+/// What the core answers with is the moment itself, so nothing has to be recomputed when it is read again.
 fn since(at: &str) -> String {
     let Ok(at) = at.parse::<u64>() else {
         return "(none)".to_owned();

@@ -1,11 +1,11 @@
 //! Where a task gets a place of its own to work in.
 
-use super::Unavailable;
+use super::super::Unavailable;
 
 /// What a work area is being made for.
 ///
-/// The core says which repository, which branch to cut and from where, and
-/// which task it is for. Where on a disk that lands is the implementation's.
+/// The core names the repository, the branch, and where to cut it from.
+/// Where on a disk that lands is the implementation's.
 pub struct Cut<'a> {
     pub repository: &'a str,
     /// The branch the task starts from.
@@ -18,12 +18,11 @@ pub struct Cut<'a> {
 
 /// Work areas, one to a task.
 ///
-/// A task runs beside others, so each gets a checkout and a branch that nobody
-/// else writes to.
+/// A task runs beside others, so each gets a checkout and a branch that nobody else writes to.
 pub trait Worktrees: Sync {
     /// Cuts the branch and puts a work area on it, and says where that is.
     ///
-    /// The place it answers with is what the agent runs in and what `task show`
-    /// reports, so it is a path a person can open.
+    /// The place it answers with is what the agent runs in and what `task show` reports.
+    /// It is a path a person can open.
     fn prepare(&self, cut: Cut<'_>) -> Result<String, Unavailable>;
 }

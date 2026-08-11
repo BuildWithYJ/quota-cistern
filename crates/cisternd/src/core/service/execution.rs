@@ -2,14 +2,14 @@
 
 use crate::core::{
     domain::{
-        Budget, Consumption, Cost, HUNDREDTHS, NotOpened, Observation, Opening, Session, SessionId,
-        SessionState, Span, Spending, StoppedReason, Task, TaskId, TaskState, Usage, cost_of,
-        room_for,
+        Budget, Consumption, Cost, Decision, HUNDREDTHS, NotOpened, Observation, Opening, Session,
+        SessionId, SessionState, Span, Spending, Standing, StoppedReason, Task, TaskId, TaskState,
+        Usage, cost_of, decide,
     },
     port::{
         inbound::{
-            Declaration, Declared, ExecutionUseCase, Listed, Page, Ran, Refusal, Report, Started,
-            Stopped,
+            Carrying, Declaration, Declared, ExecutionUseCase, Happened, Listed, NotCarried, Page,
+            Ran, Refusal, Report, Started, Stopped, Trail,
         },
         outbound::{
             Agent, BacklogStore, Clock, Cut, Limit, Observed, Outcome, SessionStore, Spent, Traces,
@@ -20,44 +20,40 @@ use crate::core::{
 
 use super::{backlog, sessions};
 
+/// What running a session needs from outside.
+///
+/// One value rather than an argument each, so that a port added later is a line here and a
+/// line where the daemon is built, and nothing in between.
+pub struct Outside<'a> {
+    pub sessions: &'a dyn SessionStore,
+    pub tasks: &'a dyn BacklogStore,
+    pub worktrees: &'a dyn Worktrees,
+    pub agent: &'a dyn Agent,
+    pub clock: &'a dyn Clock,
+    pub limit: &'a dyn Limit,
+    pub traces: &'a dyn Traces,
+}
+
 /// The commands over sessions, and what they need from outside.
 pub struct ExecutionService<'a> {
-    sessions: &'a dyn SessionStore,
-    tasks: &'a dyn BacklogStore,
-    worktrees: &'a dyn Worktrees,
-    agent: &'a dyn Agent,
-    clock: &'a dyn Clock,
-    limit: &'a dyn Limit,
-    traces: &'a dyn Traces,
+    outside: Outside<'a>,
+    /// The most tasks this machine has hands for.
+    ///
+    /// A guard on the machine rather than on the budget, so the number belongs to whoever
+    /// started the daemon rather than to a rule about spending.
+    at_once: usize,
 }
 
 impl<'a> ExecutionService<'a> {
-    pub fn new(
-        sessions: &'a dyn SessionStore,
-        tasks: &'a dyn BacklogStore,
-        worktrees: &'a dyn Worktrees,
-        agent: &'a dyn Agent,
-        clock: &'a dyn Clock,
-        limit: &'a dyn Limit,
-        traces: &'a dyn Traces,
-    ) -> Self {
-        ExecutionService {
-            sessions,
-            tasks,
-            worktrees,
-            agent,
-            clock,
-            limit,
-            traces,
-        }
+    pub fn new(outside: Outside<'a>, at_once: usize) -> Self {
+        ExecutionService { outside, at_once }
     }
 
     /// How far the vendor's limit is spent, as a whole number of percent.
     ///
-    /// Only a session declared as a share asks, since only a share is measured
-    /// against it and asking costs something.
+    /// Only a session declared as a share asks, since only a share is measured against it and asking costs something.
     fn limit_now(&self) -> Result<u64, Refusal> {
-        let reading = self.limit.read()?;
+        let reading = self.outside.limit.read()?;
         reading
             .used
             .parse()
@@ -76,24 +72,27 @@ impl ExecutionUseCase for ExecutionService<'_> {
             value: declared.time.to_owned(),
         })?;
 
-        // Asked before a session is opened, so that a run with nothing to do
-        // does not leave one behind that has to be stopped again.
-        if backlog::read(self.tasks)?.next_to_assign().is_none() {
+        // Asked before a session is opened.
+        // A run with nothing to do would otherwise leave one behind that has to be stopped again.
+        if backlog::read(self.outside.tasks)?
+            .next_to_assign()
+            .is_none()
+        {
             return Err(Refusal::NothingToAssign);
         }
 
         let budget = Budget { usage, time };
         let model = declared.model.map(str::to_owned);
 
-        // Read before the session opens, so that a share is measured from
-        // where the vendor's limit stood when this session had spent nothing.
-        let started_at = self.clock.now();
+        // Read before the session opens.
+        // A share is measured from where the vendor's limit stood when this session had spent nothing.
+        let started_at = self.outside.clock.now();
         let limit_at_start = match usage {
             Usage::Share(_) => Some(self.limit_now()?),
             Usage::Tokens(_) => None,
         };
 
-        let opened = sessions::change(self.sessions, |sessions| {
+        let opened = sessions::change(self.outside.sessions, |sessions| {
             sessions
                 .open(Opening {
                     budget,
@@ -123,8 +122,8 @@ impl ExecutionUseCase for ExecutionService<'_> {
         let page = counted_from("page", page, 1)?;
         let limit = counted_from("limit", limit, 20)?;
 
-        let held = sessions::read(self.sessions)?;
-        let tasks = backlog::read(self.tasks)?;
+        let held = sessions::read(self.outside.sessions)?;
+        let tasks = backlog::read(self.outside.tasks)?;
 
         // Newest first, which is the order the numbers were handed out in.
         let mut newest: Vec<&Session> = held.sessions().iter().collect();
@@ -156,7 +155,7 @@ impl ExecutionUseCase for ExecutionService<'_> {
             value: id.to_owned(),
         })?;
 
-        let held = sessions::read(self.sessions)?;
+        let held = sessions::read(self.outside.sessions)?;
         let session = held
             .sessions()
             .iter()
@@ -165,7 +164,7 @@ impl ExecutionUseCase for ExecutionService<'_> {
                 id: wanted.labelled(),
             })?;
 
-        let tasks = backlog::read(self.tasks)?;
+        let tasks = backlog::read(self.outside.tasks)?;
         let ran = tasks
             .taken_by(wanted)
             .into_iter()
@@ -196,37 +195,70 @@ impl ExecutionUseCase for ExecutionService<'_> {
         })
     }
 
+    fn trace(&self, id: &str, since: Option<&str>) -> Result<Trail, Refusal> {
+        let wanted = TaskId::parse(id).ok_or_else(|| Refusal::BadValue {
+            key: "task".to_owned(),
+            value: id.to_owned(),
+        })?;
+        let held = backlog::read(self.outside.tasks)?;
+        let task = held.find(wanted).ok_or_else(|| Refusal::NoSuchTask {
+            id: wanted.labelled(),
+        })?;
+        // Before the trace is read.
+        // A run ending between the two would leave a reader holding the last of it and told there is more.
+        let done = task.state() != TaskState::Running;
+
+        let read = self
+            .outside
+            .traces
+            .read(&wanted.to_string(), since.unwrap_or_default())?;
+        Ok(Trail {
+            events: read
+                .events
+                .into_iter()
+                .map(|one| Happened {
+                    at: one.at,
+                    said: one.said,
+                })
+                .collect(),
+            cursor: read.cursor,
+            done,
+        })
+    }
+
     fn interrupt(&self) -> Result<Stopped, Refusal> {
-        let held = sessions::read(self.sessions)?;
+        let held = sessions::read(self.outside.sessions)?;
         let running = held.running().ok_or(Refusal::NoSessionRunning)?.id();
 
-        // Read before anything is ended. A task the vendor was still running
-        // will not report what it spent, and for a share the vendor's own
-        // figure has that in it.
+        // Before anything is ended.
+        // A task the vendor was still running reports nothing, and a share is read from the vendor.
         let spent = self.spending_of(running)?;
-        let now = self.clock.now();
-        sessions::change(self.sessions, |sessions| {
-            sessions.record(running, spent, now);
-            Ok(())
-        })?;
+        let now = self.outside.clock.now();
+        // What was last recorded stands where the vendor has stopped answering.
+        // A session being stopped by hand is stopped either way.
+        if let Some(spent) = spent {
+            sessions::change(self.outside.sessions, |sessions| {
+                sessions.record(running, spent, now);
+                Ok(())
+            })?;
+        }
 
-        // The runs end before the tasks do, so nothing is recorded as ended
-        // while its agent is still working.
-        for task in backlog::read(self.tasks)?.taken_by(running) {
+        // The runs end before the tasks do, so nothing is recorded as ended while its agent is still working.
+        for task in backlog::read(self.outside.tasks)?.taken_by(running) {
             if task.state() == TaskState::Running {
-                self.agent.stop(&task.id().to_string());
+                self.outside.agent.stop(&task.id().to_string());
             }
         }
 
-        let interrupted = backlog::change(self.tasks, |tasks| {
+        let interrupted = backlog::change(self.outside.tasks, |tasks| {
             Ok(tasks.interrupt(running, &StoppedReason::Interrupted.to_string()))
         })?;
-        sessions::change(self.sessions, |sessions| {
+        sessions::change(self.outside.sessions, |sessions| {
             sessions.stop(running, StoppedReason::Interrupted, now);
             Ok(())
         })?;
 
-        let held = sessions::read(self.sessions)?;
+        let held = sessions::read(self.outside.sessions)?;
         let session = held
             .sessions()
             .iter()
@@ -243,85 +275,13 @@ impl ExecutionUseCase for ExecutionService<'_> {
             },
         })
     }
-
-    fn carry_on(&self, task: &str) -> Result<Vec<String>, Refusal> {
-        let id = TaskId::parse(task).ok_or_else(|| Refusal::BadValue {
-            key: "task".to_owned(),
-            value: task.to_owned(),
-        })?;
-
-        let (repository, base, branch, instruction, model) = {
-            let tasks = backlog::read(self.tasks)?;
-            let held = tasks
-                .find(id)
-                .ok_or_else(|| Refusal::NoSuchTask { id: id.labelled() })?;
-            (
-                held.repository().to_string(),
-                held.base_branch(),
-                held.result_branch().unwrap_or_default(),
-                held.instruction().to_owned(),
-                held.model().map(str::to_owned),
-            )
-        };
-
-        let at = match self.worktrees.prepare(Cut {
-            repository: &repository,
-            base: &base,
-            branch: &branch,
-            task: &id.to_string(),
-        }) {
-            Ok(at) => at,
-            // A task that could not be given a place to work in has ended, and
-            // saying so is what keeps it from being read as still running.
-            // Nothing ran, so there is nothing to have consumed.
-            Err(e) => return self.ended(id, TaskState::Error, Some(e.reason), Observation::NotYet),
-        };
-        backlog::change(self.tasks, |tasks| {
-            tasks.work_area(id, at.clone());
-            Ok(())
-        })?;
-
-        let trace = self.traces.at(&id.to_string())?;
-        let ended = self.agent.work(Work {
-            task: &id.to_string(),
-            at: &at,
-            trace: &trace,
-            instruction: &instruction,
-            model: model.as_deref(),
-        });
-        match ended {
-            Ok(ended) => {
-                let consumed = observed(ended.observed);
-                match ended.outcome {
-                    Outcome::Finished => self.ended(id, TaskState::Completed, None, consumed),
-                    // Section 1 gives a run stopped at its ceiling a reason of
-                    // its own, and says the session carries on.
-                    Outcome::AtCeiling => self.ended(
-                        id,
-                        TaskState::Interrupted,
-                        Some(AT_CEILING.to_owned()),
-                        consumed,
-                    ),
-                    // A run the vendor would not take fails the same way as
-                    // one that went wrong, and only the vendor's limit tells
-                    // them apart. It is asked here rather than on every task,
-                    // since asking costs a turn and a task rarely fails.
-                    Outcome::Failed => match self.at_its_limit() {
-                        true => self.turned_away(id, consumed),
-                        false => self.ended(id, TaskState::Error, ended.reason, consumed),
-                    },
-                }
-            }
-            Err(e) => self.ended(id, TaskState::Error, Some(e.reason), Observation::NotYet),
-        }
-    }
 }
 
 /// Reads what the agent said it consumed.
 ///
-/// The port answers in the core's own words already, so this only tells the two
-/// answers apart. A count the adapter could not read is not a count of nothing,
-/// and section 1 keeps the two apart as far as the reason a session stops.
+/// The port answers in the core's own words already, so this only tells the two answers apart.
+/// A count the adapter could not read is not a count of nothing.
+/// Section 1 keeps the two apart as far as the reason a session stops.
 fn observed(observed: Observed) -> Observation {
     match observed {
         Observed::Unreadable { why } => Observation::Unreadable { why },
@@ -347,8 +307,8 @@ fn counted(spent: &Spent) -> Option<Consumption> {
 
 /// A count a caller wrote, or what it defaults to when nobody wrote one.
 ///
-/// Zero is refused for both. Section 2.2 names `--page 0` as an argument
-/// error, and a page of nothing is the same kind of nothing.
+/// Zero is refused for both.
+/// Section 2.2 names `--page 0` as an argument error, and a page of nothing is the same kind of nothing.
 fn counted_from(key: &str, written: Option<&str>, unless: u32) -> Result<u32, Refusal> {
     let Some(written) = written else {
         return Ok(unless);
@@ -369,14 +329,102 @@ const AT_CEILING: &str = "task ceiling";
 /// The reading at which the vendor has nothing left to give.
 const FULL: u64 = 100 * HUNDREDTHS;
 
+impl Carrying for ExecutionService<'_> {
+    fn carry_on(&self, task: &str) -> Result<Vec<String>, NotCarried> {
+        self.carrying(task).map_err(not_carried)
+    }
+}
+
+impl ExecutionService<'_> {
+    /// Everything `carry_on` does, in the words the rest of this file speaks.
+    fn carrying(&self, task: &str) -> Result<Vec<String>, Refusal> {
+        let id = TaskId::parse(task).ok_or_else(|| Refusal::BadValue {
+            key: "task".to_owned(),
+            value: task.to_owned(),
+        })?;
+
+        let (repository, base, branch, instruction, model) = {
+            let tasks = backlog::read(self.outside.tasks)?;
+            let held = tasks
+                .find(id)
+                .ok_or_else(|| Refusal::NoSuchTask { id: id.labelled() })?;
+            (
+                held.repository().to_string(),
+                held.base_branch(),
+                held.result_branch().unwrap_or_default(),
+                held.instruction().to_owned(),
+                held.model().map(str::to_owned),
+            )
+        };
+
+        let at = match self.outside.worktrees.prepare(Cut {
+            repository: &repository,
+            base: &base,
+            branch: &branch,
+            task: &id.to_string(),
+        }) {
+            Ok(at) => at,
+            // A task with nowhere to work has ended, and nothing ran, so there is nothing to have consumed.
+            Err(e) => return self.ended(id, TaskState::Error, Some(e.reason), Observation::NotYet),
+        };
+        backlog::change(self.outside.tasks, |tasks| {
+            tasks.work_area(id, at.clone());
+            Ok(())
+        })?;
+
+        let trace = self.outside.traces.keeping(&id.to_string())?;
+        let ended = self.outside.agent.work(Work {
+            task: &id.to_string(),
+            at: &at,
+            trace,
+            instruction: &instruction,
+            model: model.as_deref(),
+        });
+        match ended {
+            Ok(ended) => {
+                let consumed = observed(ended.observed);
+                match ended.outcome {
+                    Outcome::Finished => self.ended(id, TaskState::Completed, None, consumed),
+                    // Section 1 gives a run stopped at its ceiling a reason of its own.
+                    // It also says the session carries on.
+                    Outcome::AtCeiling => self.ended(
+                        id,
+                        TaskState::Interrupted,
+                        Some(AT_CEILING.to_owned()),
+                        consumed,
+                    ),
+                    // Only the vendor's limit tells a run it would not take from one that went wrong.
+                    Outcome::Failed => match self.at_its_limit() {
+                        true => self.turned_away(id, consumed),
+                        false => self.ended(id, TaskState::Error, ended.reason, consumed),
+                    },
+                }
+            }
+            Err(e) => self.ended(id, TaskState::Error, Some(e.reason), Observation::NotYet),
+        }
+    }
+}
+
+/// A refusal nobody asked for, as what it is to a worker.
+fn not_carried(why: Refusal) -> NotCarried {
+    match why {
+        Refusal::NoSuchTask { id } => NotCarried::NoSuchTask { id },
+        Refusal::Unavailable { reason } => NotCarried::Unavailable { reason },
+        // Nothing else can reach here: the task was named by a session of this core.
+        other => NotCarried::Unavailable {
+            reason: format!("{other:?}"),
+        },
+    }
+}
+
 impl ExecutionService<'_> {
     /// How long the session has run.
     ///
-    /// A session still running has run until now. One that stopped ran until
-    /// the moment it last changed, which is the moment it stopped.
+    /// A session still running has run until now.
+    /// One that stopped ran until the moment it last changed, which is the moment it stopped.
     fn elapsed(&self, session: &Session) -> Span {
         let until = match session.state() {
-            SessionState::Running => self.clock.now(),
+            SessionState::Running => self.outside.clock.now(),
             SessionState::Stopped => session.updated_at(),
         };
         Span::of(until.saturating_sub(session.started_at()))
@@ -384,25 +432,26 @@ impl ExecutionService<'_> {
 
     /// Whether the vendor has nothing left to give.
     ///
-    /// A reading this cannot take is not a limit that has been reached. The
-    /// run failed either way, and calling it the vendor's doing on a question
-    /// nobody could answer would stop a session that had room left.
+    /// A reading this cannot take is not a limit that has been reached.
+    /// The run failed either way.
+    /// Calling it the vendor's doing on a question nobody could answer would stop a session that had room left.
     fn at_its_limit(&self) -> bool {
         self.limit_now().is_ok_and(|used| used >= FULL)
     }
 
     /// A task the vendor would not run, and the session it belonged to.
     ///
-    /// The task goes back to waiting, since nothing about it was wrong and it
-    /// is the vendor that has to change its mind. The session stops, because
-    /// every other task in it would be turned away the same way.
+    /// The task goes back to waiting, since nothing about it was wrong.
+    /// It is the vendor that has to change its mind.
+    /// The session stops, because every other task in it would be turned away the same way.
     fn turned_away(&self, id: TaskId, consumed: Observation) -> Result<Vec<String>, Refusal> {
         let starts_over = self
+            .outside
             .limit
             .read()
             .ok()
             .and_then(|at| at.resets_at.parse().ok());
-        let session = backlog::change(self.tasks, |tasks| {
+        let session = backlog::change(self.outside.tasks, |tasks| {
             tasks.record(id, consumed.clone());
             let session = tasks.find(id).and_then(Task::session);
             tasks.wait_again(id);
@@ -411,7 +460,7 @@ impl ExecutionService<'_> {
 
         if let Some(session) = session {
             if let Some(at) = starts_over {
-                sessions::change(self.sessions, |sessions| {
+                sessions::change(self.outside.sessions, |sessions| {
                     sessions.resets_at(session, at);
                     Ok(())
                 })?;
@@ -421,11 +470,9 @@ impl ExecutionService<'_> {
         Ok(Vec::new())
     }
 
-    /// Moves a task to the state it ended in, records what it consumed, and
-    /// decides what happens next.
+    /// Moves a task to the state it ended in, records what it consumed, and decides what happens next.
     ///
-    /// The first two are one change, so that a task is never stored as ended
-    /// with what it consumed still missing.
+    /// The first two are one change, so that a task is never stored as ended with what it consumed still missing.
     fn ended(
         &self,
         id: TaskId,
@@ -433,7 +480,7 @@ impl ExecutionService<'_> {
         reason: Option<String>,
         consumed: Observation,
     ) -> Result<Vec<String>, Refusal> {
-        let session = backlog::change(self.tasks, |tasks| {
+        let session = backlog::change(self.outside.tasks, |tasks| {
             tasks.finish(id, state, reason.clone());
             tasks.record(id, consumed.clone());
             Ok(tasks.find(id).and_then(Task::session))
@@ -454,94 +501,74 @@ impl ExecutionService<'_> {
             return Ok(Vec::new());
         };
 
-        let spent = self.spending(&held)?;
-        // A share cannot be worked out again once the session has stopped, so
-        // what was read here is what is reported for it afterwards.
-        let now = self.clock.now();
-        sessions::change(self.sessions, |sessions| {
+        // Section 1 stops a session whose usage can no longer be read, and for a share that
+        // reading is the vendor's own limit.
+        let Some(spent) = self.spending(&held)? else {
+            return self
+                .stop(session, StoppedReason::ObservationUnreadable)
+                .map(|()| Vec::new());
+        };
+        // A share cannot be worked out again once the session has stopped.
+        // What was read here is what is reported for it afterwards.
+        let now = self.outside.clock.now();
+        sessions::change(self.outside.sessions, |sessions| {
             sessions.record(session, spent, now);
             Ok(())
         })?;
 
-        let (left, running, waiting, cost) = backlog::read(self.tasks).map(|tasks| {
-            let cost = match (held.budget().usage, spent) {
-                // Tokens mean the same in every session, so what a task costs
-                // is what tasks have cost here at all.
-                (Usage::Tokens(_), _) => {
-                    Some(cost_of(tasks.counted().iter().map(Consumption::tokens)))
-                }
-                // A share is how far this session moved the vendor's limit,
-                // and only this session's tasks moved it.
-                (Usage::Share(_), Spending::Share(spent)) => Some(Cost {
-                    total: spent,
-                    over: tasks.ended_in(session) as u64,
-                }),
-                (Usage::Share(_), Spending::Tokens(_)) => None,
-            };
-            (
-                held.budget().left(spent),
-                tasks.running_in(session),
-                tasks.next_to_assign().is_some(),
-                cost,
-            )
-        })?;
-
-        if let Some(why) = self.why_it_stops(&held, left, running, waiting, cost)? {
-            return self.stop(session, why).map(|()| Vec::new());
+        match decide(&self.standing(&held, spent)?) {
+            Decision::Stop(why) => self.stop(session, why).map(|()| Vec::new()),
+            Decision::Start(room) => backlog::change(self.outside.tasks, |tasks| {
+                Ok((0..room).filter_map(|_| tasks.assign(session)).collect())
+            }),
         }
-        let room = room_for(left, cost, running);
-        backlog::change(self.tasks, |tasks| {
-            Ok((0..room).filter_map(|_| tasks.assign(session)).collect())
-        })
     }
 
-    /// Why the session stops here, if it does.
-    fn why_it_stops(
-        &self,
-        held: &Session,
-        left: u64,
-        running: usize,
-        waiting: bool,
-        cost: Option<Cost>,
-    ) -> Result<Option<StoppedReason>, Refusal> {
-        // A count nobody could read leaves a budget that cannot be measured,
-        // and a budget that cannot be measured cannot be held to.
-        if matches!(
-            backlog::read(self.tasks)?.consumed_by(held.id()),
-            Observation::Unreadable { .. }
-        ) {
-            return Ok(Some(StoppedReason::ObservationUnreadable));
-        }
-        if held.out_of_time(self.clock.now()) {
-            return Ok(Some(StoppedReason::BudgetHardlock));
-        }
-        // Nothing more fits, and nothing is running that would make room.
-        // Waiting for a task that will never start is not carrying on.
-        if running == 0 && room_for(left, cost, 0) == 0 {
-            return Ok(Some(StoppedReason::BudgetHardlock));
-        }
-        if running == 0 && !waiting {
-            return Ok(Some(StoppedReason::AllDone));
-        }
-        Ok(None)
+    /// How the session stands, read in one go.
+    ///
+    /// One read of the backlog rather than one per question, so that every figure the decision
+    /// is made from comes from the same moment.
+    fn standing(&self, held: &Session, spent: Spending) -> Result<Standing, Refusal> {
+        let session = held.id();
+        let tasks = backlog::read(self.outside.tasks)?;
+        let cost = match (held.budget().usage, spent) {
+            // Tokens mean the same in every session, so what a task costs is what tasks have cost here at all.
+            (Usage::Tokens(_), _) => Some(cost_of(tasks.counted().iter().map(Consumption::tokens))),
+            // A share is how far this session moved the vendor's limit, and only this session's tasks moved it.
+            (Usage::Share(_), Spending::Share(spent)) => Some(Cost {
+                total: spent,
+                over: tasks.ended_in(session) as u64,
+            }),
+            (Usage::Share(_), Spending::Tokens(_)) => None,
+        };
+
+        Ok(Standing {
+            left: held.budget().left(spent),
+            cost,
+            running: tasks.running_in(session),
+            waiting: tasks.next_to_assign().is_some(),
+            out_of_time: held.out_of_time(self.outside.clock.now()),
+            unreadable: matches!(tasks.consumed_by(session), Observation::Unreadable { .. }),
+            at_once: self.at_once,
+        })
     }
 
     /// Stops the session and ends whatever it still had running.
     fn stop(&self, session: SessionId, why: StoppedReason) -> Result<(), Refusal> {
-        let now = self.clock.now();
-        sessions::change(self.sessions, |sessions| {
+        let now = self.outside.clock.now();
+        sessions::change(self.outside.sessions, |sessions| {
             sessions.stop(session, why, now);
             Ok(())
         })?;
-        backlog::change(self.tasks, |tasks| {
+        backlog::change(self.outside.tasks, |tasks| {
             Ok(!tasks.interrupt(session, &why.to_string()).is_empty())
         })
         .map(|_: bool| ())
     }
 
     /// The same, for a session named only by its number.
-    fn spending_of(&self, session: SessionId) -> Result<Spending, Refusal> {
-        let held = sessions::read(self.sessions)?;
+    fn spending_of(&self, session: SessionId) -> Result<Option<Spending>, Refusal> {
+        let held = sessions::read(self.outside.sessions)?;
         let held = held
             .sessions()
             .iter()
@@ -550,30 +577,38 @@ impl ExecutionService<'_> {
         self.spending(held)
     }
 
-    /// What the session has consumed of its usage budget.
-    fn spending(&self, held: &Session) -> Result<Spending, Refusal> {
+    /// What the session has consumed of its usage budget, or nothing when that can no longer
+    /// be read.
+    ///
+    /// A share is read from the vendor, so a vendor that stops answering leaves the figure
+    /// unknown rather than zero.
+    /// Section 1 stops a session in that state, and nothing is a failure for the caller to
+    /// carry.
+    fn spending(&self, held: &Session) -> Result<Option<Spending>, Refusal> {
         match (held.budget().usage, held.limit_at_start()) {
-            (Usage::Share(_), Some(at_start)) => {
-                Ok(Spending::Share(self.limit_now()?.saturating_sub(at_start)))
-            }
-            // A share with nothing to measure from is a store this core cannot
-            // use. Nothing else can be said about how much of it is spent.
+            (Usage::Share(_), Some(at_start)) => Ok(self
+                .limit_now()
+                .ok()
+                .map(|now| Spending::Share(now.saturating_sub(at_start)))),
+            // A share with nothing to measure from is a store this core cannot use.
+            // Nothing else can be said about how much of it is spent.
             (Usage::Share(_), None) => Err(Refusal::Unavailable {
                 reason: format!(
                     "{} declared a share and does not say what the limit was at",
                     held.id().labelled()
                 ),
             }),
-            (Usage::Tokens(_), _) => Ok(Spending::Tokens(
-                Consumption::total(backlog::read(self.tasks)?.counted_in(held.id())).tokens(),
-            )),
+            (Usage::Tokens(_), _) => Ok(Some(Spending::Tokens(
+                Consumption::total(backlog::read(self.outside.tasks)?.counted_in(held.id()))
+                    .tokens(),
+            ))),
         }
     }
 
     /// The session, if it is one this still decides for.
     fn held(&self, session: SessionId) -> Result<Option<Session>, Refusal> {
         let mut found = None;
-        sessions::change(self.sessions, |sessions| {
+        sessions::change(self.outside.sessions, |sessions| {
             found = sessions
                 .sessions()
                 .iter()
@@ -592,12 +627,16 @@ fn labelled(ids: Vec<TaskId>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    /// The hands the composition root gives the core, fixed here.
+    const AT_ONCE: usize = 4;
+
     use std::sync::{Mutex, PoisonError};
 
     use crate::core::{
         domain::SessionId,
         port::outbound::{
-            Ended, Reading, StoredBacklog, StoredSession, StoredSessions, StoredTask, Unavailable,
+            Ended, Keeping, Reading, StoredBacklog, StoredSession, StoredSessions, StoredTask,
+            Unavailable,
         },
     };
 
@@ -632,9 +671,8 @@ mod tests {
             &self,
             change: &mut dyn FnMut(&mut StoredSessions) -> bool,
         ) -> Result<(), Unavailable> {
-            // The lock is held across the read and the write, which is what
-            // the port promises. A fake that let go between them would allow
-            // the very thing the real store is written to prevent.
+            // Held across the read and the write, as the port promises.
+            // A fake that let go would allow what the real store prevents.
             let mut held = self.stored.lock().unwrap();
             let mut sessions = held.clone();
             if change(&mut sessions) {
@@ -738,8 +776,8 @@ mod tests {
     struct Kept;
 
     impl Traces for Kept {
-        fn at(&self, task: &str) -> Result<String, Unavailable> {
-            Ok(format!("/traces/{task}.jsonl"))
+        fn keeping(&self, _task: &str) -> Result<Keeping, Unavailable> {
+            Ok(Box::new(|_line: &str| {}))
         }
 
         fn read(
@@ -771,12 +809,26 @@ mod tests {
     struct AtPercent {
         /// Hundredths of a percent, as the port carries it.
         used: Mutex<u64>,
-        refuse: bool,
+        refuse: Mutex<bool>,
+    }
+
+    impl AtPercent {
+        /// A limit that reads, until a test says it stops reading.
+        fn at(used: u64) -> Self {
+            AtPercent {
+                used: Mutex::new(used),
+                refuse: Mutex::new(false),
+            }
+        }
+
+        fn refuse(&self) {
+            *self.refuse.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        }
     }
 
     impl Limit for AtPercent {
         fn read(&self) -> Result<Reading, Unavailable> {
-            if self.refuse {
+            if *self.refuse.lock().unwrap_or_else(PoisonError::into_inner) {
                 return Err(Unavailable::new("the status line said nothing"));
             }
             Ok(Reading {
@@ -792,8 +844,8 @@ mod tests {
 
     /// A vendor limit that moves every time it is read.
     ///
-    /// A session declared as a share is measured against a figure that grows
-    /// while its tasks run, and nothing else here makes it grow.
+    /// A session declared as a share is measured against a figure that grows while its tasks run.
+    /// Nothing else here makes it grow.
     struct Advancing {
         used: Mutex<u64>,
         step: u64,
@@ -814,7 +866,7 @@ mod tests {
     /// A limit nothing asks for, since the session was declared in tokens.
     static UNTOUCHED: AtPercent = AtPercent {
         used: Mutex::new(0),
-        refuse: false,
+        refuse: Mutex::new(false),
     };
 
     /// What an agent that answered with a count it could read reports.
@@ -828,7 +880,7 @@ mod tests {
         })
     }
 
-    /// An agent that answers as it was told to, and remembers what it was asked.
+    /// An agent that answers as told, and remembers what it was asked.
     struct Standing {
         ended: Ended,
         asked: Mutex<Vec<(String, String, Option<String>)>>,
@@ -887,13 +939,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         let started = execution.run(declaring("50%", "8h")).unwrap();
@@ -911,13 +966,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
         execution.run(declaring("2M", "30m")).unwrap();
 
@@ -928,8 +986,8 @@ mod tests {
         assert_eq!(held.sessions[0].usage, "2000000");
     }
 
-    /// A task that was assigned is running and belongs to the session that
-    /// took it, so nothing else may take it as well.
+    /// A task that was assigned is running and belongs to the session that took it.
+    /// Nothing else may take it as well.
     #[test]
     fn the_task_that_was_assigned_says_which_session_took_it() {
         let sessions = Remembered::empty();
@@ -937,13 +995,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
         execution.run(declaring("50%", "8h")).unwrap();
 
@@ -959,13 +1020,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
         execution.run(declaring("50%", "8h")).unwrap();
 
@@ -992,13 +1056,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         assert_eq!(
@@ -1015,13 +1082,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         assert_eq!(
@@ -1062,13 +1132,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         let refused = execution.run(declaring("50%", "8h")).unwrap_err();
@@ -1082,13 +1155,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("50%", "8h")).unwrap();
@@ -1120,13 +1196,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("50%", "8h")).unwrap();
@@ -1140,15 +1219,15 @@ mod tests {
         assert_eq!(counted.cost, "92170");
         assert_eq!(tasks.first().unreadable, None);
 
-        // The backlog held one task and it is done, so nothing is left to
-        // assign and the session has nothing more to do.
+        // The backlog held one task and it is done.
+        // Nothing is left to assign, and the session has nothing more to do.
         let session = sessions.load().sessions[0].clone();
         assert_eq!(session.state, "stopped");
         assert_eq!(session.stopped_reason.as_deref(), Some("all done"));
     }
 
-    /// A task that never reached the agent has not consumed nothing; it has not
-    /// consumed at all, and neither field says otherwise.
+    /// A task that never reached the agent has not consumed nothing; it has not consumed at all.
+    /// Neither field says otherwise.
     #[test]
     fn a_task_that_never_ran_is_stored_with_no_count_at_all() {
         let sessions = Remembered::empty();
@@ -1159,13 +1238,16 @@ mod tests {
         };
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("50%", "8h")).unwrap();
@@ -1177,8 +1259,8 @@ mod tests {
         assert_eq!(held.unreadable, None);
     }
 
-    /// A budget is a figure, and a session that cannot be measured against its
-    /// own would run past it without anything noticing.
+    /// A budget is a figure.
+    /// A session that cannot be measured against its own would run past it without anything noticing.
     #[test]
     fn a_session_whose_count_could_not_be_read_stops_and_says_so() {
         let sessions = Remembered::empty();
@@ -1192,13 +1274,16 @@ mod tests {
             },
         });
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("50%", "8h")).unwrap();
@@ -1237,13 +1322,16 @@ mod tests {
             }),
         });
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("50%", "8h")).unwrap();
@@ -1264,13 +1352,16 @@ mod tests {
             observed: spending(),
         });
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("50%", "8h")).unwrap();
@@ -1281,8 +1372,7 @@ mod tests {
         assert_eq!(held.reason.as_deref(), Some("it went wrong"));
     }
 
-    /// Section 1 says the session carries on when one task hits the ceiling
-    /// on a single run.
+    /// Section 1 says the session carries on when one task hits the ceiling on a single run.
     #[test]
     fn a_task_stopped_at_its_ceiling_says_so_and_the_session_carries_on() {
         let sessions = Remembered::empty();
@@ -1294,13 +1384,16 @@ mod tests {
             observed: spending(),
         });
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("2M", "8h")).unwrap();
@@ -1312,8 +1405,7 @@ mod tests {
         assert_eq!(sessions.load().sessions[0].state, "running");
     }
 
-    /// A vendor that will not run one task will not run the next either, and
-    /// nothing about the task was wrong.
+    /// A vendor that will not run one task will not run the next either, and nothing about the task was wrong.
     #[test]
     fn a_task_the_vendor_would_not_run_waits_again_and_the_session_stops() {
         let sessions = Remembered::empty();
@@ -1326,16 +1418,19 @@ mod tests {
         });
         let full = AtPercent {
             used: Mutex::new(100 * HUNDREDTHS),
-            refuse: false,
+            refuse: Mutex::new(false),
         };
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &full,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &full,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("2M", "8h")).unwrap();
@@ -1351,8 +1446,7 @@ mod tests {
         assert_eq!(session.stopped_reason.as_deref(), Some("vendor limit"));
     }
 
-    /// A run can fail on its own account, and the vendor having room left is
-    /// what says so.
+    /// A run can fail on its own account, and the vendor having room left is what says so.
     #[test]
     fn a_task_that_failed_with_room_left_is_an_error() {
         let sessions = Remembered::empty();
@@ -1365,16 +1459,19 @@ mod tests {
         });
         let room = AtPercent {
             used: Mutex::new(40 * HUNDREDTHS),
-            refuse: false,
+            refuse: Mutex::new(false),
         };
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &room,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &room,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("2M", "8h")).unwrap();
@@ -1399,16 +1496,19 @@ mod tests {
         });
         let silent = AtPercent {
             used: Mutex::new(0),
-            refuse: true,
+            refuse: Mutex::new(true),
         };
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &silent,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &silent,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("2M", "8h")).unwrap();
@@ -1417,8 +1517,8 @@ mod tests {
         assert_eq!(tasks.first().state, "Error");
     }
 
-    /// The other half of the hardlock: a session that has spent the tokens it
-    /// declared stops, whether or not its time is up.
+    /// The other half of the hardlock: a session that has spent the tokens it declared stops.
+    /// It stops whether or not its time is up.
     #[test]
     fn a_session_that_spent_what_it_declared_stops_and_says_so() {
         let sessions = Remembered::empty();
@@ -1426,17 +1526,19 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
-        // The stand-in agent reports far more than this budget allows, so the
-        // first task spends the whole of it.
+        // The stand-in agent reports far more than this budget allows, so the first task spends the whole of it.
         execution.run(declaring("1000", "8h")).unwrap();
         let assigned = execution.carry_on("task:1").unwrap();
 
@@ -1448,9 +1550,9 @@ mod tests {
         assert_eq!(tasks.load().unwrap().tasks[1].state, "Pending");
     }
 
-    /// A task moves the vendor's limit by less than a point, and for a while
-    /// that read as costing nothing at all. Several tasks have to start once
-    /// there is anything to divide by.
+    /// A task moves the vendor's limit by less than a point, and for a while that read as costing nothing at all.
+    ///
+    /// Several tasks have to start once there is anything to divide by.
     #[test]
     fn a_share_starts_several_once_it_knows_what_a_task_costs() {
         let sessions = Remembered::empty();
@@ -1463,34 +1565,35 @@ mod tests {
         ]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        // Half a point every time it is asked, which is what a task cost when
-        // this was measured against the vendor.
+        // Half a point every time it is asked, which is what a task cost when this was measured against the vendor.
         let moving = Advancing {
             used: Mutex::new(0),
             step: 50,
         };
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &moving,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &moving,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         // The first decision has no task to go on, so one starts alone.
         let started = execution.run(declaring("5%", "8h")).unwrap();
         assert_eq!(started.assigned.len(), 1);
 
-        // The second knows what one task cost, and the rest of the budget
-        // holds far more than a handful.
+        // The second knows what one task cost, and the rest of the budget holds far more than a handful.
         let assigned = execution.carry_on("task:1").unwrap();
         assert_eq!(assigned.len(), 4);
     }
 
-    /// A share is spent against a figure the vendor keeps, so a session that
-    /// reaches it stops however few tokens its own tasks reported.
+    /// A share is spent against a figure the vendor keeps.
+    /// A session that reaches it stops however few tokens its own tasks reported.
     #[test]
     fn a_share_that_reached_what_it_declared_stops() {
         let sessions = Remembered::empty();
@@ -1503,13 +1606,16 @@ mod tests {
             step: 100,
         };
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &moving,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &moving,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("1%", "8h")).unwrap();
@@ -1522,8 +1628,7 @@ mod tests {
         assert_eq!(tasks.load().unwrap().tasks[1].state, "Pending");
     }
 
-    /// Section 2.2 lists them newest first, which is the order the numbers
-    /// were handed out in.
+    /// Section 2.2 lists them newest first, which is the order the numbers were handed out in.
     #[test]
     fn sessions_are_listed_newest_first() {
         let sessions = Remembered::empty();
@@ -1531,17 +1636,20 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
-        // A budget one task overruns, so the first session ends after one and
-        // the second task is left for a session of its own.
+        // A budget one task overruns.
+        // The first session ends after one, and the second task is left for a session of its own.
         execution.run(declaring("1000", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();
         execution.run(declaring("1000", "2h")).unwrap();
@@ -1560,13 +1668,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("1000", "8h")).unwrap();
@@ -1585,13 +1696,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         for (page, limit) in [(Some("0"), None), (None, Some("0")), (Some("one"), None)] {
@@ -1609,13 +1723,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         assert_eq!(execution.sessions(None, None).unwrap().sessions, Vec::new());
@@ -1628,13 +1745,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("2M", "8h")).unwrap();
@@ -1659,13 +1779,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("2M", "8h")).unwrap();
@@ -1688,16 +1811,19 @@ mod tests {
         });
         let full = AtPercent {
             used: Mutex::new(100 * HUNDREDTHS),
-            refuse: false,
+            refuse: Mutex::new(false),
         };
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &full,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &full,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("2M", "8h")).unwrap();
@@ -1715,13 +1841,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         assert_eq!(
@@ -1739,13 +1868,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("2M", "8h")).unwrap();
@@ -1761,8 +1893,9 @@ mod tests {
         assert_eq!(tasks.first().reason.as_deref(), Some("interrupted"));
     }
 
-    /// The run has to end before the task does. A task recorded as ended
-    /// while its agent still works is a task nobody is watching.
+    /// The run has to end before the task does.
+    ///
+    /// A task recorded as ended while its agent still works is a task nobody is watching.
     #[test]
     fn interrupting_ends_the_run_of_every_task_it_interrupts() {
         let sessions = Remembered::empty();
@@ -1770,13 +1903,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("2M", "8h")).unwrap();
@@ -1792,8 +1928,8 @@ mod tests {
         );
     }
 
-    /// The thread waiting on a killed agent comes back to say it failed, and
-    /// the task has already ended for a better reason.
+    /// The thread waiting on a killed agent comes back to say it failed.
+    /// The task has already ended for a better reason.
     #[test]
     fn what_the_agent_says_afterwards_does_not_undo_the_interruption() {
         let sessions = Remembered::empty();
@@ -1805,13 +1941,16 @@ mod tests {
             observed: spending(),
         });
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("2M", "8h")).unwrap();
@@ -1829,20 +1968,22 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         assert_eq!(execution.interrupt(), Err(Refusal::NoSessionRunning));
     }
 
-    /// A session that has run as long as it declared stops, and whatever it
-    /// still had running ends where it got to.
+    /// A session that has run as long as it declared stops, and whatever it still had running ends where it got to.
     #[test]
     fn a_session_out_of_time_stops_and_interrupts_what_was_running() {
         let sessions = Remembered::empty();
@@ -1851,24 +1992,30 @@ mod tests {
         let agent = Standing::finishing();
         let late = Frozen(1_000 + 8 * 3_600);
         let opened = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
         opened.run(declaring("2M", "8h")).unwrap();
 
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &late,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &late,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
         let assigned = execution.carry_on("task:1").unwrap();
 
@@ -1878,9 +2025,8 @@ mod tests {
         assert_eq!(session.stopped_reason.as_deref(), Some("budget hardlock"));
     }
 
-    /// The executor is called for one task at a time and several at once, so
-    /// two running together have to end in their own places without either
-    /// losing what the other recorded.
+    /// The executor is called for one task at a time and several at once.
+    /// Two running together have to end in their own places without either losing what the other recorded.
     #[test]
     fn two_tasks_carried_on_at_once_each_end_in_their_own_place() {
         let sessions = Remembered::empty();
@@ -1888,17 +2034,20 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
-        // The supervisor is what assigns more than one; until it exists a test
-        // stands in for it by assigning the second task itself.
+        // The supervisor is what assigns more than one.
+        // Until it exists, a test stands in for it by assigning the second task itself.
         execution.run(declaring("50%", "8h")).unwrap();
         let opened = SessionId::parse("1").unwrap();
         backlog::change(&tasks, |held| Ok(held.assign(opened))).unwrap();
@@ -1917,8 +2066,7 @@ mod tests {
         assert_eq!(held[1].worktree.as_deref(), Some("/areas/2"));
     }
 
-    /// A task with nowhere to work has ended, and saying so is what keeps it
-    /// from being read as still running.
+    /// A task with nowhere to work has ended, and saying so is what keeps it from being read as still running.
     #[test]
     fn a_work_area_that_could_not_be_made_leaves_the_task_in_error() {
         let sessions = Remembered::empty();
@@ -1929,13 +2077,16 @@ mod tests {
         };
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("50%", "8h")).unwrap();
@@ -1945,5 +2096,99 @@ mod tests {
         assert_eq!(held.state, "Error");
         assert_eq!(held.reason.as_deref(), Some("no such base branch"));
         assert!(agent.asked.lock().unwrap().is_empty());
+    }
+
+    /// A reader is told whether more can still arrive.
+    ///
+    /// The run's state answers that, and the run is this service's to know.
+    #[test]
+    fn a_trace_says_whether_it_can_still_grow() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![StoredTask {
+            session: Some("1".to_owned()),
+            state: "Running".to_owned(),
+            ..a_pending_task()
+        }]);
+        let areas = Areas::default();
+        let agent = Standing::finishing();
+        let execution = ExecutionService::new(
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
+        );
+
+        assert!(!execution.trace("1", None).unwrap().done);
+
+        tasks.stored.lock().unwrap().tasks[0].state = "Completed".to_owned();
+        assert!(execution.trace("1", None).unwrap().done);
+    }
+
+    #[test]
+    fn the_trace_of_a_task_nobody_registered_says_so() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(Vec::new());
+        let areas = Areas::default();
+        let agent = Standing::finishing();
+        let execution = ExecutionService::new(
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
+        );
+
+        assert_eq!(
+            execution.trace("7", None),
+            Err(Refusal::NoSuchTask {
+                id: "task:7".to_owned()
+            })
+        );
+    }
+    /// Section 1 stops a session whose usage can no longer be read.
+    ///
+    /// For a share that reading is the vendor's limit, and a session that cannot be measured
+    /// must not go on spending against a budget nobody can check.
+    #[test]
+    fn a_share_whose_limit_stops_being_readable_stops_the_session() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+        let areas = Areas::default();
+        let agent = Standing::finishing();
+        let limit = AtPercent::at(1_000);
+        let execution = ExecutionService::new(
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &limit,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
+        );
+        execution.run(declaring("50%", "8h")).unwrap();
+
+        limit.refuse();
+        execution.carry_on("1").unwrap();
+
+        let held = sessions.load();
+        assert_eq!(held.sessions[0].state, "stopped");
+        assert_eq!(
+            held.sessions[0].stopped_reason.as_deref(),
+            Some("observation unreadable")
+        );
     }
 }

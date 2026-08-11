@@ -1,17 +1,18 @@
 //! What the core offers over the backlog.
 //!
 //! Section 2.1 of `docs/cli.md` fixes the arguments and the output.
+//! Reading what a run wrote is not here: a trace belongs to the run rather than to the task that was registered.
+//! `port::inbound::execution` offers it.
 
 use super::Refusal;
 
 /// What `task add` was given.
 ///
-/// The arguments arrive together because they are read together, and a
-/// parameter list of this length is harder to call correctly than a value with
-/// named fields.
+/// The arguments arrive together because they are read together.
+/// A parameter list of this length is harder to call correctly than a value with named fields.
 pub struct Registration<'a> {
-    /// Where the surface was run. The core runs as a daemon, so it cannot read
-    /// this from its own process.
+    /// Where the surface was run.
+    /// The core runs as a daemon, so it cannot read this from its own process.
     pub cwd: &'a str,
     pub title: &'a str,
     pub instruction: &'a str,
@@ -41,9 +42,8 @@ pub struct Removed {
 
 /// One task in full.
 ///
-/// The fields a session fills in are here and empty. Nothing runs a task yet,
-/// so they answer as null, which is what section 2.1 says they do before a task
-/// has been assigned.
+/// The fields a session fills in are here and empty.
+/// They answer as null, which is what section 2.1 says they do before a task has been assigned.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Detail {
     pub id: String,
@@ -58,6 +58,19 @@ pub struct Detail {
     pub reason: Option<String>,
     pub worktree: Option<String>,
     pub disposition: Option<String>,
+    /// What the branch holds, for a task whose run has ended.
+    pub commits: Option<Vec<Made>>,
+    /// Commits the base has gained since the task left it.
+    pub base_ahead: Option<u64>,
+}
+
+/// One commit a task made, as `task show` lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Made {
+    pub sha: String,
+    pub subject: String,
+    pub added: Option<u64>,
+    pub removed: Option<u64>,
 }
 
 /// The tasks waiting to be assigned.
@@ -73,23 +86,6 @@ pub struct Waiting {
     pub base_branch: String,
 }
 
-/// One thing a run did or said, as `trace` reports it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Happened {
-    pub at: String,
-    pub said: String,
-}
-
-/// A stretch of a task's trace.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Trail {
-    pub events: Vec<Happened>,
-    /// Where to carry on from.
-    pub cursor: String,
-    /// True once the task has ended and the trace can grow no more.
-    pub done: bool,
-}
-
 /// `task add`, `task rm`, `task show`, and `backlog`.
 pub trait BacklogUseCase {
     /// Registers a task.
@@ -100,12 +96,6 @@ pub trait BacklogUseCase {
 
     /// Reads one task in full.
     fn show(&self, id: &str) -> Result<Detail, Refusal>;
-
-    /// What a task's run has written so far, from `since` onwards.
-    ///
-    /// Section 2.3 answers the same way whether the task is still running or
-    /// has ended, so nothing here asks which.
-    fn trace(&self, id: &str, since: Option<&str>) -> Result<Trail, Refusal>;
 
     /// Lists the tasks waiting to be assigned.
     fn list(&self) -> Result<Listing, Refusal>;

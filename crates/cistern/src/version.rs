@@ -1,7 +1,7 @@
 //! The `--version` flag.
 //!
-//! A daemon outlives the install that replaced it, so a new command can be
-//! talking to an old core. Printing both versions is how that shows.
+//! A daemon outlives the install that replaced it, so a new command can be talking to an old core.
+//! Printing both versions is how that shows.
 
 use std::process::ExitCode;
 
@@ -18,8 +18,9 @@ enum Core {
     Unusable(String),
 }
 
-/// Reads an answer for what it means. It takes the answer rather than fetching
-/// one, so that every outcome can be tested without a core to talk to.
+/// Reads an answer for what it means.
+///
+/// It takes the answer rather than fetching one, so that every outcome can be tested without a core to talk to.
 fn interpret(response: std::io::Result<Response>) -> Core {
     let response = match response {
         Ok(response) => response,

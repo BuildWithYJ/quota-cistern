@@ -1,7 +1,7 @@
 //! Where the vendor's limit stands, read off its own status line.
 //!
-//! The only place that knows there is a status line, a terminal, or a screen
-//! to read words off. The core is handed a percentage and a time.
+//! The only place that knows there is a status line, a terminal, or a screen to read words off.
+//! The core is handed a percentage and a time.
 
 use std::{
     fs,
@@ -18,23 +18,21 @@ use serde_json::Value;
 
 use crate::core::port::outbound::{Limit, Reading, Unavailable};
 
-/// How the vendor is asked. Content, for the reason `adapter::agent` gives.
+/// How the vendor is asked.
 const INVOCATION: &str = include_str!("claude-limit.json");
 
 /// How long to wait for the status line to carry the limit.
 ///
-/// A session has to start, be trusted, take a prompt, and hear back, so this
-/// is longer than any one of those and shorter than a person's patience.
+/// A session has to start, be trusted, take a prompt, and hear back.
+/// This is longer than any one of those and shorter than a person's patience.
 const GIVE_UP_AFTER: Duration = Duration::from_secs(90);
 
 /// How long to leave the session alone before typing at it.
 const SETTLES_IN: Duration = Duration::from_secs(4);
 
-/// How long to wait for the screen to say something more before looking at
-/// what it has said so far.
+/// How long to wait for the screen to say something more before looking at what it has said so far.
 ///
-/// A terminal that has finished drawing says nothing until it is typed at, so
-/// waiting for the next character would be waiting for one this has to send.
+/// A terminal that has finished drawing says nothing until it is typed at.
 const BETWEEN_LOOKS: Duration = Duration::from_millis(200);
 
 /// A terminal wide enough that the vendor lays its screen out as usual.
@@ -50,9 +48,8 @@ pub struct ClaudeLimit {
     invocation: Invocation,
     /// Where the session is run, and where what it writes is kept.
     ///
-    /// One place rather than a new one each time, because the vendor asks
-    /// whether a directory is trusted the first time it sees one and
-    /// remembers the answer.
+    /// One place rather than a new one each time.
+    /// The vendor asks whether a directory is trusted the first time it sees one.
     at: PathBuf,
 }
 
@@ -65,8 +62,7 @@ struct Invocation {
     program: String,
     args: Vec<Vec<String>>,
     prompt: String,
-    /// What the screen says while it is asking whether the directory is
-    /// trusted.
+    /// What the screen says while it is asking whether the directory is trusted.
     trusts: String,
     /// What the screen says once it is waiting to be typed at.
     ready: String,
@@ -93,9 +89,8 @@ impl ClaudeLimit {
 
     /// Lays out the place the session runs in and what it writes to.
     ///
-    /// The status line is a command the vendor runs and hands a JSON object
-    /// on standard input. This writes one that keeps every object it is
-    /// given, which is the only way the figure comes out of the session.
+    /// The status line is a command the vendor hands a JSON object on standard input.
+    /// This writes one that keeps every object, which is the only way the figure leaves the session.
     fn laid_out(&self) -> Result<Held, Unavailable> {
         let held = Held {
             work: self.at.join("work"),
@@ -166,15 +161,14 @@ impl Limit for ClaudeLimit {
         command.env("TERM", "xterm-256color");
 
         let mut running = pty.slave.spawn_command(command).map_err(|e| failing(&e))?;
-        // The slave end is the child's. Holding it open here would keep the
-        // read below waiting after the child is gone.
+        // The slave end is the child's.
+        // Holding it open here would keep the read below waiting after the child is gone.
         drop(pty.slave);
         let mut screen = pty.master.try_clone_reader().map_err(|e| failing(&e))?;
         let mut typing = pty.master.take_writer().map_err(|e| failing(&e))?;
 
-        // Reading a terminal blocks until it has something to say, and a
-        // terminal waiting to be typed at has nothing. The reading happens
-        // beside the watching so that neither waits on the other.
+        // A terminal waiting to be typed at says nothing, and reading one blocks.
+        // So the reading happens beside the watching.
         let (said, arriving) = mpsc::channel();
         thread::spawn(move || {
             let mut chunk = [0u8; 8192];
@@ -195,10 +189,8 @@ impl Limit for ClaudeLimit {
 
 /// Reads the screen until the status line has carried the limit.
 ///
-/// Two moments need something typed. The vendor asks whether the directory is
-/// trusted, which the first answer accepts, and then it waits, which is when
-/// the prompt goes in. The limit is empty until an answer has come back, so
-/// the prompt is what fills it.
+/// Two moments need something typed: the vendor asks whether the directory is trusted, and then it waits for a prompt.
+/// The limit is empty until an answer has come back, so the prompt is what fills it.
 fn watch(
     arriving: &Receiver<Vec<u8>>,
     typing: &mut Box<dyn std::io::Write + Send>,
@@ -245,11 +237,8 @@ fn watch(
     })
 }
 
-/// What the screen says, with the control characters and the spacing between
-/// the letters taken out.
-///
-/// A terminal writes a word one letter at a time with positioning in between,
-/// so the word is not in what arrives as a word.
+/// What the screen says, with the control characters and the spacing between the letters taken out.
+/// A terminal writes a word one letter at a time.
 fn plainly(seen: &[u8]) -> String {
     let mut said = String::new();
     let mut left = String::from_utf8_lossy(seen).into_owned();
@@ -280,12 +269,8 @@ const HUNDREDTHS: f64 = 100.0;
 
 /// The five-hour limit out of one status line.
 ///
-/// Section 2.2 measures a session against the limit that starts over every
-/// five hours. The longer one arrives alongside and is not read.
-///
-/// The vendor writes the percentage as a fraction, and one that lands on a
-/// whole number lands a hair off it. It crosses as hundredths of a percent,
-/// which is finer than a person is shown and holds every figure seen so far.
+/// Section 2.2 measures a session against that one, and the longer limit arrives beside it unread.
+/// It crosses as hundredths of a percent, since the vendor writes a fraction that lands a hair off a whole number.
 fn reading_in(one: &Value) -> Option<Reading> {
     let window = one.get("rate_limits")?.get("five_hour")?;
     let used = window.get("used_percentage")?.as_f64()?;
@@ -335,7 +320,8 @@ mod tests {
         assert_eq!(reading_in(&serde_json::json!({ "cost": {} })), None);
     }
 
-    /// Runs the vendor. Not part of `cargo test`, since it costs a turn.
+    /// Runs the vendor.
+    /// Not part of `cargo test`, since it costs a turn.
     #[test]
     #[ignore = "reaches the vendor"]
     fn the_vendor_says_where_its_limit_stands() {

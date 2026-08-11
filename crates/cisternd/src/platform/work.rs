@@ -1,7 +1,7 @@
 //! A queue of work the daemon carries on with after it has answered.
 //!
-//! It touches no port. What is queued is a piece of work someone else built,
-//! and this only decides when a thread picks it up.
+//! It touches no port.
+//! What is queued is a piece of work someone else built, and this only decides when a thread picks it up.
 
 use std::{
     collections::VecDeque,
@@ -25,8 +25,8 @@ impl Queue {
 
     /// Waits until there is something to do, and takes it.
     ///
-    /// It never answers with nothing, because the daemon runs until it is
-    /// stopped and a thread with nothing to do should sleep rather than spin.
+    /// It never answers with nothing.
+    /// The daemon runs until it is stopped, and a thread with nothing to do should sleep rather than spin.
     pub fn take(&self) -> String {
         let mut waiting = self.waiting.lock().unwrap_or_else(PoisonError::into_inner);
         loop {
@@ -57,8 +57,7 @@ mod tests {
         assert_eq!(queue.take(), "task:2");
     }
 
-    /// A thread that finds nothing waits rather than answering, so a daemon
-    /// with nothing to do is not spinning.
+    /// A thread that finds nothing waits rather than answering, so a daemon with nothing to do is not spinning.
     #[test]
     fn a_thread_that_finds_nothing_waits_for_it() {
         let queue = Arc::new(Queue::default());

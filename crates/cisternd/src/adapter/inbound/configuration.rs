@@ -9,8 +9,8 @@ use super::{answer, missing, text};
 
 /// Answers the commands this group owns.
 ///
-/// A command it does not own comes back untouched, so that whoever is routing
-/// can offer the request to the next group without keeping a list of names.
+/// A command it does not own comes back untouched.
+/// That way, whoever is routing can offer the request to the next group without keeping a list of names.
 pub fn respond(
     configuration: &impl ConfigurationUseCase,
     request: Request,
@@ -31,8 +31,8 @@ fn set(configuration: &impl ConfigurationUseCase, request: Request) -> Response 
 }
 
 fn get(configuration: &impl ConfigurationUseCase, request: Request) -> Response {
-    // A key is optional here. Null is how a surface says it has none, so only a
-    // key that is present and is neither is malformed.
+    // A key is optional here.
+    // Null is how a surface says it has none, so only a key that is present and is neither is malformed.
     if request
         .params
         .get("key")
@@ -74,9 +74,9 @@ mod tests {
 
     /// Stands in for the core.
     ///
-    /// It answers rather than deciding, and records what it was asked, so that
-    /// what is checked here is the envelope and nothing else. No store is
-    /// involved, because no command reaches one through this file.
+    /// It answers rather than deciding, and records what it was asked.
+    /// That way, what is checked here is the envelope and nothing else.
+    /// No store is involved, because no command reaches one through this file.
     #[derive(Default)]
     struct Core {
         /// What every command ends in, when it is meant to end badly.

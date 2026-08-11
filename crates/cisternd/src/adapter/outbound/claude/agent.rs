@@ -5,7 +5,6 @@
 
 use std::{
     collections::HashMap,
-    fs,
     os::unix::process::CommandExt,
     process::{Command, Stdio},
     sync::{Mutex, PoisonError},
@@ -20,28 +19,27 @@ use nix::{
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::core::port::outbound::{Agent, Ended, Observed, Outcome, Spent, Unavailable, Work};
+use crate::core::port::outbound::{
+    Agent, Ended, Keeping, Observed, Outcome, Spent, Unavailable, Work,
+};
 
 /// How the agent is invoked, and what it is told it is finished.
 ///
-/// Both are read at the moment this is built rather than on every task, and
-/// both travel in the binary. What they hold is content: a sentence a person
-/// will tune and a list of arguments a person will read when a run behaves
-/// wrongly. What is left in this file is what happens to the answer.
+/// Both travel in the binary and are read once, when this is built.
+/// They hold content a person will tune; this file holds what happens to the answer.
 const INVOCATION: &str = include_str!("claude.json");
 const GOAL: &str = include_str!("claude-goal.txt");
 
 /// How many turns one task may take before it is cut off.
 ///
-/// A guard against a run that goes nowhere, not the ceiling section 1 names. A
-/// task's own ceiling is measured in what it consumed and is worked out from
-/// the session's budget, which is the supervisor's.
+/// A guard against a run that goes nowhere, not the ceiling section 1 names.
+/// That ceiling is measured in what a task consumed, and it is the supervisor's.
 const TURNS: &str = "200";
 
 /// How much one task may spend before it is cut off, in dollars.
 ///
-/// The same guard, against the same runaway, in the other unit. The figure the
-/// agent counts against is its own estimate.
+/// The same guard, against the same runaway, in the other unit.
+/// The figure the agent counts against is its own estimate.
 const SPEND: &str = "20";
 
 /// What the agent calls the two ceilings it stops at.
@@ -50,20 +48,14 @@ const AT_SPEND: &str = "error_max_budget";
 
 /// The format the answer arrives in.
 ///
-/// One object per line, the last of which is the answer. The lines before it
-/// are what the run did on the way, which is what a trace is made of. This
-/// stands here rather than beside the other arguments because what reads the
-/// output expects this one format, and two places holding one agreement is
-/// two places to forget.
-///
-/// The vendor refuses the format without `--verbose` when it is not talking
-/// to a person.
+/// One object per line, the last of which is the answer and the rest the trace.
+/// The vendor refuses it without `--verbose`.
 const FORMAT: [&str; 3] = ["--output-format", "stream-json", "--verbose"];
 
 /// How long a run has to end on its own before it is made to.
 ///
-/// A run commits as it goes, so there is little for it to tidy up, and
-/// whoever asked for it to stop is waiting for the command to come back.
+/// A run commits as it goes, so there is little for it to tidy up.
+/// Whoever asked for it to stop is waiting for the command to come back.
 const TIDIES_UP_IN: Duration = Duration::from_secs(2);
 
 /// Runs the agent as a child process and waits for it.
@@ -74,9 +66,8 @@ pub struct ClaudeAgent {
     goal: String,
     /// The process group each running task was given, by task.
     ///
-    /// A run is ended from whichever thread took the command that asked for
-    /// it, not from the one waiting on the run, so where to send that has to
-    /// be somewhere both can reach.
+    /// A run is ended from the thread that took the command, not the one waiting on the run.
+    /// Both have to reach this.
     running: Mutex<HashMap<String, u32>>,
 }
 
@@ -84,7 +75,8 @@ pub struct ClaudeAgent {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Invocation {
-    /// What the file says about itself. Read by people, not by this.
+    /// What the file says about itself.
+    /// Read by people, not by this.
     #[serde(rename = "_", default)]
     _about: Vec<String>,
     program: String,
@@ -94,9 +86,7 @@ struct Invocation {
 impl ClaudeAgent {
     /// Reads how the agent is invoked.
     ///
-    /// Failing here stops the daemon starting, which beats failing on every
-    /// task that arrives. The file travels in the binary, so this can only
-    /// fail on a build nobody should have made, and a test says so.
+    /// Failing here stops the daemon starting, which beats failing on every task that arrives.
     pub fn new() -> Result<Self, Unavailable> {
         let read: Invocation = serde_json::from_str(INVOCATION)
             .map_err(|e| Unavailable::new(format!("claude.json: {e}")))?;
@@ -109,11 +99,10 @@ impl ClaudeAgent {
         })
     }
 
-    /// The arguments with every place filled, and every group that holds an
-    /// empty one dropped.
+    /// The arguments with every place filled, and every group that holds an empty one dropped.
     ///
-    /// A task that named no model loses `--model` along with the value, which
-    /// is why the file groups a flag with what follows it.
+    /// A task that named no model loses `--model` along with the value.
+    /// That is why the file groups a flag with what follows it.
     fn arguments(&self, filling: &[(&str, &str)]) -> Vec<String> {
         let mut given = Vec::with_capacity(self.args.len() * 2);
 
@@ -139,14 +128,10 @@ fn fill(token: &str, filling: &[(&str, &str)]) -> String {
 
 /// What the agent counted for one model, under the names it uses.
 ///
-/// This is the per-model breakdown rather than the run's own `usage`. A run
-/// makes calls that leave no message behind, and `usage` counts only the ones
-/// that do, while the price the same answer gives covers all of them. Reading
-/// the breakdown keeps the counts and the price describing one thing.
-///
-/// No field is given a default. A vendor that renames one leaves this
-/// unreadable rather than answering that the run consumed nothing, which is
-/// what a budget would read as untouched.
+/// The per-model breakdown rather than the run's own `usage`.
+/// That counts only the calls that left a message, while the price covers all of them.
+/// No field is given a default, so a renamed one leaves this unreadable.
+/// That beats answering that the run consumed nothing.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Counted {
@@ -161,12 +146,9 @@ const MILLIONTHS: f64 = 1_000_000.0;
 
 /// What the agent said it consumed.
 ///
-/// The answer is read as a whole first, so that a figure this cannot read
-/// leaves the sentence about how the run ended where it was.
-///
-/// One run may reach for more than one model, so every model the answer names
-/// is added up. Which of the kinds count against a budget is the supervisor's,
-/// and they stay apart as far as the store.
+/// The answer is read whole before any figure is, so that one this cannot read leaves the
+/// sentence about how the run ended where it was.
+/// Every model the answer names is added up, since one run may reach for more than one.
 fn observed(answer: Option<&Value>) -> Observed {
     let Some(answer) = answer else {
         return unreadable("the agent answered with nothing this could read");
@@ -226,14 +208,13 @@ impl Agent for ClaudeAgent {
                 ("spend", SPEND),
             ]))
             .args(FORMAT)
-            // A child that inherited this could read what a surface is sending
-            // the core, and would wait on it forever if it tried.
+            // A child that inherited this could read what a surface is sending the core.
+            // It would wait on it forever if it tried.
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            // A group of its own, so that everything the run started can be
-            // ended together. An agent starts children, and those start their
-            // own; ending the one this holds leaves the rest.
+            // A group of its own.
+            // The agent starts children and those start their own, and ending only the one this holds leaves the rest.
             .process_group(0);
 
         let mut child = running
@@ -242,27 +223,25 @@ impl Agent for ClaudeAgent {
         let group = child.id();
         self.went(work.task, group);
 
-        // Both pipes are read while the child writes, so a child that writes
-        // more than a pipe holds carries on rather than stopping where it is.
-        // What comes back on the first is kept as it arrives, since whoever
-        // is watching the run reads it before the run has ended.
-        let stdout = keeping(child.stdout.take(), work.trace.to_owned());
+        // Read while the child writes, so one that outwrites a pipe carries on.
+        // A watcher also sees the trace before the run has ended.
+        let stdout = keeping(child.stdout.take(), work.trace);
         let stderr = reading(child.stderr.take());
 
         let status = child
             .wait()
             .map_err(|e| Unavailable::new(format!("{}: {e}", self.program)))?;
 
-        // Whatever the agent started outlives it and holds the writing end of
-        // those pipes. Waiting for the reading to finish before the group is
-        // gone would be waiting on a child nobody is watching.
+        // A grandchild outlives the agent holding the writing end of these pipes.
+        // The group goes before the reading is waited on.
         self.gone(work.task);
         end(group);
 
         let (stdout, stderr) = (said_by(stdout), said_by(stderr));
 
-        // Read once. How the run ended and what it consumed are two questions
-        // about one object, and one of them failing must not lose the other.
+        // Read once.
+        // How the run ended and what it consumed are two questions about one object.
+        // One of them failing must not lose the other.
         let answer = serde_json::from_slice::<Value>(&stdout).ok();
 
         let outcome = outcome_of(status.success(), answer.as_ref());
@@ -304,10 +283,8 @@ impl ClaudeAgent {
 
 /// Ends a process group, and makes sure of it.
 ///
-/// The first signal is one a process may act on. A group with nothing left in
-/// it is done there, which is every run that ended on its own. Whatever is
-/// still there after that is not going to act on it, and whoever asked for
-/// this is waiting.
+/// The first signal is one a process may act on, and a group with nothing left is done there.
+/// Whatever survives it is not going to act on it, and whoever asked is waiting.
 fn end(group: u32) {
     signal(Signal::SIGTERM, group);
     if !still_there(group) {
@@ -324,11 +301,10 @@ fn still_there(group: u32) -> bool {
 
 /// Signals a whole process group, and says whether there was one.
 ///
-/// Not through the `kill` program. The two systems this runs on disagree about
-/// what a negative number on its command line means: one reads it as the group
-/// to signal and the other as the signal to send, so on one of them nothing
-/// was signalled and nothing said so. Nothing is sent when no signal is given,
-/// which only asks whether the group is there.
+/// Not through the `kill` program.
+/// The two systems this runs on disagree about what a negative number on its command line means.
+/// On one of them nothing was signalled and nothing said so.
+/// No signal only asks.
 fn signal(with: impl Into<Option<Signal>>, group: u32) -> bool {
     let Ok(group) = i32::try_from(group) else {
         return false;
@@ -336,35 +312,25 @@ fn signal(with: impl Into<Option<Signal>>, group: u32) -> bool {
     killpg(Pid::from_raw(group), with).is_ok()
 }
 
-/// Reads what the run says on a thread of its own, keeping each line as it
-/// arrives and handing back the last one.
-///
-/// The last line is the answer. Everything before it is what the run did on
-/// the way there, which nobody waits for.
+/// Reads what the run says on a thread of its own, keeping each line as it arrives.
+/// Hands back the last one, which is the answer.
 fn keeping<R: std::io::Read + Send + 'static>(
     held: Option<R>,
-    at: String,
+    mut into: Keeping,
 ) -> thread::JoinHandle<Vec<u8>> {
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::{BufRead, BufReader};
 
     thread::spawn(move || {
         let Some(held) = held else {
             return Vec::new();
         };
-        let mut keeping = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&at)
-            .ok();
         let mut last = String::new();
 
         for line in BufReader::new(held).lines().map_while(Result::ok) {
             if line.trim().is_empty() {
                 continue;
             }
-            if let Some(keeping) = keeping.as_mut() {
-                let _ = writeln!(keeping, "{}\t{line}", now());
-            }
+            into(&line);
             last = line;
         }
         last.into_bytes()
@@ -372,15 +338,6 @@ fn keeping<R: std::io::Read + Send + 'static>(
 }
 
 /// Seconds since the epoch, for stamping a line as it arrives.
-///
-/// The vendor stamps some of its lines and not others, and a trace is read in
-/// one order however it was written.
-fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs())
-}
-
 /// Reads one of the run's pipes on a thread of its own.
 fn reading<R: std::io::Read + Send + 'static>(held: Option<R>) -> thread::JoinHandle<Vec<u8>> {
     thread::spawn(move || {
@@ -399,9 +356,8 @@ fn said_by(reading: thread::JoinHandle<Vec<u8>>) -> Vec<u8> {
 
 /// What the agent said about a run that failed.
 ///
-/// A run cut off at a guard fails with its answer on standard output and
-/// nothing on standard error, so reading the whole of that answer back would
-/// put an object nobody can read where a sentence belongs.
+/// A run cut off at a guard says nothing on standard error.
+/// Handing back the whole of its answer would put an object where a sentence belongs.
 fn said(status: &std::process::ExitStatus, stderr: &[u8], answer: Option<&Value>) -> String {
     let complained = String::from_utf8_lossy(stderr);
     let complained = complained.trim();
@@ -424,8 +380,7 @@ fn said(status: &std::process::ExitStatus, stderr: &[u8], answer: Option<&Value>
 
 /// How the run came to an end.
 ///
-/// The name the agent gives for stopping is what tells a ceiling from a
-/// failure. Which names mean what is this file's to know.
+/// The name the agent gives for stopping is what tells a ceiling from a failure.
 fn outcome_of(finished: bool, answer: Option<&Value>) -> Outcome {
     if finished {
         return Outcome::Finished;
@@ -441,8 +396,8 @@ fn outcome_of(finished: bool, answer: Option<&Value>) -> Outcome {
 
 /// A sentence for how the agent says it stopped.
 ///
-/// A run cut off at a guard answers with no text of its own, and the name it
-/// gives instead is the only thing there is to report.
+/// A run cut off at a guard answers with no text of its own.
+/// The name it gives instead is the only thing there is to report.
 fn why_for(subtype: &str) -> String {
     match subtype {
         AT_TURNS => format!("the agent was cut off after {TURNS} turns"),
@@ -460,8 +415,8 @@ mod tests {
 
     use super::*;
 
-    /// The agent that stands in for the vendor's. A shell program, kept as one
-    /// rather than as a string this file would have to escape.
+    /// The agent that stands in for the vendor's.
+    /// A shell program, kept as one rather than as a string this file would have to escape.
     const STANDING_IN: &str = include_str!("standing-agent.sh");
 
     fn standing_in(held: &TempDir) -> ClaudeAgent {
@@ -482,10 +437,8 @@ mod tests {
 
     /// Waits for the file just written to be one this may run.
     ///
-    /// Tests run beside each other, and a thread that starts a child while
-    /// another is still writing a file leaves that file open in the child.
-    /// Running a file that is open for writing is refused, so this asks until
-    /// it is not. The stand-in given no arguments does nothing and exits.
+    /// A thread that starts a child while another is writing a file leaves it open in that child.
+    /// Running a file open for writing is refused.
     fn wait_until_runnable(program: &std::path::Path) {
         for _ in 0..100 {
             let ran = Command::new(program)
@@ -500,17 +453,16 @@ mod tests {
         }
     }
 
-    /// An answer a vendor actually sent, kept as it arrived apart from a
-    /// shortened `result`. It holds the fields this file reads and a dozen it
-    /// does not, which is what makes a test say that a vendor adding one
-    /// changes nothing.
+    /// An answer a vendor actually sent, kept as it arrived apart from a shortened `result`.
+    ///
+    /// It holds the fields this file reads and a dozen it does not.
+    /// That is what makes a test say that a vendor adding one changes nothing.
     const AN_ANSWER: &str = include_str!("claude-answer.json");
 
     /// The answer with something about it changed.
     ///
-    /// The object is edited rather than its text, so that a fixture kept as a
-    /// vendor sent it can be reshaped without a test knowing how it is laid
-    /// out.
+    /// The object rather than its text.
+    /// A fixture kept as the vendor sent it can then be reshaped without a test knowing its layout.
     fn answer_with(change: impl FnOnce(&mut Value)) -> String {
         let mut answer: Value = serde_json::from_str(AN_ANSWER).unwrap();
         change(&mut answer);
@@ -519,11 +471,10 @@ mod tests {
 
     /// A shell command that answers with `written` and nothing else.
     ///
-    /// Written to a file and read back rather than quoted into the command, so
-    /// that an answer can be kept as an object a person can read.
+    /// Written to a file and read back rather than quoted into the command.
+    /// That way an answer can be kept as an object a person can read.
     fn answering(held: &TempDir, written: &str) -> String {
-        // One line, as the vendor writes it. The file it comes from is laid
-        // out for a person to read.
+        // One line, as the vendor writes it.
         let one: Value = serde_json::from_str(written).unwrap();
         let at = held.path().join("answer.json");
         fs::write(&at, one.to_string()).unwrap();
@@ -538,16 +489,14 @@ mod tests {
         Work {
             task: "1",
             at,
-            // Kept beside the work area, so a test that looks at what was
-            // written knows where to look.
-            trace: TRACE.get_or_init(|| format!("{at}/trace.jsonl")),
+            // Kept beside the work area, so a test that looks at what was written knows where to look.
+            trace: Box::new(|_line: &str| {}),
             instruction,
             model: None,
         }
     }
 
     /// Where the stand-in's runs keep what they wrote.
-    static TRACE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
     #[test]
     fn an_agent_that_finished_is_answered_as_done() {
@@ -583,9 +532,8 @@ mod tests {
         );
     }
 
-    /// The run's own `usage` counts only the calls that left a message behind,
-    /// and this answer shows the gap: 3182 against 3377. Reading it would put a
-    /// count beside a price that covers more than the count does.
+    /// The run's own `usage` counts only the calls that left a message behind.
+    /// This answer shows the gap: 3182 against 3377.
     #[test]
     fn what_a_run_counted_is_more_than_the_calls_that_left_a_message() {
         let held = TempDir::new().unwrap();
@@ -602,8 +550,7 @@ mod tests {
         assert_ne!(spent.output, "3182");
     }
 
-    /// A run may reach for more than one model, and the four kinds are the sum
-    /// over all of them.
+    /// A run may reach for more than one model, and the four kinds are the sum over all of them.
     #[test]
     fn a_run_that_reached_for_two_models_counts_both() {
         let held = TempDir::new().unwrap();
@@ -631,13 +578,13 @@ mod tests {
         assert_eq!(spent.cache_read, "263487");
     }
 
-    /// A vendor that renames a field would otherwise report a run that spent a
-    /// hundred thousand tokens as having spent none.
+    /// A vendor that renames a field would otherwise hide what a run spent.
+    /// It would report a run that spent a hundred thousand tokens as having spent none.
     #[test]
     fn a_count_under_a_name_this_does_not_know_is_not_a_count_of_nothing() {
         let held = TempDir::new().unwrap();
-        // One of the four, so that what is caught is a name this does not
-        // know rather than an answer that lost its whole count.
+        // One of the four, so what is caught is a name this does not know.
+        // It is not an answer that lost its whole count.
         let renamed = answer_with(|answer| {
             let counted = &mut answer["modelUsage"]["claude-haiku-4-5-20251001"];
             counted["tokensIn"] = counted["inputTokens"].take();
@@ -676,13 +623,12 @@ mod tests {
         assert!(matches!(ended.observed, Observed::Unreadable { .. }));
     }
 
-    /// A run that was cut off still consumed what it consumed, and how it ended
-    /// is read out of the same answer as what it spent.
+    /// A run that was cut off still consumed what it consumed.
+    /// How it ended is read out of the same answer as what it spent.
     #[test]
     fn a_run_that_failed_still_reports_what_it_consumed() {
         let held = TempDir::new().unwrap();
-        // A run cut off at a guard names what stopped it and answers with no
-        // text of its own.
+        // A run cut off at a guard names what stopped it and answers with no text of its own.
         let cut_off = answer_with(|answer| {
             answer["subtype"] = json!("error_max_turns");
             answer["result"] = Value::Null;
@@ -716,8 +662,7 @@ mod tests {
         assert_eq!(ended.reason.as_deref(), Some("it went wrong"));
     }
 
-    /// The child stops where it is when nobody reads what it writes, and a task
-    /// that stops there never ends.
+    /// The child stops where it is when nobody reads what it writes, and a task that stops there never ends.
     #[test]
     fn a_child_that_writes_more_than_a_pipe_holds_still_finishes() {
         let held = TempDir::new().unwrap();
@@ -731,8 +676,7 @@ mod tests {
         assert_eq!(ended.outcome, Outcome::Finished, "{ended:?}");
     }
 
-    /// The agent runs where the task's work area is, not where the core was
-    /// started.
+    /// The agent runs where the task's work area is, not where the core was started.
     #[test]
     fn the_agent_runs_in_the_work_area_it_was_given() {
         let held = TempDir::new().unwrap();
@@ -749,8 +693,8 @@ mod tests {
         assert!(at.join("it-ran-here.txt").exists());
     }
 
-    /// The command has to lead the prompt. Anywhere else it is read as
-    /// ordinary text and nothing gates the end of the task.
+    /// The command has to lead the prompt.
+    /// Anywhere else it is read as ordinary text and nothing gates the end of the task.
     #[test]
     fn the_prompt_leads_with_the_goal_and_the_instruction_follows_it() {
         let held = TempDir::new().unwrap();
@@ -763,8 +707,8 @@ mod tests {
         assert!(asked.ends_with("\n\nexit 0"), "{asked}");
     }
 
-    /// A run cut off at a guard says nothing of its own, so the name it gives
-    /// instead has to become a sentence rather than the whole answer.
+    /// A run cut off at a guard says nothing of its own.
+    /// The name it gives instead has to become a sentence rather than the whole answer.
     #[test]
     fn a_run_that_was_cut_off_is_reported_as_a_sentence() {
         let held = TempDir::new().unwrap();
@@ -782,8 +726,7 @@ mod tests {
         );
     }
 
-    /// A run that failed with something to say says it, rather than handing
-    /// back the object it was written in.
+    /// A run that failed with something to say says it, rather than handing back the object it was written in.
     #[test]
     fn a_run_that_answered_is_reported_in_its_own_words() {
         let held = TempDir::new().unwrap();
@@ -797,8 +740,8 @@ mod tests {
         assert_eq!(ended.reason.as_deref(), Some("I could not build it"));
     }
 
-    /// The file travels in the binary, so a build that broke it would fail
-    /// every task. This is what keeps that from reaching one.
+    /// The file travels in the binary, so a build that broke it would fail every task.
+    /// This is what keeps that from reaching one.
     #[test]
     fn the_invocation_that_ships_is_readable_and_holds_the_places_it_must() {
         let agent = ClaudeAgent::new().unwrap();
@@ -811,8 +754,8 @@ mod tests {
         }
     }
 
-    /// A group holding a place nobody filled goes whole, so a task that named
-    /// no model does not hand the agent a flag with nothing after it.
+    /// A group holding a place nobody filled goes whole.
+    /// A task that named no model does not hand the agent a flag with nothing after it.
     #[test]
     fn a_place_nobody_filled_takes_its_flag_with_it() {
         let agent = ClaudeAgent::new().unwrap();
@@ -838,9 +781,7 @@ mod tests {
         assert!(unnamed.contains(&"--max-turns".to_owned()), "{unnamed:?}");
     }
 
-    /// An agent that leaves something of its own behind. Ending the agent
-    /// alone leaves that holding the pipe this reads, and reading it to the
-    /// end would never finish.
+    /// A run still answers when the agent leaves a child of its own behind.
     #[test]
     fn a_run_that_left_a_child_behind_still_answers() {
         let held = TempDir::new().unwrap();

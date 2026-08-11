@@ -1,12 +1,6 @@
 //! What answers the ports the core requires.
 
-pub mod agent;
-pub mod backlog;
+pub mod claude;
 pub mod clock;
-pub mod configuration;
-pub mod limit;
-pub mod repository;
-pub mod result;
-pub mod session;
-pub mod trace;
-pub mod worktree;
+pub mod file;
+pub mod git;

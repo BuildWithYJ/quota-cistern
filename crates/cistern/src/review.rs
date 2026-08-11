@@ -1,8 +1,7 @@
 //! The `diff` command and the three that dispose of a result.
 //!
-//! What was typed goes to the core as it was given. Whether a task exists and
-//! whether its result may be applied are the core's to decide, so this file
-//! judges neither.
+//! What was typed goes to the core as it was given.
+//! Whether a task exists and whether its result may be applied are the core's to decide, so this file judges neither.
 
 use std::process::ExitCode;
 
@@ -36,9 +35,8 @@ pub fn diff(task: &str, stat: bool) -> ExitCode {
     let files = array(&answer, "files");
     let patch = answer.get("patch").and_then(Value::as_str).unwrap_or("");
 
-    // Section 2.3 says an empty diff is a failure, and says what to print for
-    // it. Both halves of that are here, because the core was not asked a
-    // question it could refuse.
+    // Section 2.3 makes an empty diff a failure and says what to print.
+    // The core was not asked a question it could refuse, so both are here.
     if files.is_empty() && patch.trim().is_empty() {
         println!("(no changes)");
         return ExitCode::from(GENERAL_FAILURE);
@@ -125,8 +123,8 @@ fn waiting(data: &Value) {
 
 /// What is on the branch, at the end of the line section 2.4 prints.
 ///
-/// A branch the user deleted leaves no counts. The task is still listed, since
-/// it was still registered, and this says why its counts are missing.
+/// A branch the user deleted leaves no counts.
+/// The task is still listed, since it was still registered.
 fn standing(item: &Value) -> String {
     let Some(commits) = count(item, "commit_count") else {
         return "(branch not there)".to_owned();
@@ -186,8 +184,8 @@ fn dropped(data: &Value) {
 
 /// How wide the bar beside a file may grow.
 ///
-/// The longest file fills it and the rest are drawn to scale, so a file that
-/// changed twice as much is twice as long whatever the numbers are.
+/// The longest file fills it and the rest are drawn to scale.
+/// A file that changed twice as much is twice as long, whatever the numbers are.
 const BAR: u64 = 40;
 
 /// The per-file summary section 2.3 prints for `--stat`.
@@ -236,8 +234,8 @@ fn summarised(files: &[&Value]) {
 /// The bar git draws beside a file, scaled so the widest one fits.
 fn bar(added: u64, removed: u64, most: u64) -> String {
     let scaled = |count: u64| match most > BAR {
-        // A file that changed anything keeps at least one mark, so that a
-        // small change beside a large one does not disappear.
+        // A file that changed anything keeps at least one mark.
+        // A small change beside a large one does not disappear.
         true => match count {
             0 => 0,
             count => (count * BAR / most).max(1),
@@ -352,8 +350,7 @@ mod tests {
         assert_eq!(bar(40, 40, 80).len(), BAR as usize);
     }
 
-    /// A file that changed anything keeps a mark, however small it is beside
-    /// the largest one.
+    /// A file that changed anything keeps a mark, however small it is beside the largest one.
     #[test]
     fn the_smallest_change_does_not_disappear() {
         assert_eq!(bar(1, 0, 4_000), "+");

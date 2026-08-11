@@ -1,7 +1,7 @@
 //! Where a repository begins.
 //!
-//! The only place that knows what marks one. That knowledge does not reach the
-//! core.
+//! The only place that knows what marks one.
+//! That knowledge does not reach the core.
 
 use std::path::{Path, PathBuf};
 
@@ -12,8 +12,8 @@ pub struct GitRoots;
 
 impl RepositoryRoots for GitRoots {
     fn root_of(&self, from: &str) -> Result<Option<String>, Unavailable> {
-        // Resolved first, so that what is stored does not depend on where the
-        // surface happened to be when it built the request.
+        // Resolved first.
+        // That way, what is stored does not depend on where the surface happened to be when it built the request.
         let start =
             std::fs::canonicalize(from).map_err(|e| Unavailable::new(format!("{from}: {e}")))?;
         Ok(root_above(&start).map(|root| root.display().to_string()))
@@ -22,10 +22,8 @@ impl RepositoryRoots for GitRoots {
 
 /// The nearest directory at or above this one that holds `.git`.
 ///
-/// `.git` is a file rather than a directory in a worktree and in a submodule.
-/// Either way the directory is a repository, so what it is does not matter
-/// here. Worktrees are how each task will get a work area of its own, so this
-/// is not a corner case for long.
+/// In a worktree and in a submodule that is a file rather than a directory.
+/// Either way the directory is a repository, so which it is does not matter.
 fn root_above(start: &Path) -> Option<PathBuf> {
     start
         .ancestors()
@@ -41,8 +39,8 @@ mod tests {
 
     use super::*;
 
-    /// A directory with `.git` in it. git is never run, so nothing has to be a
-    /// real repository for this to be answered.
+    /// A directory with `.git` in it.
+    /// git is never run, so nothing has to be a real repository for this to be answered.
     fn a_repository() -> TempDir {
         let dir = TempDir::new().unwrap();
         fs::create_dir(dir.path().join(".git")).unwrap();
@@ -78,8 +76,7 @@ mod tests {
         assert_eq!(root_of(dir.path()), Some(resolved(dir.path())));
     }
 
-    /// A temporary directory is not inside a repository, which is what makes it
-    /// usable for this.
+    /// A temporary directory is not inside a repository, which is what makes it usable for this.
     #[test]
     fn somewhere_that_belongs_to_no_repository_answers_with_nothing() {
         let dir = TempDir::new().unwrap();

@@ -1,8 +1,8 @@
 //! What a session store hands over, and what goes back to it.
 //!
-//! The same job `service::backlog` does for the backlog. The two stay apart
-//! because neither store knows what the other holds, and both are read by more
-//! than one command group.
+//! The same job `service::backlog` does for the backlog.
+//! The two stay apart because neither store knows what the other holds.
+//! Both are read by more than one command group.
 
 use crate::core::{
     domain::{Budget, Held, NotASessionSet, Sessions, Span, Spending, Usage},
@@ -23,10 +23,8 @@ pub fn read(store: &dyn SessionStore) -> Result<Sessions, Refusal> {
 
 /// Reads the sessions and holds them to the same standard as an argument.
 ///
-/// Nobody is meant to write this file, so a set that does not add up is a store
-/// this core cannot use rather than something the user typed wrong. This is
-/// what `service::backlog` does for the backlog, and the two stay apart because
-/// neither store knows what the other holds.
+/// Nobody is meant to write this file.
+/// A set that does not add up is a store this core cannot use rather than something the user typed wrong.
 pub fn read_from(stored: StoredSessions) -> Result<Sessions, Refusal> {
     let next_id = stored
         .next_id
@@ -80,9 +78,9 @@ fn held_from(one: StoredSession) -> Result<Held, Refusal> {
 
 /// What a session has consumed, in the unit its declaration is written in.
 ///
-/// The unit is not stored beside the figure. It follows from the declaration,
-/// so a store holding a share against a count of tokens is not a thing that
-/// can be written.
+/// The unit is not stored beside the figure.
+/// It follows from the declaration.
+/// A store holding a share against a count of tokens is not a thing that can be written.
 fn spending(field: &str, consumed: &str, usage: &str) -> Result<Spending, Refusal> {
     let counted = consumed.parse().map_err(|_| unreadable(field, consumed))?;
     match Usage::parse(usage) {
@@ -124,8 +122,7 @@ fn written(sessions: &Sessions) -> StoredSessions {
     }
 }
 
-/// Reads the sessions, changes them, and writes them back as one step, for the
-/// reason `service::backlog` gives.
+/// Reads the sessions, changes them, and writes them back as one step, for the reason `service::backlog` gives.
 pub fn change<T>(
     store: &dyn SessionStore,
     with: impl FnOnce(&mut Sessions) -> Result<T, Refusal>,

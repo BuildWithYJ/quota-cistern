@@ -1,15 +1,9 @@
 //! The backlog file.
 //!
-//! The only place that knows the path and the file format. Neither reaches the
-//! core.
+//! The only place that knows the path and the file format.
+//! Neither reaches the core.
 
-use std::{
-    env,
-    ffi::OsString,
-    fs, io,
-    path::{Path, PathBuf},
-    sync::{Mutex, PoisonError},
-};
+use std::{env, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,22 +12,24 @@ use crate::core::port::outbound::{
     BacklogStore, StoredBacklog, StoredConsumption, StoredTask, Unavailable,
 };
 
+use super::{
+    kept::Kept,
+    {as_number, as_optional, as_text, as_value},
+};
+
 /// The backlog, kept as JSON at a path fixed when this is built.
 pub struct FileBacklog {
-    path: PathBuf,
-    /// Held from the read to the write that follows it, so that two tasks
-    /// recording their state at the same moment do not write over each other.
-    writing: Mutex<()>,
+    kept: Kept,
 }
 
-/// The file, as JSON sees it.
+/// The whole file, as JSON sees it.
 ///
-/// A value is held as whatever JSON found rather than as what the field is
-/// supposed to take. Which values a field takes is the core's to decide, so a
-/// file holding the wrong sort of one reaches it and is refused there.
+/// A value is held as whatever JSON found rather than as what the field is supposed to take.
+/// Which values a field takes is the core's to decide.
+/// A file holding the wrong sort of one reaches it and is refused there.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Document {
+struct Written {
     next_id: Value,
     tasks: Vec<Entry>,
 }
@@ -68,9 +64,9 @@ struct Entry {
 
 /// What a task consumed, as the file holds it.
 ///
-/// An object of its own rather than five fields beside the others, so that a
-/// task that never ran carries no counts at all and a reader can see which of
-/// the three states a task is in without comparing five keys.
+/// An object of its own rather than five fields beside the others.
+/// That way a task that never ran carries no counts at all.
+/// A reader can see which of the three states a task is in without comparing five keys.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Counted {
@@ -81,94 +77,36 @@ struct Counted {
     cost: Value,
 }
 
+/// What the file is called where `docs/cli.md` says it is kept.
+const NAMED: &str = "backlog.json";
+
 impl FileBacklog {
-    /// Takes the path it is given. This is how a test reaches a temporary one.
+    /// Takes the path it is given.
+    /// This is how a test reaches a temporary one.
     pub fn at(path: PathBuf) -> Self {
         FileBacklog {
-            path,
-            writing: Mutex::new(()),
+            kept: Kept::at(path),
         }
     }
 
     /// The path `docs/cli.md` names, or nothing when there is nowhere for it.
     pub fn in_data_home() -> Option<Self> {
-        path_of(env::var_os("XDG_DATA_HOME"), env::var_os("HOME")).map(FileBacklog::at)
+        Kept::in_data_home(env::var_os("XDG_DATA_HOME"), env::var_os("HOME"), NAMED)
+            .map(FileBacklog::at)
     }
-
-    fn failing(&self, e: impl std::fmt::Display) -> Unavailable {
-        Unavailable::new(format!("{}: {e}", self.path.display()))
-    }
-}
-
-/// `$XDG_DATA_HOME/cistern/backlog.json`, or
-/// `~/.local/share/cistern/backlog.json`.
-///
-/// Data rather than state, because the XDG specification keeps state for what
-/// is not worth carrying between machines, and a task a user registered is not
-/// that.
-///
-/// The two are arguments rather than reads, so that the choice between them can
-/// be tested without setting a variable the whole process sees.
-fn path_of(data_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
-    let base = match data_home {
-        Some(dir) => PathBuf::from(dir),
-        None => PathBuf::from(home?).join(".local").join("share"),
-    };
-    Some(base.join("cistern").join("backlog.json"))
-}
-
-/// The text a user would have typed for what JSON holds.
-///
-/// A string keeps its contents; everything else is rendered as the file writes
-/// it, so a number, a boolean, and an object all reach the core as something it
-/// can read and refuse.
-fn as_text(value: Value) -> String {
-    match value {
-        Value::String(text) => text,
-        other => other.to_string(),
-    }
-}
-
-/// A field that may be absent. JSON null and a missing key mean the same here.
-fn as_optional(value: Value) -> Option<String> {
-    match value {
-        Value::Null => None,
-        other => Some(as_text(other)),
-    }
-}
-
-/// A number as the file holds one.
-///
-/// What the file looks like is this module's business, so an identifier goes
-/// back as a JSON number rather than as the text the core handed over. Text
-/// that is not one is written as it stands, since the core refuses such a value
-/// long before it reaches here.
-fn as_number(text: &str) -> Value {
-    match text.parse::<u64>() {
-        Ok(number) => Value::from(number),
-        Err(_) => Value::String(text.to_owned()),
-    }
-}
-
-fn as_value(text: Option<String>) -> Value {
-    text.map_or(Value::Null, Value::String)
 }
 
 impl FileBacklog {
     fn read(&self) -> Result<StoredBacklog, Unavailable> {
-        let written = match fs::read_to_string(&self.path) {
-            Ok(written) => written,
-            // Nothing registered yet. Any other read failure is worth saying.
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                return Ok(StoredBacklog {
-                    next_id: "1".to_owned(),
-                    tasks: Vec::new(),
-                });
-            }
-            Err(e) => return Err(self.failing(e)),
+        // Nothing registered yet is an empty backlog rather than a failure.
+        let Some(written) = self.kept.read()? else {
+            return Ok(StoredBacklog {
+                next_id: "1".to_owned(),
+                tasks: Vec::new(),
+            });
         };
 
-        let document: Document = serde_json::from_str(&written).map_err(|e| self.failing(e))?;
+        let document: Written = serde_json::from_str(&written).map_err(|e| self.kept.failing(e))?;
         Ok(StoredBacklog {
             next_id: as_text(document.next_id),
             tasks: document
@@ -200,10 +138,8 @@ impl FileBacklog {
         })
     }
 
-    /// Writes beside the file and renames it into place, for the reason
-    /// `adapter::settings` gives.
     fn write(&self, backlog: &StoredBacklog) -> Result<(), Unavailable> {
-        let document = Document {
+        let document = Written {
             next_id: as_number(&backlog.next_id),
             tasks: backlog
                 .tasks
@@ -232,10 +168,8 @@ impl FileBacklog {
                 })
                 .collect(),
         };
-        let written = serde_json::to_string_pretty(&document).map_err(|e| self.failing(e))?;
-
-        let staged = self.path.with_extension("json.new");
-        replace(&self.path, &staged, &written).map_err(|e| self.failing(e))
+        let written = serde_json::to_string_pretty(&document).map_err(|e| self.kept.failing(e))?;
+        self.kept.write(&written)
     }
 }
 
@@ -248,9 +182,7 @@ impl BacklogStore for FileBacklog {
         &self,
         change: &mut dyn FnMut(&mut StoredBacklog) -> bool,
     ) -> Result<(), Unavailable> {
-        // A thread that panicked under this lock left the file alone, since the
-        // write is the last thing that happens under it.
-        let _writing = self.writing.lock().unwrap_or_else(PoisonError::into_inner);
+        let _writing = self.kept.holding();
 
         let mut backlog = self.read()?;
         match change(&mut backlog) {
@@ -260,26 +192,13 @@ impl BacklogStore for FileBacklog {
     }
 }
 
-fn replace(path: &Path, staged: &Path, written: &str) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    if let Err(e) = fs::write(staged, written) {
-        let _ = fs::remove_file(staged);
-        return Err(e);
-    }
-    fs::rename(staged, path)
-}
-
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use tempfile::TempDir;
 
     use super::*;
-
-    fn some(s: &str) -> Option<OsString> {
-        Some(OsString::from(s))
-    }
 
     fn in_a_temporary_directory() -> (TempDir, FileBacklog) {
         let dir = TempDir::new().unwrap();
@@ -313,8 +232,7 @@ mod tests {
         }
     }
 
-    /// Puts a backlog in place, which is what a change does when it replaces
-    /// everything it was handed.
+    /// Puts a backlog in place, which is what a change does when it replaces everything it was handed.
     fn put(tasks: &FileBacklog, backlog: &StoredBacklog) {
         tasks
             .update(&mut |held| {
@@ -324,25 +242,12 @@ mod tests {
             .unwrap();
     }
 
+    /// Where the file goes is `kept`'s; which file it is belongs here.
     #[test]
-    fn the_data_directory_wins() {
-        assert_eq!(
-            path_of(some("/x/.share"), some("/home/a")),
-            Some(PathBuf::from("/x/.share/cistern/backlog.json"))
-        );
-    }
-
-    #[test]
-    fn home_stands_in_where_there_is_no_data_directory() {
-        assert_eq!(
-            path_of(None, some("/home/a")),
-            Some(PathBuf::from("/home/a/.local/share/cistern/backlog.json"))
-        );
-    }
-
-    #[test]
-    fn neither_leaves_nowhere_to_put_it() {
-        assert_eq!(path_of(None, None), None);
+    fn the_backlog_is_the_file_section_two_one_names() {
+        let path =
+            Kept::in_data_home(Some(std::ffi::OsString::from("/x/.share")), None, NAMED).unwrap();
+        assert_eq!(path, PathBuf::from("/x/.share/cistern/backlog.json"));
     }
 
     #[test]
@@ -381,8 +286,8 @@ mod tests {
         assert!(tasks.load().is_err());
     }
 
-    /// Which values a field takes is the core's to decide, so a file holding
-    /// the wrong sort of one has to arrive rather than fail on the way.
+    /// Which values a field takes is the core's to decide.
+    /// A file holding the wrong sort of one has to arrive rather than fail on the way.
     #[test]
     fn a_value_of_another_type_reads_as_the_text_it_was_written_as() {
         let (dir, tasks) = in_a_temporary_directory();
@@ -414,8 +319,7 @@ mod tests {
         assert_eq!(read.tasks[0].branch, None);
     }
 
-    /// A number crosses the port as text and goes back as a number, so the file
-    /// stays JSON a person would have written.
+    /// A number crosses the port as text and goes back as a number, so the file stays JSON a person would have written.
     #[test]
     fn identifiers_go_back_into_the_file_as_numbers() {
         let (dir, tasks) = in_a_temporary_directory();
@@ -438,9 +342,9 @@ mod tests {
         assert!(written.contains("\"after\": 1"), "{written}");
     }
 
-    /// The figures are numbers, and a task that never ran carries neither the
-    /// object nor the reason. That is what tells the three states apart in a
-    /// file a person reads.
+    /// The figures are numbers, and a task that never ran carries neither the object nor the reason.
+    ///
+    /// That is what tells the three states apart in a file a person reads.
     #[test]
     fn what_a_task_consumed_goes_back_into_the_file_as_numbers() {
         let (dir, tasks) = in_a_temporary_directory();
@@ -496,8 +400,8 @@ mod tests {
         );
     }
 
-    /// A task registered before this core counted anything has neither key, and
-    /// a file written by an older one still reads.
+    /// A task registered before this core counted anything has neither key.
+    /// A file written by an older one still reads.
     #[test]
     fn a_task_with_no_count_at_all_writes_neither_key() {
         let (dir, tasks) = in_a_temporary_directory();
@@ -515,8 +419,8 @@ mod tests {
         assert!(!dir.path().join("backlog.json.new").exists());
     }
 
-    /// A refused command reads the backlog and changes nothing, and the file it
-    /// read should be the file that is still there.
+    /// A refused command reads the backlog and changes nothing.
+    /// The file it read should be the file that is still there.
     #[test]
     fn a_change_that_changed_nothing_leaves_the_file_where_it_was() {
         let (dir, tasks) = in_a_temporary_directory();
@@ -535,9 +439,9 @@ mod tests {
         assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
     }
 
-    /// Two tasks ending at the same moment both record their state. Reading and
-    /// writing as two calls would let the later write drop the earlier one, so
-    /// this counts what survived.
+    /// Two tasks ending at the same moment both record their state.
+    ///
+    /// Reading and writing as two calls would let the later write drop the earlier one, so this counts what survived.
     #[test]
     fn two_writers_at_once_do_not_write_over_each_other() {
         let (_dir, tasks) = in_a_temporary_directory();

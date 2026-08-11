@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// The release version this build carries.
+///
 /// A surface sends it on every request and the core compares it with its own.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -25,11 +26,13 @@ pub struct Request {
     #[serde(rename = "type")]
     pub command: String,
     /// The command's arguments.
+    ///
     /// What belongs here is the argument table in that command's section of `docs/cli.md`.
     pub params: Value,
 }
 
 /// A message from the core to a surface.
+///
 /// A response of more than one line carries one of these per line.
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
@@ -66,6 +69,7 @@ pub struct Answer {
     #[serde(rename = "type")]
     pub command: String,
     /// The command's output fields.
+    ///
     /// What belongs here is the output table in that command's section of `docs/cli.md`.
     pub data: Value,
 }
@@ -73,10 +77,12 @@ pub struct Answer {
 /// The core refused or failed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Failure {
-    /// Always `error`. It is what tells a failure from an answer.
+    /// Always `error`.
+    /// It is what tells a failure from an answer.
     #[serde(rename = "type")]
     pub kind: FailureTag,
-    /// An exit code from `docs/cli.md`. The surface exits with it.
+    /// An exit code from `docs/cli.md`.
+    /// The surface exits with it.
     pub code: u8,
     /// What went wrong, in one sentence.
     pub message: String,
@@ -105,6 +111,7 @@ impl Failure {
 }
 
 /// The `type` of a [`Failure`].
+///
 /// Holding one value is what makes it refuse to deserialize from anything else.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum FailureTag {

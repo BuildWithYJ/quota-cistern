@@ -2,29 +2,19 @@
 
 use super::Unavailable;
 
-/// The configuration as a store holds it: text, not entities.
-///
-/// A store cannot name an entity, and the core would not trust it to. Every
-/// key crosses as the text a user would have typed for it, whatever a store
-/// kept it as, so what comes back meets the same parse an argument does and a
-/// file edited by hand is refused the same way a bad argument is.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct StoredConfiguration {
-    pub vendor: Option<String>,
-}
-
 /// Where the configuration is kept between runs.
+///
+/// Every key crosses as the text a user would have typed, and a key nobody has heard of
+/// crosses too.
+/// Which keys exist is section 2.5's, so a store that refused one first would answer for a
+/// file with a code the specification gives to something else.
 pub trait ConfigurationStore: Sync {
-    /// Reads what is stored.
+    /// Every key the file holds, in the order it holds them.
     ///
-    /// Nothing stored is an empty configuration rather than a failure, since
-    /// `config get` has to answer before anyone has set anything. Telling that
-    /// apart from a store that cannot be read is the implementation's job.
-    fn load(&self) -> Result<StoredConfiguration, Unavailable>;
+    /// Nothing stored is an empty configuration rather than a failure.
+    /// `config get` has to answer before anyone has set anything.
+    fn load(&self) -> Result<Vec<(String, String)>, Unavailable>;
 
-    /// Writes the whole configuration.
-    ///
-    /// The whole of it, so that merging one key into what is already there
-    /// stays in the core and the implementation never learns the shape.
-    fn store(&self, stored: &StoredConfiguration) -> Result<(), Unavailable>;
+    /// Writes the whole configuration, so that merging one key into what is already there stays in the core.
+    fn store(&self, stored: &[(String, String)]) -> Result<(), Unavailable>;
 }

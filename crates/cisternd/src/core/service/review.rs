@@ -18,9 +18,9 @@ pub struct ReviewService<'a> {
 
 /// The three names a question about a result takes.
 ///
-/// The base is worked out from what the task was registered with and the branch
-/// from its number, so neither is a value anything holds. They are gathered here
-/// so that what crosses the port can borrow them.
+/// The base is worked out from what the task was registered with and the branch from its number.
+/// Neither is a value anything holds.
+/// They are gathered here so that what crosses the port can borrow them.
 struct Lies {
     repository: String,
     base: String,
@@ -59,9 +59,9 @@ impl<'a> ReviewService<'a> {
 
     /// Why a result could not be read.
     ///
-    /// A branch that is not there and a repository that is not there are told
-    /// apart here, because one is a branch the user deleted and the other is a
-    /// repository they moved, and the two are put right differently.
+    /// A branch that is not there and a repository that is not there are told apart here.
+    /// One is a branch the user deleted and the other is a repository they moved.
+    /// The two are put right differently.
     fn unreadable(&self, lies: &Lies) -> Refusal {
         match self.results.reachable(&lies.repository) {
             Err(_) => Refusal::NoRepository {
@@ -81,8 +81,8 @@ impl ReviewUseCase for ReviewService<'_> {
         let backlog = read(self.tasks)?;
         let task = held(&backlog, wanted)?;
 
-        // A task that was never assigned has no branch, and section 2.3 gives
-        // that the same answer as a branch holding nothing: no changes.
+        // A task that was never assigned has no branch.
+        // Section 2.3 gives that the same answer as a branch holding nothing: no changes.
         let Some(branch) = task.result_branch() else {
             return Ok(Difference {
                 base: task.base_branch(),
@@ -107,13 +107,12 @@ impl ReviewUseCase for ReviewService<'_> {
 
         let mut items = Vec::new();
         for task in backlog.awaiting_review() {
-            // Read rather than insisted on: a branch the user deleted leaves
-            // this task without counts, and the rest of the queue still has to
-            // be listed.
+            // Read rather than insisted on: a deleted branch leaves this task without counts.
+            // It still has to be listed.
             let lies = task.result_branch().map(|branch| Lies::of(task, branch));
-            let changes = lies
+            let counts = lies
                 .as_ref()
-                .and_then(|lies| self.results.changes(lies.asked()));
+                .and_then(|lies| self.results.counts(lies.asked()));
 
             items.push(Awaiting {
                 id: task.id().labelled(),
@@ -121,8 +120,8 @@ impl ReviewUseCase for ReviewService<'_> {
                 session: task.session().map(|id| id.labelled()),
                 branch: lies.map(|lies| lies.branch),
                 state: task.state().to_string(),
-                commit_count: changes.as_ref().and_then(|it| count(&it.commits)),
-                base_ahead: changes.as_ref().and_then(|it| count(&it.base_ahead)),
+                commit_count: counts.as_ref().and_then(|it| count(&it.commits)),
+                base_ahead: counts.as_ref().and_then(|it| count(&it.base_ahead)),
             });
         }
         Ok(Queue { items })
@@ -131,8 +130,7 @@ impl ReviewUseCase for ReviewService<'_> {
     fn apply(&self, id: &str) -> Result<Taken, Refusal> {
         let wanted = identifier(id)?;
 
-        // The whole of it is one change to the store, so a refusal leaves the
-        // backlog holding what it held.
+        // The whole of it is one change to the store, so a refusal leaves the backlog holding what it held.
         change(self.tasks, |backlog| {
             let task = held(backlog, wanted)?;
             let lies = Lies::of(task, ended(task, wanted)?);
@@ -178,8 +176,7 @@ impl ReviewUseCase for ReviewService<'_> {
 
 /// The branch a task's result is on, for a task whose run is over.
 ///
-/// Section 2.4 refuses to dispose of a run that has not ended, and every task
-/// that has ended carries a branch.
+/// Section 2.4 refuses to dispose of a run that has not ended, and every task that has ended carries a branch.
 fn ended(task: &Task, wanted: TaskId) -> Result<String, Refusal> {
     task.state()
         .ended()
@@ -218,8 +215,8 @@ fn identifier(id: &str) -> Result<TaskId, Refusal> {
 
 /// Per-file counts, read from the text they crossed as.
 ///
-/// git counts no lines in a binary file and writes a dash where a number would
-/// be, so a count that is not a number is absent rather than wrong.
+/// git counts no lines in a binary file and writes a dash where a number would be.
+/// A count that is not a number is absent rather than wrong.
 fn counted(files: Vec<Touched>) -> Vec<Changed> {
     files
         .into_iter()
@@ -239,7 +236,7 @@ fn count(written: &str) -> Option<u64> {
 mod tests {
     use std::sync::Mutex;
 
-    use crate::core::port::outbound::{StoredBacklog, StoredTask, Unavailable};
+    use crate::core::port::outbound::{Commit, Counts, StoredBacklog, StoredTask, Unavailable};
 
     use super::*;
 
@@ -297,10 +294,10 @@ mod tests {
 
     /// A repository that answers, standing in for git.
     ///
-    /// What it was asked is kept, so a test can show that the base and the
-    /// branch reached it as the task holds them.
+    /// What it was asked is kept, so a test can show that the base and the branch reached it as the task holds them.
     struct Repository {
         changes: Option<Changes>,
+        counts: Option<Counts>,
         applies: Option<NotApplied>,
         reachable: bool,
         asked: Mutex<Vec<String>>,
@@ -316,6 +313,8 @@ mod tests {
                         removed: "3".to_owned(),
                     }],
                     patch: "diff --git a b".to_owned(),
+                }),
+                counts: Some(Counts {
                     commits: "3".to_owned(),
                     base_ahead: "2".to_owned(),
                 }),
@@ -330,6 +329,7 @@ mod tests {
         fn holding_nothing() -> Self {
             Repository {
                 changes: None,
+                counts: None,
                 ..Default::default()
             }
         }
@@ -343,9 +343,21 @@ mod tests {
     }
 
     impl Results for Repository {
+        fn made(&self, _between: Between<'_>) -> Option<Vec<Commit>> {
+            Some(Vec::new())
+        }
+
+        fn counts(&self, between: Between<'_>) -> Option<Counts> {
+            self.asked.lock().unwrap().push(format!(
+                "counts {} {}..{}",
+                between.repository, between.base, between.branch
+            ));
+            self.counts.clone()
+        }
+
         fn changes(&self, between: Between<'_>) -> Option<Changes> {
             self.asked.lock().unwrap().push(format!(
-                "{} {}..{}",
+                "changes {} {}..{}",
                 between.repository, between.base, between.branch
             ));
             self.changes.clone()
@@ -353,7 +365,7 @@ mod tests {
 
         fn apply(&self, between: Between<'_>) -> Result<Vec<Touched>, NotApplied> {
             self.asked.lock().unwrap().push(format!(
-                "{} {}..{}",
+                "apply {} {}..{}",
                 between.repository, between.base, between.branch
             ));
             match self.applies.clone() {
@@ -400,8 +412,24 @@ mod tests {
         assert_eq!(queue.items[0].branch.as_deref(), Some("cistern/3"));
     }
 
-    /// The repository belongs to whoever is using this, and a task they left
-    /// no branch for still has to appear.
+    /// A list says how many commits a branch holds and never shows what is in them.
+    /// It must not build the patch to find out.
+    #[test]
+    fn listing_the_queue_asks_only_for_the_counts() {
+        let tasks = holding(vec![a_task("1", "Completed"), a_task("2", "Error")]);
+        let git = Repository::default();
+
+        ReviewService::new(&tasks, &git).queue().unwrap();
+        assert_eq!(
+            git.asked.lock().unwrap().as_slice(),
+            [
+                "counts /work/api main..cistern/1",
+                "counts /work/api main..cistern/2"
+            ]
+        );
+    }
+
+    /// The repository belongs to whoever is using this, and a task they left no branch for still has to appear.
     #[test]
     fn a_task_whose_branch_cannot_be_read_is_listed_without_counts() {
         let tasks = holding(vec![a_task("1", "Completed")]);
@@ -435,12 +463,12 @@ mod tests {
         assert_eq!(difference.files[0].added, Some(64));
         assert_eq!(
             git.asked.lock().unwrap().as_slice(),
-            ["/work/api main..cistern/1"]
+            ["changes /work/api main..cistern/1"]
         );
     }
 
-    /// A branch the user deleted and a repository they moved are put right
-    /// differently, so they are not answered the same way.
+    /// A branch the user deleted and a repository they moved are put right differently.
+    /// They are not answered the same way.
     #[test]
     fn a_branch_that_is_gone_is_told_apart_from_a_repository_that_is_gone() {
         let tasks = holding(vec![a_task("1", "Completed")]);
@@ -574,8 +602,7 @@ mod tests {
         ));
     }
 
-    /// git counts no lines in a binary file and writes a dash where a number
-    /// would be.
+    /// git counts no lines in a binary file and writes a dash where a number would be.
     #[test]
     fn a_file_git_counted_no_lines_in_carries_no_counts() {
         let tasks = holding(vec![a_task("1", "Completed")]);

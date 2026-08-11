@@ -1,36 +1,31 @@
 //! The sessions file.
 //!
-//! The only place that knows the path and the file format. Neither reaches the
-//! core.
+//! The only place that knows the path and the file format.
+//! Neither reaches the core.
 
-use std::{
-    env,
-    ffi::OsString,
-    fs, io,
-    path::{Path, PathBuf},
-    sync::{Mutex, PoisonError},
-};
+use std::{env, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::core::port::outbound::{SessionStore, StoredSession, StoredSessions, Unavailable};
 
+use super::{
+    kept::Kept,
+    {as_number, as_optional, as_text, as_value},
+};
+
 /// The sessions, kept as JSON at a path fixed when this is built.
 pub struct FileSessions {
-    path: PathBuf,
-    /// Held from the read to the write that follows it, for the reason
-    /// `SessionStore::update` gives.
-    writing: Mutex<()>,
+    kept: Kept,
 }
 
-/// The file, as JSON sees it.
+/// The whole file, as JSON sees it.
 ///
-/// A value is held as whatever JSON found rather than as what the field is
-/// supposed to take, for the reason `adapter::backlog` gives.
+/// A value is held as whatever JSON found rather than as what the field is supposed to take.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Document {
+struct Written {
     next_id: Value,
     sessions: Vec<Entry>,
 }
@@ -55,38 +50,34 @@ struct Entry {
     resets_at: Value,
 }
 
+/// What the file is called.
+const NAMED: &str = "sessions.json";
+
 impl FileSessions {
-    /// Takes the path it is given. This is how a test reaches a temporary one.
+    /// Takes the path it is given.
+    /// This is how a test reaches a temporary one.
     pub fn at(path: PathBuf) -> Self {
         FileSessions {
-            path,
-            writing: Mutex::new(()),
+            kept: Kept::at(path),
         }
     }
 
     /// The path beside the backlog, or nothing when there is nowhere for it.
     pub fn in_data_home() -> Option<Self> {
-        path_of(env::var_os("XDG_DATA_HOME"), env::var_os("HOME")).map(FileSessions::at)
-    }
-
-    fn failing(&self, e: impl std::fmt::Display) -> Unavailable {
-        Unavailable::new(format!("{}: {e}", self.path.display()))
+        Kept::in_data_home(env::var_os("XDG_DATA_HOME"), env::var_os("HOME"), NAMED)
+            .map(FileSessions::at)
     }
 
     fn read(&self) -> Result<StoredSessions, Unavailable> {
-        let written = match fs::read_to_string(&self.path) {
-            Ok(written) => written,
-            // Nothing has run yet. Any other read failure is worth saying.
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                return Ok(StoredSessions {
-                    next_id: "1".to_owned(),
-                    sessions: Vec::new(),
-                });
-            }
-            Err(e) => return Err(self.failing(e)),
+        // Nothing has run yet is an empty set rather than a failure.
+        let Some(written) = self.kept.read()? else {
+            return Ok(StoredSessions {
+                next_id: "1".to_owned(),
+                sessions: Vec::new(),
+            });
         };
 
-        let document: Document = serde_json::from_str(&written).map_err(|e| self.failing(e))?;
+        let document: Written = serde_json::from_str(&written).map_err(|e| self.kept.failing(e))?;
         Ok(StoredSessions {
             next_id: as_text(document.next_id),
             sessions: document
@@ -109,10 +100,8 @@ impl FileSessions {
         })
     }
 
-    /// Writes beside the file and renames it into place, for the reason
-    /// `adapter::settings` gives.
     fn write(&self, sessions: &StoredSessions) -> Result<(), Unavailable> {
-        let document = Document {
+        let document = Written {
             next_id: as_number(&sessions.next_id),
             sessions: sessions
                 .sessions
@@ -135,10 +124,8 @@ impl FileSessions {
                 })
                 .collect(),
         };
-        let written = serde_json::to_string_pretty(&document).map_err(|e| self.failing(e))?;
-
-        let staged = self.path.with_extension("json.new");
-        replace(&self.path, &staged, &written).map_err(|e| self.failing(e))
+        let written = serde_json::to_string_pretty(&document).map_err(|e| self.kept.failing(e))?;
+        self.kept.write(&written)
     }
 }
 
@@ -147,7 +134,7 @@ impl SessionStore for FileSessions {
         &self,
         change: &mut dyn FnMut(&mut StoredSessions) -> bool,
     ) -> Result<(), Unavailable> {
-        let _writing = self.writing.lock().unwrap_or_else(PoisonError::into_inner);
+        let _writing = self.kept.holding();
 
         let mut sessions = self.read()?;
         match change(&mut sessions) {
@@ -157,63 +144,13 @@ impl SessionStore for FileSessions {
     }
 }
 
-/// `$XDG_DATA_HOME/cistern/sessions.json`, or
-/// `~/.local/share/cistern/sessions.json`.
-///
-/// Beside the backlog, for the reason `adapter::backlog` gives.
-fn path_of(data_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
-    let base = match data_home {
-        Some(dir) => PathBuf::from(dir),
-        None => PathBuf::from(home?).join(".local").join("share"),
-    };
-    Some(base.join("cistern").join("sessions.json"))
-}
-
-fn as_text(value: Value) -> String {
-    match value {
-        Value::String(text) => text,
-        other => other.to_string(),
-    }
-}
-
-fn as_optional(value: Value) -> Option<String> {
-    match value {
-        Value::Null => None,
-        other => Some(as_text(other)),
-    }
-}
-
-fn as_number(text: &str) -> Value {
-    match text.parse::<u64>() {
-        Ok(number) => Value::from(number),
-        Err(_) => Value::String(text.to_owned()),
-    }
-}
-
-fn as_value(text: Option<String>) -> Value {
-    text.map_or(Value::Null, Value::String)
-}
-
-fn replace(path: &Path, staged: &Path, written: &str) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    if let Err(e) = fs::write(staged, written) {
-        let _ = fs::remove_file(staged);
-        return Err(e);
-    }
-    fs::rename(staged, path)
-}
-
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use tempfile::TempDir;
 
     use super::*;
-
-    fn some(s: &str) -> Option<OsString> {
-        Some(OsString::from(s))
-    }
 
     fn in_a_temporary_directory() -> (TempDir, FileSessions) {
         let dir = TempDir::new().unwrap();
@@ -253,25 +190,12 @@ mod tests {
             .unwrap();
     }
 
+    /// Where the file goes is `kept`'s; which file it is belongs here.
     #[test]
-    fn the_data_directory_wins() {
-        assert_eq!(
-            path_of(some("/x/.share"), some("/home/a")),
-            Some(PathBuf::from("/x/.share/cistern/sessions.json"))
-        );
-    }
-
-    #[test]
-    fn home_stands_in_where_there_is_no_data_directory() {
-        assert_eq!(
-            path_of(None, some("/home/a")),
-            Some(PathBuf::from("/home/a/.local/share/cistern/sessions.json"))
-        );
-    }
-
-    #[test]
-    fn neither_leaves_nowhere_to_put_it() {
-        assert_eq!(path_of(None, None), None);
+    fn the_file_is_the_one_the_specification_names() {
+        let path =
+            Kept::in_data_home(Some(std::ffi::OsString::from("/x/.share")), None, NAMED).unwrap();
+        assert_eq!(path, PathBuf::from("/x/.share/cistern/sessions.json"));
     }
 
     #[test]

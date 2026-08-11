@@ -1,7 +1,7 @@
 //! The quota-cistern daemon.
 //!
-//! It listens on a local socket and answers one request per connection. This
-//! is where the adapters and the services are built and joined.
+//! It listens on a local socket and answers one request per connection.
+//! This is where the adapters and the services are built and joined.
 
 // Tests may panic to signal failure.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
@@ -15,15 +15,22 @@ mod core;
 mod platform;
 
 use adapter::{inbound, outbound};
+use core::port::outbound::ConfigurationStore;
 use core::{
-    port::inbound::{Declaration, ExecutionUseCase, Page, Refusal, Report, Started, Stopped},
-    service::{BacklogService, ConfigurationService, ExecutionService, ReviewService},
+    port::inbound::{
+        Carrying, Declaration, ExecutionUseCase, NotCarried, Page, Refusal, Report, Started,
+        Stopped, Trail,
+    },
+    service::{BacklogService, ConfigurationService, ExecutionService, Outside, ReviewService},
 };
 use platform::work::Queue;
 
 /// How many tasks the daemon has hands for.
 ///
-/// The core decides how many may run; this only has to be at least that many.
+/// A guard on the machine: each task is a checkout of a repository and an agent process of
+/// its own.
+/// The core is told this number rather than holding one of its own, so that it never assigns
+/// more than there are threads to run.
 const AT_ONCE: usize = 4;
 
 fn main() -> ExitCode {
@@ -32,48 +39,59 @@ fn main() -> ExitCode {
     }
 
     // Failing once here beats failing on every request that arrives.
-    let Some(configuration_store) = outbound::configuration::FileConfiguration::in_config_home()
+    let Some(configuration_store) =
+        outbound::file::configuration::FileConfiguration::in_config_home()
     else {
         return quit("neither XDG_CONFIG_HOME nor HOME is set");
     };
-    let Some(backlog_store) = outbound::backlog::FileBacklog::in_data_home() else {
+    let Some(backlog_store) = outbound::file::backlog::FileBacklog::in_data_home() else {
         return quit("neither XDG_DATA_HOME nor HOME is set");
     };
-    let Some(session_store) = outbound::session::FileSessions::in_data_home() else {
+    let Some(session_store) = outbound::file::session::FileSessions::in_data_home() else {
         return quit("neither XDG_DATA_HOME nor HOME is set");
     };
-    let Some(worktrees) = outbound::worktree::GitWorktrees::in_data_home() else {
+    let Some(worktrees) = outbound::git::worktree::GitWorktrees::in_data_home() else {
         return quit("neither XDG_DATA_HOME nor HOME is set");
     };
-    let Some(limit) = outbound::limit::ClaudeLimit::in_data_home() else {
+    let Some(limit) = outbound::claude::limit::ClaudeLimit::in_data_home() else {
         return quit("neither XDG_DATA_HOME nor HOME is set");
     };
     let limit = match limit {
         Ok(limit) => limit,
         Err(e) => return quit(e.reason),
     };
-    let Some(traces) = outbound::trace::FileTraces::in_data_home() else {
+    let Some(traces) = outbound::file::trace::FileTraces::in_data_home() else {
         return quit("neither XDG_DATA_HOME nor HOME is set");
     };
-    let roots = outbound::repository::GitRoots;
-    let results = outbound::result::GitResults;
+    // The names this build can run. Adding a vendor is a directory beside
+    // `claude` and a line here; the core is not touched.
+    let known = [outbound::claude::NAME.to_owned()];
+    if let Err(e) = runnable(&configuration_store, &known) {
+        return quit(e);
+    }
+
+    let roots = outbound::git::roots::GitRoots;
+    let results = outbound::git::result::GitResults;
     let clock = outbound::clock::SystemClock;
-    let agent = match outbound::agent::ClaudeAgent::new() {
+    let agent = match outbound::claude::agent::ClaudeAgent::new() {
         Ok(agent) => agent,
         Err(e) => return quit(e.reason),
     };
 
-    let configuration = ConfigurationService::new(&configuration_store);
-    let backlog = BacklogService::new(&backlog_store, &roots, &traces);
+    let configuration = ConfigurationService::new(&configuration_store, known);
+    let backlog = BacklogService::new(&backlog_store, &roots, &results);
     let review = ReviewService::new(&backlog_store, &results);
     let execution = ExecutionService::new(
-        &session_store,
-        &backlog_store,
-        &worktrees,
-        &agent,
-        &clock,
-        &limit,
-        &traces,
+        Outside {
+            sessions: &session_store,
+            tasks: &backlog_store,
+            worktrees: &worktrees,
+            agent: &agent,
+            clock: &clock,
+            limit: &limit,
+            traces: &traces,
+        },
+        AT_ONCE,
     );
 
     let server = match exchange::listen() {
@@ -81,9 +99,8 @@ fn main() -> ExitCode {
         Err(e) => return quit(e),
     };
 
-    // A task outlives the request that assigned it, so what a run leaves behind
-    // is queued here and a thread beside the accept loop carries it on. The
-    // core says what one task is; when it happens is arranged here.
+    // A task outlives the request that assigned it.
+    // The core says what one task is, and this arranges when it happens.
     let queued = Queue::default();
     let execution = Queueing {
         execution: &execution,
@@ -91,23 +108,19 @@ fn main() -> ExitCode {
     };
 
     thread::scope(|threads| {
-        // Section 2.2 runs tasks in parallel. How many run at once is the
-        // core's, decided from the budget; these are only the hands to run
-        // them with, and one waiting on the queue costs nothing.
+        // The same number the core was given, so a task it assigns has a thread waiting.
         for _ in 0..AT_ONCE {
             threads.spawn(|| {
                 loop {
                     let task = queued.take();
                     if let Err(e) = execution.carry_on(&task) {
-                        eprintln!("cisternd: {task} could not be carried on: {e:?}");
+                        eprintln!("cisternd: {task} was not carried on: {}", why(&e));
                     }
                 }
             });
         }
 
-        // Each group owns the names its own commands arrive under, so this
-        // offers the request to one and then the next. It grows by a line per
-        // group, not by a line per command.
+        // Each group owns the names its commands arrive under, so this offers the request to one and then the next.
         let answer = |request| {
             inbound::configuration::respond(&configuration, request)
                 .or_else(|request| inbound::backlog::respond(&backlog, request))
@@ -121,9 +134,8 @@ fn main() -> ExitCode {
 
 /// The core's own execution, with what it assigned put on the queue.
 ///
-/// It stands between the adapter and the service so that neither has to know
-/// there are threads. Joining them is what this file is for.
-struct Queueing<'a, U: ExecutionUseCase> {
+/// It stands between the adapter and the service so that neither has to know there are threads.
+struct Queueing<'a, U> {
     execution: &'a U,
     queued: &'a Queue,
 }
@@ -145,16 +157,51 @@ impl<U: ExecutionUseCase> ExecutionUseCase for Queueing<'_, U> {
         self.execution.session(id)
     }
 
+    fn trace(&self, id: &str, since: Option<&str>) -> Result<Trail, Refusal> {
+        self.execution.trace(id, since)
+    }
+
     fn interrupt(&self) -> Result<Stopped, Refusal> {
         self.execution.interrupt()
     }
+}
 
-    fn carry_on(&self, task: &str) -> Result<Vec<String>, Refusal> {
+impl<U: Carrying> Carrying for Queueing<'_, U> {
+    fn carry_on(&self, task: &str) -> Result<Vec<String>, NotCarried> {
         let assigned = self.execution.carry_on(task)?;
         for task in &assigned {
             self.queued.add(task.clone());
         }
         Ok(assigned)
+    }
+}
+
+/// Refuses to start on a stored vendor this build cannot run.
+///
+/// The check belongs here because only this file knows which adapters it holds.
+/// Failing once beats failing on every task a session assigns.
+fn runnable(store: &dyn ConfigurationStore, known: &[String]) -> Result<(), String> {
+    let held = store.load().map_err(|e| e.reason)?;
+    let Some((_, name)) = held.iter().find(|(key, _)| key == "vendor") else {
+        return Ok(());
+    };
+    if known.contains(name) {
+        return Ok(());
+    }
+    Err(format!(
+        "the configuration says vendor {name}, which this build cannot run; it runs {}",
+        known.join(", ")
+    ))
+}
+
+/// What a worker says when a task could not be carried on.
+///
+/// It goes to the daemon's own output rather than to a surface, so it is one sentence for
+/// whoever is reading the log.
+fn why(e: &NotCarried) -> String {
+    match e {
+        NotCarried::NoSuchTask { id } => format!("{id} is no longer in the backlog"),
+        NotCarried::Unavailable { reason } => format!("a store could not be read: {reason}"),
     }
 }
 

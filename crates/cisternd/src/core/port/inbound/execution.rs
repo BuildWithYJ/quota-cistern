@@ -1,8 +1,26 @@
-//! What the core offers over sessions and execution.
+//! What the core offers over a session and what it runs.
 //!
-//! Section 2.2 of `docs/cli.md` fixes the arguments and the output.
+//! Section 2.2 of `docs/cli.md` fixes the arguments and the output, and section 2.3 fixes `trace`.
+//! A trace is what a run wrote, so it is answered here rather than beside the task that was registered.
 
 use super::Refusal;
+
+/// One thing a run did or said, as `trace` reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Happened {
+    pub at: String,
+    pub said: String,
+}
+
+/// A stretch of what a run wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Trail {
+    pub events: Vec<Happened>,
+    /// Where to carry on from.
+    pub cursor: String,
+    /// True once the task has ended and the trace can grow no more.
+    pub done: bool,
+}
 
 /// What `run` was given.
 pub struct Declaration<'a> {
@@ -16,8 +34,7 @@ pub struct Declaration<'a> {
 
 /// The budget a session was opened with, in the words it was declared in.
 ///
-/// Section 2.2 reports consumption in the unit that was declared, so what was
-/// written is what is answered.
+/// Section 2.2 reports consumption in the unit that was declared, so what was written is what is answered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Declared {
     pub usage: String,
@@ -72,7 +89,8 @@ pub struct Report {
     /// What it consumed, in the unit the budget was declared in.
     pub consumed: Declared,
     pub stopped_reason: Option<String>,
-    /// When the vendor's limit starts over. Only a session it turned away.
+    /// When the vendor's limit starts over.
+    /// Only a session it turned away.
     pub resets_at: Option<String>,
     pub updated_at: String,
     pub tasks: Vec<Ran>,
@@ -93,27 +111,23 @@ pub struct Stopped {
 pub trait ExecutionUseCase {
     /// Opens a session and assigns what may start.
     ///
-    /// It answers as soon as the session exists, because section 2.2 says the
-    /// command returns at once and the tasks keep running.
+    /// It answers as soon as the session exists.
+    /// Section 2.2 says the command returns at once and the tasks keep running.
     fn run(&self, declared: Declaration<'_>) -> Result<Started, Refusal>;
-
-    /// Runs one assigned task to the end, and answers with whatever the
-    /// decision that followed assigned next.
-    ///
-    /// This does not return until the task has, so whoever calls it is not the
-    /// same thread that answered `run`. When that happens is the composition
-    /// root's to arrange; what happens is here. What comes back has to be run
-    /// the same way the tasks `run` answered with are.
-    fn carry_on(&self, task: &str) -> Result<Vec<String>, Refusal>;
 
     /// Lists sessions, newest first.
     ///
-    /// Both arguments arrive as they were written, so a page number that is
-    /// not one is refused where every other argument is.
+    /// Both arguments arrive as they were written.
+    /// A page number that is not one is refused where every other argument is.
     fn sessions(&self, page: Option<&str>, limit: Option<&str>) -> Result<Page, Refusal>;
 
     /// One session and the tasks it held.
     fn session(&self, id: &str) -> Result<Report, Refusal>;
+
+    /// What a task's run has written so far, from `since` onwards.
+    ///
+    /// Section 2.3 answers the same way whether the run is still going or has ended, so nothing here asks which.
+    fn trace(&self, id: &str, since: Option<&str>) -> Result<Trail, Refusal>;
 
     /// Stops the running session.
     ///

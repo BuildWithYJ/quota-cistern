@@ -1,9 +1,10 @@
 //! The clauses in `docs/architecture.md`, checked against the source.
 //!
-//! Only what a reference makes visible is checked here. Whether a piece of code
-//! is an adapter is a judgement, and this sees only what that judgement left in
-//! the references; a re-export would slip past it. It is here to catch drift,
-//! not to stop someone who means to get around it.
+//! Only what a reference makes visible is checked here.
+//! Whether a piece of code is an adapter is a judgement.
+//! This sees only what that judgement left in the references.
+//! A re-export would slip past it.
+//! It is here to catch drift, not to stop someone who means to get around it.
 
 // A test panics to signal failure.
 #![allow(clippy::unwrap_used)]
@@ -28,7 +29,8 @@ const INWARD: &[(&str, &[&str])] = &[
     ("crates/cisternd/src/adapter/inbound", &["port::outbound"]),
     // An outbound adapter does not know what the core offers.
     ("crates/cisternd/src/adapter/outbound", &["port::inbound"]),
-    // One adapter does not reach another. Only the composition root joins them.
+    // One adapter does not reach another.
+    // Only the composition root joins them.
     ("crates/cisternd/src/adapter", &["crate::adapter"]),
     // What touches no port does not reach one.
     ("crates/cisternd/src/platform", &["core::port"]),
@@ -81,11 +83,11 @@ fn nothing_is_reached_through_an_alias() {
     );
 }
 
-/// What a vendor calls a field is the vendor's, and a vendor renaming one is a
-/// change to one adapter rather than to the core.
+/// What a vendor calls a field is the vendor's.
+/// A vendor renaming one is a change to one adapter rather than to the core.
 ///
-/// The names are the ones Claude Code answers with. Another vendor spells them
-/// differently, which is the point: none of the spellings belong in the core.
+/// The names are the ones Claude Code answers with.
+/// Another vendor spells them differently.
 const VENDOR_FIELDS: &[&str] = &[
     "input_tokens",
     "output_tokens",
@@ -114,8 +116,7 @@ fn no_vendor_field_name_reaches_the_core() {
     );
 }
 
-/// The socket library reaches one crate, which is why the framing is written
-/// once rather than at each end.
+/// The socket library reaches one crate, which is why the framing is written once rather than at each end.
 #[test]
 fn the_socket_library_stays_in_the_contract() {
     for crate_name in ["cistern", "cisternd"] {
@@ -131,8 +132,8 @@ fn the_socket_library_stays_in_the_contract() {
     }
 }
 
-/// ` as ` followed by a type name. A lowercase one renames a module or a
-/// function, which is not what the clause is about.
+/// ` as ` followed by a type name.
+/// A lowercase one renames a module or a function, which is not what the clause is about.
 fn renames_a_type(line: &str) -> bool {
     line.split(" as ").skip(1).any(|rest| {
         rest.trim_start()

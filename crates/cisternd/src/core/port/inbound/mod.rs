@@ -1,33 +1,30 @@
 //! What the core offers, in the core's own terms.
 //!
-//! One trait per command group, each beside the values its commands answer
-//! with. `Refusal` stands here rather than in one of them, because any command
-//! may end in one.
-//!
-//! Nothing here names an exit code or an envelope. Whoever calls a use case
-//! decides how a refusal reaches whoever asked.
+//! One trait per command group, each beside the values its commands answer with.
+//! `Refusal` stands here rather than in one of them, because any command may end in one.
 
 mod backlog;
 mod configuration;
 mod execution;
 mod review;
+mod work;
 
-pub use backlog::{
-    Added, BacklogUseCase, Detail, Happened, Listing, Registration, Removed, Trail, Waiting,
-};
+pub use backlog::{Added, BacklogUseCase, Detail, Listing, Made, Registration, Removed, Waiting};
 pub use configuration::{Applied, ConfigurationUseCase, View};
 pub use execution::{
-    Declaration, Declared, ExecutionUseCase, Listed, Page, Ran, Report, Started, Stopped,
+    Declaration, Declared, ExecutionUseCase, Happened, Listed, Page, Ran, Report, Started, Stopped,
+    Trail,
 };
 pub use review::{Awaiting, Changed, Difference, Dropped, Queue, ReviewUseCase, Taken};
+pub use work::{Carrying, NotCarried};
 
 use super::outbound::Unavailable;
 
 /// Why the core would not do what was asked.
 ///
-/// It names what was wrong and stops there. Which exit code that becomes is the
-/// same question as which envelope carries it, and both belong to the caller,
-/// so the codes in `docs/cli.md` do not reach in here.
+/// It names what was wrong and stops there.
+/// Which exit code that becomes is the same question as which envelope carries it.
+/// Both belong to the caller, so the codes in `docs/cli.md` do not reach in here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
     /// No such key in the specification.

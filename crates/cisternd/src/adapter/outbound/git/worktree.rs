@@ -1,34 +1,30 @@
 //! Work areas, as git makes them.
 //!
-//! The only place that knows the command and where a work area lands. Neither
-//! reaches the core.
+//! The only place that knows the command and where a work area lands.
+//! Neither reaches the core.
 
-use std::{
-    env,
-    ffi::OsString,
-    path::PathBuf,
-    process::{Command, Output},
-};
+use std::{env, ffi::OsString, path::PathBuf, process::Command};
 
 use crate::core::port::outbound::{Cut, Unavailable, Worktrees};
 
+use super::said;
+
 /// Work areas kept under a directory fixed when this is built.
 ///
-/// They sit beside the backlog rather than inside the repository, so a task
-/// leaves nothing in the working tree a person is looking at.
+/// They sit beside the backlog rather than inside the repository.
+/// A task leaves nothing in the working tree a person is looking at.
 pub struct GitWorktrees {
     under: PathBuf,
 }
 
 impl GitWorktrees {
-    /// Takes the directory it is given. This is how a test reaches a temporary
-    /// one.
+    /// Takes the directory it is given.
+    /// This is how a test reaches a temporary one.
     pub fn under(under: PathBuf) -> Self {
         GitWorktrees { under }
     }
 
-    /// The directory beside the backlog, or nothing when there is nowhere
-    /// for it.
+    /// The directory beside the backlog, or nothing when there is nowhere for it.
     pub fn in_data_home() -> Option<Self> {
         under_of(env::var_os("XDG_DATA_HOME"), env::var_os("HOME")).map(GitWorktrees::under)
     }
@@ -39,8 +35,7 @@ impl Worktrees for GitWorktrees {
         let at = self.under.join(cut.task);
         let at = at.display().to_string();
 
-        // One command cuts the branch and checks it out, so a failure part of
-        // the way through leaves neither behind.
+        // One command cuts the branch and checks it out, so a failure part of the way through leaves neither behind.
         let done = Command::new("git")
             .args(["-C", cut.repository, "worktree", "add", "-b", cut.branch])
             .args([&at, cut.base])
@@ -68,20 +63,6 @@ fn under_of(data_home: Option<OsString>, home: Option<OsString>) -> Option<PathB
     Some(base.join("cistern").join("worktrees"))
 }
 
-/// What git said about a command that failed.
-///
-/// git writes its complaint to standard error and says nothing on standard
-/// output, but a command that fails without a word is worse than one that
-/// repeats itself, so both are read.
-fn said(done: &Output) -> String {
-    let complained = String::from_utf8_lossy(&done.stderr);
-    let complained = complained.trim();
-    match complained.is_empty() {
-        false => complained.to_owned(),
-        true => String::from_utf8_lossy(&done.stdout).trim().to_owned(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -94,8 +75,7 @@ mod tests {
         Some(OsString::from(s))
     }
 
-    /// A repository with one commit on `main`, which is what a task starts
-    /// from.
+    /// A repository with one commit on `main`, which is what a task starts from.
     fn a_repository() -> TempDir {
         let dir = TempDir::new().unwrap();
         let at = dir.path();
@@ -170,8 +150,7 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&on.stdout).trim(), "cistern/1");
     }
 
-    /// Two tasks running at once each get their own, which is what keeps one
-    /// from writing over the other.
+    /// Two tasks running at once each get their own, which is what keeps one from writing over the other.
     #[test]
     fn two_tasks_land_in_two_places() {
         let repository = a_repository();

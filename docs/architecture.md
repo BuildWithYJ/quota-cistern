@@ -14,7 +14,9 @@ An inbound adapter names the inbound ports and nothing else.
 
 ## The core
 
-`port` declares both edges. `port::inbound` is what the core offers, one trait per command group with the values those commands answer with. `port::outbound` is what the core needs from outside. A vendor name, a file path, a git invocation, and a clock reading do not appear in either.
+`port` declares both edges. `port::inbound` is what the core offers, one trait per command group with the values those commands answer with. A command group is the commands that are about the same thing: a task, a session, a result, the configuration. Sharing an identifier is not being about the same thing, which is why reading what a run wrote sits beside the session rather than beside the task it names. `port::outbound` is what the core needs from outside. A vendor name, a file path, a git invocation, and a clock reading do not appear in either.
+
+One outside, one place. An outside that holds several conversations is a directory named after that outside, and one that holds a single conversation is a file. The vendor answers two questions, running a task and how much of its allowance is left, so `port::outbound::vendor` holds both. The repository a task was added from answers three, so `port::outbound::repository` holds those.
 
 `domain` holds the entities and the rules over them. `service` drives them: one service per command group, holding the outbound ports its own commands use and implementing the inbound trait those commands are declared as.
 
@@ -27,6 +29,10 @@ An adapter has a port on one side and something outside on the other. Code that 
 An inbound adapter turns an envelope into a use case call and the answer back into an envelope. Which exit code a refusal becomes is decided here; the core never names one.
 
 An outbound adapter is where a vendor's field names, a file format, and a git invocation belong. None of them cross back into the core, and `cisternd/tests/architecture.rs` checks the field names.
+
+Outbound adapters are grouped by the means rather than by the outside: `claude`, `git`, `file`, and the clock. A second vendor is a directory beside `claude` and nothing else. Whatever a means needs in order to work — an invocation written as JSON, a prompt, a stand-in used in tests, the part every file store shares — sits in that directory too.
+
+The two edges are named differently on purpose. A port says who is on the other side, because that is what the core is talking to. An adapter says how, because that is what changes when the same conversation is held another way.
 
 ## Platform
 
@@ -46,7 +52,7 @@ cisternd/src/
   core/port/outbound/ what the core needs from outside
   core/service/       one per command group
   adapter/inbound/    envelope to use case
-  adapter/outbound/   port to file or git
+  adapter/outbound/   port to file or git, one directory per means
   platform/           what touches no port
   main.rs             composition root
 ```

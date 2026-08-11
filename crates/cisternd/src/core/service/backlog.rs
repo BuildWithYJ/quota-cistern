@@ -3,40 +3,76 @@
 use crate::core::{
     domain::{
         Backlog, Consumption, Disposition, NotABacklog, Observation, RemovalRefused, Repository,
-        Restored, SessionId, TaskId, TaskState,
+        Restored, SessionId, Task, TaskId, TaskState,
     },
     port::{
         inbound::{
-            Added, BacklogUseCase, Detail, Happened, Listing, Refusal, Registration, Removed,
-            Trail, Waiting,
+            Added, BacklogUseCase, Detail, Listing, Made, Refusal, Registration, Removed, Waiting,
         },
         outbound::{
-            BacklogStore, RepositoryRoots, StoredBacklog, StoredConsumption, StoredTask, Traces,
+            BacklogStore, Between, RepositoryRoots, Results, StoredBacklog, StoredConsumption,
+            StoredTask,
         },
     },
 };
 
 /// The commands over the backlog, and what they need from outside.
 ///
-/// It holds the ports these commands use and no others, so that a command over
-/// the configuration cannot reach the backlog store through it.
+/// It holds the ports these commands use and no others.
+/// A command over the configuration cannot reach the backlog store through it.
 pub struct BacklogService<'a> {
     store: &'a dyn BacklogStore,
     roots: &'a dyn RepositoryRoots,
-    traces: &'a dyn Traces,
+    results: &'a dyn Results,
 }
 
 impl<'a> BacklogService<'a> {
     pub fn new(
         store: &'a dyn BacklogStore,
         roots: &'a dyn RepositoryRoots,
-        traces: &'a dyn Traces,
+        results: &'a dyn Results,
     ) -> Self {
         BacklogService {
             store,
             roots,
-            traces,
+            results,
         }
+    }
+
+    /// What a task left on its branch, for a task whose run has ended.
+    ///
+    /// Section 2.1 answers with nothing while a task is still waiting, and nothing again for a
+    /// branch the user has since deleted.
+    fn left(&self, task: &Task) -> (Option<Vec<Made>>, Option<u64>) {
+        if !task.state().ended() {
+            return (None, None);
+        }
+        let Some(branch) = task.result_branch() else {
+            return (None, None);
+        };
+        let repository = task.repository().to_string();
+        let base = task.base_branch();
+        let asked = || Between {
+            repository: &repository,
+            base: &base,
+            branch: &branch,
+        };
+
+        (
+            self.results.made(asked()).map(|made| {
+                made.into_iter()
+                    .map(|one| Made {
+                        sha: one.sha,
+                        subject: one.subject,
+                        added: one.added.parse().ok(),
+                        removed: one.removed.parse().ok(),
+                    })
+                    .collect()
+            }),
+            self.results
+                .counts(asked())
+                .and_then(|counts| counts.base_ahead.parse().ok()),
+        )
     }
 }
 
@@ -50,8 +86,8 @@ impl BacklogUseCase for BacklogService<'_> {
         }
         let after = given.after.map(identifier).transpose()?;
 
-        // Asked before the backlog is read, since a command run outside a
-        // repository is refused whatever the backlog holds.
+        // Asked before the backlog is read.
+        // A command run outside a repository is refused whatever the backlog holds.
         let Some(root) = self.roots.root_of(given.cwd)? else {
             return Err(Refusal::NotARepository {
                 at: given.cwd.to_owned(),
@@ -67,7 +103,7 @@ impl BacklogUseCase for BacklogService<'_> {
                 });
             }
 
-            let id = backlog.add(
+            let registered = backlog.add(
                 given.title.to_owned(),
                 given.instruction.to_owned(),
                 given.branch.map(str::to_owned),
@@ -76,9 +112,6 @@ impl BacklogUseCase for BacklogService<'_> {
                 Repository::new(root),
             );
 
-            let Some(registered) = backlog.find(id) else {
-                return Err(Refusal::NoSuchTask { id: id.labelled() });
-            };
             Ok(Added {
                 id: registered.id().labelled(),
                 title: registered.title().to_owned(),
@@ -111,37 +144,6 @@ impl BacklogUseCase for BacklogService<'_> {
         })
     }
 
-    fn trace(&self, id: &str, since: Option<&str>) -> Result<Trail, Refusal> {
-        let wanted = TaskId::parse(id).ok_or_else(|| Refusal::BadValue {
-            key: "task".to_owned(),
-            value: id.to_owned(),
-        })?;
-        let held = read(self.store)?;
-        let task = held.find(wanted).ok_or_else(|| Refusal::NoSuchTask {
-            id: wanted.labelled(),
-        })?;
-        // Asked before the trace is read. A run that ends between the two
-        // would leave a reader told the task was still going with the last of
-        // what it wrote already in hand, and nothing would fetch it again.
-        let done = task.state() != TaskState::Running;
-
-        let read = self
-            .traces
-            .read(&wanted.to_string(), since.unwrap_or_default())?;
-        Ok(Trail {
-            events: read
-                .events
-                .into_iter()
-                .map(|one| Happened {
-                    at: one.at,
-                    said: one.said,
-                })
-                .collect(),
-            cursor: read.cursor,
-            done,
-        })
-    }
-
     fn show(&self, id: &str) -> Result<Detail, Refusal> {
         let wanted = identifier(id)?;
         let backlog = read(self.store)?;
@@ -151,6 +153,7 @@ impl BacklogUseCase for BacklogService<'_> {
             });
         };
 
+        let (commits, base_ahead) = self.left(task);
         Ok(Detail {
             id: task.id().labelled(),
             session: task.session().map(|id| id.labelled()),
@@ -164,6 +167,8 @@ impl BacklogUseCase for BacklogService<'_> {
             reason: task.reason().map(str::to_owned),
             worktree: task.worktree().map(str::to_owned),
             disposition: task.disposition().map(|it| it.to_string()),
+            commits,
+            base_ahead,
         })
     }
 
@@ -192,15 +197,15 @@ fn identifier(id: &str) -> Result<TaskId, Refusal> {
 
 /// Reads the store and holds it to the same standard as an argument.
 ///
-/// A backlog file can be edited by hand, so what a store hands back is a claim
-/// rather than a fact. Unlike the configuration, nobody is meant to write this
-/// file, so a backlog that does not add up is a store this core cannot use
-/// rather than something the user typed wrong.
+/// A backlog file can be edited by hand, so what a store hands back is a claim rather than a fact.
+/// Unlike the configuration, nobody is meant to write this file.
+/// A backlog that does not add up is a store this core cannot use, not something the user typed wrong.
 pub(super) fn read(tasks: &dyn BacklogStore) -> Result<Backlog, Refusal> {
     read_from(tasks.load()?)
 }
 
-/// Reads the backlog a store handed over. Held to the standard `read` names.
+/// Reads the backlog a store handed over.
+/// Held to the standard `read` names.
 fn read_from(stored: StoredBacklog) -> Result<Backlog, Refusal> {
     let next_id = stored_number("next_id", &stored.next_id)?;
 
@@ -216,12 +221,9 @@ fn read_from(stored: StoredBacklog) -> Result<Backlog, Refusal> {
 
 /// Reads the backlog, changes it, and writes it back as one step.
 ///
-/// `service::execution` uses this too: one store has one reader, so the two
-/// services cannot come to disagree about what a stored task means.
-///
-/// The answer travels out in a value this holds rather than out of the port,
-/// because a port that returned a refusal would have to name what one is, and
-/// that word belongs to the other edge.
+/// `service::execution` uses this too, so that one store has one reader.
+/// The answer travels out in a value this holds rather than out of the port.
+/// A port returning a refusal would have to name a word from the other edge.
 pub(super) fn change<T>(
     tasks: &dyn BacklogStore,
     with: impl FnOnce(&mut Backlog) -> Result<T, Refusal>,
@@ -230,8 +232,8 @@ pub(super) fn change<T>(
     let mut answer = None;
 
     tasks.update(&mut |stored| {
-        // A store that ran the change twice would apply it twice. Taking it
-        // leaves the second call nothing to run and nothing to write.
+        // A store that ran the change twice would apply it twice.
+        // Taking it leaves the second call nothing to run and nothing to write.
         let Some(with) = with.take() else {
             return false;
         };
@@ -262,8 +264,7 @@ pub(super) fn change<T>(
 
 /// Reads one task as a store handed it over.
 ///
-/// The domain is given values it can take, never the text they were kept as,
-/// so reading them is this layer's work.
+/// The domain is given values it can take, never the text they were kept as, so reading them is this layer's work.
 fn restored_from(held: StoredTask) -> Result<Restored, Refusal> {
     Ok(Restored {
         id: stored_id("id", &held.id)?,
@@ -326,8 +327,8 @@ fn written(backlog: &Backlog) -> StoredBacklog {
 
 /// Reads what a store held about one task's consumption.
 ///
-/// A store holding both a count and a reason it could not be counted is holding
-/// two answers to one question, and this core cannot tell which to believe.
+/// A store holding both a count and a reason it could not be counted is holding two answers to one question.
+/// This core cannot tell which to believe.
 fn observed(
     consumed: Option<StoredConsumption>,
     unreadable: Option<String>,
@@ -377,8 +378,7 @@ fn stored_count(field: &str, value: &str) -> Result<u64, Refusal> {
 
 /// A value the store holds that this core cannot read.
 ///
-/// Unlike an argument, nobody is meant to write this file, so it fails as a
-/// store rather than as something typed wrong.
+/// Unlike an argument, nobody is meant to write this file, so it fails as a store rather than as something typed wrong.
 fn unreadable(field: &str, value: &str) -> Refusal {
     Refusal::Unavailable {
         reason: format!("the backlog holds {value} where {field} belongs"),
@@ -409,8 +409,7 @@ mod tests {
     /// A backlog held in memory, so the steps can be checked without a file.
     struct Remembered {
         stored: Mutex<StoredBacklog>,
-        /// Makes every read fail, standing in for a store that is there but
-        /// cannot be understood.
+        /// Makes every read fail, standing in for a store that is there but cannot be understood.
         broken: bool,
         /// Counts reads, so a test can show that one never happened.
         reads: AtomicUsize,
@@ -442,8 +441,7 @@ mod tests {
             &self,
             change: &mut dyn FnMut(&mut StoredBacklog) -> bool,
         ) -> Result<(), Unavailable> {
-            // The lock is held across the read and the write, which is what
-            // the port promises.
+            // The lock is held across the read and the write, which is what the port promises.
             self.reads.fetch_add(1, Ordering::Relaxed);
             if self.broken {
                 return Err(Unavailable::new("not valid JSON"));
@@ -468,39 +466,50 @@ mod tests {
         }
     }
 
+    /// A repository holding no branch a task made, which is every task in these tests.
+    struct NoBranch;
+
+    impl Results for NoBranch {
+        fn made(&self, _between: Between<'_>) -> Option<Vec<crate::core::port::outbound::Commit>> {
+            None
+        }
+
+        fn counts(&self, _between: Between<'_>) -> Option<crate::core::port::outbound::Counts> {
+            None
+        }
+
+        fn changes(&self, _between: Between<'_>) -> Option<crate::core::port::outbound::Changes> {
+            None
+        }
+
+        fn apply(
+            &self,
+            _between: Between<'_>,
+        ) -> Result<
+            Vec<crate::core::port::outbound::Touched>,
+            crate::core::port::outbound::NotApplied,
+        > {
+            Err(crate::core::port::outbound::NotApplied::NotThere)
+        }
+
+        fn reachable(&self, _repository: &str) -> Result<(), Unavailable> {
+            Ok(())
+        }
+    }
+
+    static NO_BRANCH: NoBranch = NoBranch;
+
     static IN_A_REPOSITORY: Somewhere = Somewhere {
         root: Some("/work/api"),
     };
     static NOWHERE: Somewhere = Somewhere { root: None };
 
-    /// A trace store that was never written to.
-    struct Kept;
-
-    impl Traces for Kept {
-        fn at(&self, task: &str) -> Result<String, Unavailable> {
-            Ok(format!("/traces/{task}.jsonl"))
-        }
-
-        fn read(
-            &self,
-            _task: &str,
-            _from: &str,
-        ) -> Result<crate::core::port::outbound::Read, Unavailable> {
-            Ok(crate::core::port::outbound::Read {
-                events: Vec::new(),
-                cursor: "000000000000".to_owned(),
-            })
-        }
-    }
-
-    static NOTHING_KEPT: Kept = Kept;
-
     fn in_a_repository(tasks: &Remembered) -> BacklogService<'_> {
-        BacklogService::new(tasks, &IN_A_REPOSITORY, &NOTHING_KEPT)
+        BacklogService::new(tasks, &IN_A_REPOSITORY, &NO_BRANCH)
     }
 
     fn outside_one(tasks: &Remembered) -> BacklogService<'_> {
-        BacklogService::new(tasks, &NOWHERE, &NOTHING_KEPT)
+        BacklogService::new(tasks, &NOWHERE, &NO_BRANCH)
     }
 
     fn registering(title: &str) -> Registration<'_> {
@@ -585,8 +594,7 @@ mod tests {
         assert_eq!(second.base_branch, "cistern/1");
     }
 
-    /// A command run outside a repository is refused whatever the backlog
-    /// holds, so the backlog is never read.
+    /// A command run outside a repository is refused whatever the backlog holds, so the backlog is never read.
     #[test]
     fn registering_outside_a_repository_is_refused_without_reading_the_backlog() {
         let tasks = Remembered::default();
@@ -606,8 +614,8 @@ mod tests {
         assert!(in_a_repository(&tasks).list().unwrap().items.is_empty());
     }
 
-    /// Removing a predecessor used to leave a file the core could not read,
-    /// so the next command refused with code 5 and nothing could be listed.
+    /// Removing a predecessor used to leave a file the core could not read.
+    /// The next command refused with code 5, and nothing could be listed.
     #[test]
     fn the_backlog_is_still_readable_after_a_predecessor_is_removed() {
         let tasks = Remembered::default();
@@ -695,8 +703,7 @@ mod tests {
         );
     }
 
-    /// A value the store holds that cannot be read is a store this core cannot
-    /// use, not something the user typed wrong.
+    /// A value the store holds that cannot be read is a store this core cannot use, not something the user typed wrong.
     #[test]
     fn a_state_edited_into_the_store_is_refused_on_reading_it() {
         let tasks = Remembered::default();
@@ -744,8 +751,7 @@ mod tests {
         ));
     }
 
-    /// A backlog file can be edited by hand, and one that does not add up is a
-    /// store this core cannot use.
+    /// A backlog file can be edited by hand, and one that does not add up is a store this core cannot use.
     #[test]
     fn a_cycle_edited_into_the_store_is_refused_on_reading_it() {
         let tasks = Remembered::default();
@@ -792,47 +798,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn a_trace_says_whether_it_can_still_grow() {
-        let tasks = Remembered::default();
-        let mut held = tasks.stored.lock().unwrap().clone();
-        held.tasks = vec![crate::core::port::outbound::StoredTask {
-            session: Some("1".to_owned()),
-            worktree: None,
-            reason: None,
-            consumed: None,
-            unreadable: None,
-            disposition: None,
-            id: "1".to_owned(),
-            title: "first".to_owned(),
-            instruction: "do it".to_owned(),
-            branch: None,
-            after: None,
-            model: None,
-            repository: "/work/api".to_owned(),
-            state: "Running".to_owned(),
-        }];
-        *tasks.stored.lock().unwrap() = held.clone();
-        assert!(!in_a_repository(&tasks).trace("1", None).unwrap().done);
-
-        held.tasks[0].state = "Completed".to_owned();
-        *tasks.stored.lock().unwrap() = held;
-        assert!(in_a_repository(&tasks).trace("1", None).unwrap().done);
-    }
-
-    #[test]
-    fn the_trace_of_a_task_nobody_registered_says_so() {
-        let tasks = Remembered::default();
-        assert_eq!(
-            in_a_repository(&tasks).trace("7", None),
-            Err(Refusal::NoSuchTask {
-                id: "task:7".to_owned()
-            })
-        );
-    }
-
-    /// A count and a reason it could not be counted are two answers to one
-    /// question, and nothing here can tell which one to believe.
+    /// A count and a reason it could not be counted are two answers to one question.
+    /// Nothing here can tell which one to believe.
     #[test]
     fn a_task_stored_with_both_a_count_and_a_reason_is_refused() {
         let tasks = Remembered::default();

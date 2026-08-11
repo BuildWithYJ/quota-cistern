@@ -1,7 +1,6 @@
 //! What the core offers over the configuration.
 //!
-//! Section 2.5 of `docs/cli.md` fixes the keys, the values each one takes, and
-//! what each command answers with.
+//! Section 2.5 of `docs/cli.md` fixes the keys, the values each one takes, and what each command answers with.
 
 use super::Refusal;
 

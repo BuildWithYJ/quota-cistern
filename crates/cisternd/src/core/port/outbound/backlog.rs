@@ -4,11 +4,8 @@ use super::Unavailable;
 
 /// The backlog as a store holds it.
 ///
-/// Every field crosses as the text a user would have typed, whatever a store
-/// kept it as, so what comes back meets the same parse an argument does. A task
-/// carries more fields than the configuration and this is longer for it, but
-/// one rule is worth the length: a field an adapter typed instead would be the
-/// one field refused somewhere else, with a different code.
+/// Every field crosses as the text a user would have typed, so what comes back meets the same parse an argument does.
+/// A field an adapter typed instead would be the one field refused elsewhere, with a different code.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StoredBacklog {
     pub next_id: String,
@@ -37,8 +34,7 @@ pub struct StoredTask {
     pub consumed: Option<StoredConsumption>,
     /// Why what it consumed could not be read, when it could not.
     ///
-    /// This and `consumed` are both absent for a task that has not run, which
-    /// is the third thing they tell apart.
+    /// Both this and `consumed` are absent for a task that has not run.
     pub unreadable: Option<String>,
     /// What was decided about its result, once anyone decided.
     pub disposition: Option<String>,
@@ -58,23 +54,15 @@ pub struct StoredConsumption {
 pub trait BacklogStore: Sync {
     /// Reads what is stored.
     ///
-    /// Nothing stored is an empty backlog rather than a failure, since
-    /// `backlog` has to answer before anyone has registered a task. Telling
-    /// that apart from a store that cannot be read is the implementation's job.
+    /// Nothing stored is an empty backlog rather than a failure.
+    /// `backlog` has to answer before anyone has registered a task.
     fn load(&self) -> Result<StoredBacklog, Unavailable>;
 
-    /// Reads what is stored, hands it to `change`, and writes back what
-    /// `change` left behind.
+    /// Reads what is stored, hands it to `change`, and writes back what `change` left behind.
     ///
-    /// Reading and writing are one call rather than two because two tasks
-    /// ending at the same moment would otherwise each write over what the other
-    /// recorded. Keeping them apart is the implementation's, and the core never
-    /// holds whatever does it.
-    ///
-    /// `change` answers whether it changed anything. Nothing is written when it
-    /// did not, so a refusal leaves the store as it was. The change is handed
-    /// the whole backlog, so adding one task stays in the core and the
-    /// implementation never learns the shape.
+    /// One call rather than two.
+    /// Two tasks ending at the same moment do not each write over what the other recorded.
+    /// `change` answers whether it changed anything, and nothing is written when it did not.
     fn update(&self, change: &mut dyn FnMut(&mut StoredBacklog) -> bool)
     -> Result<(), Unavailable>;
 }

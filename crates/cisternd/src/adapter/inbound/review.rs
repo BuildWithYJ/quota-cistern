@@ -98,8 +98,8 @@ mod tests {
 
     use super::*;
 
-    /// Stands in for the core. It answers rather than deciding, so what is
-    /// checked here is the envelope and nothing else.
+    /// Stands in for the core.
+    /// It answers rather than deciding, so what is checked here is the envelope and nothing else.
     #[derive(Default)]
     struct Core {
         refuses: Option<Refusal>,
@@ -236,8 +236,7 @@ mod tests {
         }
     }
 
-    /// Section 2.4 gives each of these its own code, and the sentence has to
-    /// say which of them happened.
+    /// Section 2.4 gives each of these its own code, and the sentence has to say which of them happened.
     #[test]
     fn each_way_a_disposal_is_refused_carries_its_own_code() {
         let refusals = [
