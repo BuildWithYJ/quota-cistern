@@ -8,11 +8,6 @@ use std::fmt::{self, Display};
 
 use super::{Budget, Usage};
 
-/// The most tasks that run at once, whatever the budget would allow.
-///
-/// A guard on the machine rather than on the budget: each task is a checkout and an agent process of its own.
-const AT_ONCE: usize = 4;
-
 /// A percentage as hundredths of one.
 ///
 /// A share is declared in whole percent and measured in hundredths.
@@ -85,12 +80,12 @@ pub struct Cost {
 /// What is left, divided by what one task cost, multiplying first so that the fraction survives.
 /// A set that cost nothing measurable leaves one task to start.
 /// Which is what makes the sample the next answer is worked out from.
-pub fn room_for(left: u64, cost: Option<Cost>, running: usize) -> usize {
+pub fn room_for(left: u64, cost: Option<Cost>, running: usize, at_once: usize) -> usize {
     if left == 0 {
         return 0;
     }
     let fits = match cost.filter(|cost| cost.total > 0 && cost.over > 0) {
-        Some(cost) => (left.saturating_mul(cost.over) / cost.total).min(AT_ONCE as u64) as usize,
+        Some(cost) => (left.saturating_mul(cost.over) / cost.total).min(at_once as u64) as usize,
         None => 1,
     };
     fits.saturating_sub(running)
@@ -108,6 +103,10 @@ pub fn cost_of(costs: impl IntoIterator<Item = u64>) -> Cost {
 
 #[cfg(test)]
 mod tests {
+    /// The machine limit the composition root passes in, fixed here so the
+    /// arithmetic is what is being checked.
+    const AT_ONCE: usize = 4;
+
     use super::*;
     use crate::core::domain::Span;
 
@@ -170,13 +169,13 @@ mod tests {
 
     #[test]
     fn with_nothing_to_go_on_one_task_starts() {
-        assert_eq!(room_for(1_000_000, None, 0), 1);
+        assert_eq!(room_for(1_000_000, None, 0, AT_ONCE), 1);
     }
 
     #[test]
     fn what_is_left_divided_by_what_one_costs_is_how_many_start() {
-        assert_eq!(room_for(300, over(100, 1), 0), 3);
-        assert_eq!(room_for(300, over(300, 3), 0), 3);
+        assert_eq!(room_for(300, over(100, 1), 0, AT_ONCE), 3);
+        assert_eq!(room_for(300, over(300, 3), 0, AT_ONCE), 3);
     }
 
     /// Two tasks that moved the vendor's limit one point cost half a point each.
@@ -186,37 +185,37 @@ mod tests {
     #[test]
     fn a_cost_smaller_than_one_still_says_how_many_fit() {
         // One point left, half a point each.
-        assert_eq!(room_for(1, over(1, 2), 0), 2);
-        assert_eq!(room_for(49, over(1, 2), 0), AT_ONCE);
+        assert_eq!(room_for(1, over(1, 2), 0, AT_ONCE), 2);
+        assert_eq!(room_for(49, over(1, 2), 0, AT_ONCE), AT_ONCE);
     }
 
     #[test]
     fn what_is_already_running_counts_against_that() {
-        assert_eq!(room_for(300, over(100, 1), 2), 1);
-        assert_eq!(room_for(300, over(100, 1), 3), 0);
+        assert_eq!(room_for(300, over(100, 1), 2, AT_ONCE), 1);
+        assert_eq!(room_for(300, over(100, 1), 3, AT_ONCE), 0);
     }
 
     /// A large budget divides into more tasks than a machine should run.
     #[test]
     fn no_more_than_a_handful_start_however_large_the_budget() {
-        assert_eq!(room_for(1_000_000, over(1, 1), 0), AT_ONCE);
+        assert_eq!(room_for(1_000_000, over(1, 1), 0, AT_ONCE), AT_ONCE);
     }
 
     #[test]
     fn nothing_starts_once_the_budget_is_spent() {
-        assert_eq!(room_for(0, over(100, 1), 0), 0);
-        assert_eq!(room_for(0, None, 0), 0);
+        assert_eq!(room_for(0, over(100, 1), 0, AT_ONCE), 0);
+        assert_eq!(room_for(0, None, 0, AT_ONCE), 0);
     }
 
     #[test]
     fn nothing_starts_when_one_task_costs_more_than_is_left() {
-        assert_eq!(room_for(50, over(100, 1), 0), 0);
+        assert_eq!(room_for(50, over(100, 1), 0, AT_ONCE), 0);
     }
 
     /// A set that has cost nothing at all has not run yet.
     #[test]
     fn a_set_that_cost_nothing_starts_one_at_a_time() {
-        assert_eq!(room_for(50, over(0, 2), 0), 1);
+        assert_eq!(room_for(50, over(0, 2), 0, AT_ONCE), 1);
     }
 
     #[test]

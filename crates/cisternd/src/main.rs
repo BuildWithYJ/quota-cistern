@@ -20,13 +20,16 @@ use core::{
     port::inbound::{
         Declaration, ExecutionUseCase, Page, Refusal, Report, Started, Stopped, Trail,
     },
-    service::{BacklogService, ConfigurationService, ExecutionService, ReviewService},
+    service::{BacklogService, ConfigurationService, ExecutionService, Outside, ReviewService},
 };
 use platform::work::Queue;
 
 /// How many tasks the daemon has hands for.
 ///
-/// The core decides how many may run; this only has to be at least that many.
+/// A guard on the machine: each task is a checkout of a repository and an agent process of
+/// its own.
+/// The core is told this number rather than holding one of its own, so that it never assigns
+/// more than there are threads to run.
 const AT_ONCE: usize = 4;
 
 fn main() -> ExitCode {
@@ -78,13 +81,16 @@ fn main() -> ExitCode {
     let backlog = BacklogService::new(&backlog_store, &roots);
     let review = ReviewService::new(&backlog_store, &results);
     let execution = ExecutionService::new(
-        &session_store,
-        &backlog_store,
-        &worktrees,
-        &agent,
-        &clock,
-        &limit,
-        &traces,
+        Outside {
+            sessions: &session_store,
+            tasks: &backlog_store,
+            worktrees: &worktrees,
+            agent: &agent,
+            clock: &clock,
+            limit: &limit,
+            traces: &traces,
+        },
+        AT_ONCE,
     );
 
     let server = match exchange::listen() {
@@ -101,8 +107,7 @@ fn main() -> ExitCode {
     };
 
     thread::scope(|threads| {
-        // How many run at once is the core's, decided from the budget.
-        // These are only the hands, and one waiting on the queue costs nothing.
+        // The same number the core was given, so a task it assigns has a thread waiting.
         for _ in 0..AT_ONCE {
             threads.spawn(|| {
                 loop {

@@ -20,43 +20,40 @@ use crate::core::{
 
 use super::{backlog, sessions};
 
+/// What running a session needs from outside.
+///
+/// One value rather than an argument each, so that a port added later is a line here and a
+/// line where the daemon is built, and nothing in between.
+pub struct Outside<'a> {
+    pub sessions: &'a dyn SessionStore,
+    pub tasks: &'a dyn BacklogStore,
+    pub worktrees: &'a dyn Worktrees,
+    pub agent: &'a dyn Agent,
+    pub clock: &'a dyn Clock,
+    pub limit: &'a dyn Limit,
+    pub traces: &'a dyn Traces,
+}
+
 /// The commands over sessions, and what they need from outside.
 pub struct ExecutionService<'a> {
-    sessions: &'a dyn SessionStore,
-    tasks: &'a dyn BacklogStore,
-    worktrees: &'a dyn Worktrees,
-    agent: &'a dyn Agent,
-    clock: &'a dyn Clock,
-    limit: &'a dyn Limit,
-    traces: &'a dyn Traces,
+    outside: Outside<'a>,
+    /// The most tasks this machine has hands for.
+    ///
+    /// A guard on the machine rather than on the budget, so the number belongs to whoever
+    /// started the daemon rather than to a rule about spending.
+    at_once: usize,
 }
 
 impl<'a> ExecutionService<'a> {
-    pub fn new(
-        sessions: &'a dyn SessionStore,
-        tasks: &'a dyn BacklogStore,
-        worktrees: &'a dyn Worktrees,
-        agent: &'a dyn Agent,
-        clock: &'a dyn Clock,
-        limit: &'a dyn Limit,
-        traces: &'a dyn Traces,
-    ) -> Self {
-        ExecutionService {
-            sessions,
-            tasks,
-            worktrees,
-            agent,
-            clock,
-            limit,
-            traces,
-        }
+    pub fn new(outside: Outside<'a>, at_once: usize) -> Self {
+        ExecutionService { outside, at_once }
     }
 
     /// How far the vendor's limit is spent, as a whole number of percent.
     ///
     /// Only a session declared as a share asks, since only a share is measured against it and asking costs something.
     fn limit_now(&self) -> Result<u64, Refusal> {
-        let reading = self.limit.read()?;
+        let reading = self.outside.limit.read()?;
         reading
             .used
             .parse()
@@ -77,7 +74,10 @@ impl ExecutionUseCase for ExecutionService<'_> {
 
         // Asked before a session is opened.
         // A run with nothing to do would otherwise leave one behind that has to be stopped again.
-        if backlog::read(self.tasks)?.next_to_assign().is_none() {
+        if backlog::read(self.outside.tasks)?
+            .next_to_assign()
+            .is_none()
+        {
             return Err(Refusal::NothingToAssign);
         }
 
@@ -86,13 +86,13 @@ impl ExecutionUseCase for ExecutionService<'_> {
 
         // Read before the session opens.
         // A share is measured from where the vendor's limit stood when this session had spent nothing.
-        let started_at = self.clock.now();
+        let started_at = self.outside.clock.now();
         let limit_at_start = match usage {
             Usage::Share(_) => Some(self.limit_now()?),
             Usage::Tokens(_) => None,
         };
 
-        let opened = sessions::change(self.sessions, |sessions| {
+        let opened = sessions::change(self.outside.sessions, |sessions| {
             sessions
                 .open(Opening {
                     budget,
@@ -122,8 +122,8 @@ impl ExecutionUseCase for ExecutionService<'_> {
         let page = counted_from("page", page, 1)?;
         let limit = counted_from("limit", limit, 20)?;
 
-        let held = sessions::read(self.sessions)?;
-        let tasks = backlog::read(self.tasks)?;
+        let held = sessions::read(self.outside.sessions)?;
+        let tasks = backlog::read(self.outside.tasks)?;
 
         // Newest first, which is the order the numbers were handed out in.
         let mut newest: Vec<&Session> = held.sessions().iter().collect();
@@ -155,7 +155,7 @@ impl ExecutionUseCase for ExecutionService<'_> {
             value: id.to_owned(),
         })?;
 
-        let held = sessions::read(self.sessions)?;
+        let held = sessions::read(self.outside.sessions)?;
         let session = held
             .sessions()
             .iter()
@@ -164,7 +164,7 @@ impl ExecutionUseCase for ExecutionService<'_> {
                 id: wanted.labelled(),
             })?;
 
-        let tasks = backlog::read(self.tasks)?;
+        let tasks = backlog::read(self.outside.tasks)?;
         let ran = tasks
             .taken_by(wanted)
             .into_iter()
@@ -200,7 +200,7 @@ impl ExecutionUseCase for ExecutionService<'_> {
             key: "task".to_owned(),
             value: id.to_owned(),
         })?;
-        let held = backlog::read(self.tasks)?;
+        let held = backlog::read(self.outside.tasks)?;
         let task = held.find(wanted).ok_or_else(|| Refusal::NoSuchTask {
             id: wanted.labelled(),
         })?;
@@ -209,6 +209,7 @@ impl ExecutionUseCase for ExecutionService<'_> {
         let done = task.state() != TaskState::Running;
 
         let read = self
+            .outside
             .traces
             .read(&wanted.to_string(), since.unwrap_or_default())?;
         Ok(Trail {
@@ -226,34 +227,34 @@ impl ExecutionUseCase for ExecutionService<'_> {
     }
 
     fn interrupt(&self) -> Result<Stopped, Refusal> {
-        let held = sessions::read(self.sessions)?;
+        let held = sessions::read(self.outside.sessions)?;
         let running = held.running().ok_or(Refusal::NoSessionRunning)?.id();
 
         // Before anything is ended.
         // A task the vendor was still running reports nothing, and a share is read from the vendor.
         let spent = self.spending_of(running)?;
-        let now = self.clock.now();
-        sessions::change(self.sessions, |sessions| {
+        let now = self.outside.clock.now();
+        sessions::change(self.outside.sessions, |sessions| {
             sessions.record(running, spent, now);
             Ok(())
         })?;
 
         // The runs end before the tasks do, so nothing is recorded as ended while its agent is still working.
-        for task in backlog::read(self.tasks)?.taken_by(running) {
+        for task in backlog::read(self.outside.tasks)?.taken_by(running) {
             if task.state() == TaskState::Running {
-                self.agent.stop(&task.id().to_string());
+                self.outside.agent.stop(&task.id().to_string());
             }
         }
 
-        let interrupted = backlog::change(self.tasks, |tasks| {
+        let interrupted = backlog::change(self.outside.tasks, |tasks| {
             Ok(tasks.interrupt(running, &StoppedReason::Interrupted.to_string()))
         })?;
-        sessions::change(self.sessions, |sessions| {
+        sessions::change(self.outside.sessions, |sessions| {
             sessions.stop(running, StoppedReason::Interrupted, now);
             Ok(())
         })?;
 
-        let held = sessions::read(self.sessions)?;
+        let held = sessions::read(self.outside.sessions)?;
         let session = held
             .sessions()
             .iter()
@@ -278,7 +279,7 @@ impl ExecutionUseCase for ExecutionService<'_> {
         })?;
 
         let (repository, base, branch, instruction, model) = {
-            let tasks = backlog::read(self.tasks)?;
+            let tasks = backlog::read(self.outside.tasks)?;
             let held = tasks
                 .find(id)
                 .ok_or_else(|| Refusal::NoSuchTask { id: id.labelled() })?;
@@ -291,7 +292,7 @@ impl ExecutionUseCase for ExecutionService<'_> {
             )
         };
 
-        let at = match self.worktrees.prepare(Cut {
+        let at = match self.outside.worktrees.prepare(Cut {
             repository: &repository,
             base: &base,
             branch: &branch,
@@ -301,13 +302,13 @@ impl ExecutionUseCase for ExecutionService<'_> {
             // A task with nowhere to work has ended, and nothing ran, so there is nothing to have consumed.
             Err(e) => return self.ended(id, TaskState::Error, Some(e.reason), Observation::NotYet),
         };
-        backlog::change(self.tasks, |tasks| {
+        backlog::change(self.outside.tasks, |tasks| {
             tasks.work_area(id, at.clone());
             Ok(())
         })?;
 
-        let trace = self.traces.keeping(&id.to_string())?;
-        let ended = self.agent.work(Work {
+        let trace = self.outside.traces.keeping(&id.to_string())?;
+        let ended = self.outside.agent.work(Work {
             task: &id.to_string(),
             at: &at,
             trace,
@@ -398,7 +399,7 @@ impl ExecutionService<'_> {
     /// One that stopped ran until the moment it last changed, which is the moment it stopped.
     fn elapsed(&self, session: &Session) -> Span {
         let until = match session.state() {
-            SessionState::Running => self.clock.now(),
+            SessionState::Running => self.outside.clock.now(),
             SessionState::Stopped => session.updated_at(),
         };
         Span::of(until.saturating_sub(session.started_at()))
@@ -420,11 +421,12 @@ impl ExecutionService<'_> {
     /// The session stops, because every other task in it would be turned away the same way.
     fn turned_away(&self, id: TaskId, consumed: Observation) -> Result<Vec<String>, Refusal> {
         let starts_over = self
+            .outside
             .limit
             .read()
             .ok()
             .and_then(|at| at.resets_at.parse().ok());
-        let session = backlog::change(self.tasks, |tasks| {
+        let session = backlog::change(self.outside.tasks, |tasks| {
             tasks.record(id, consumed.clone());
             let session = tasks.find(id).and_then(Task::session);
             tasks.wait_again(id);
@@ -433,7 +435,7 @@ impl ExecutionService<'_> {
 
         if let Some(session) = session {
             if let Some(at) = starts_over {
-                sessions::change(self.sessions, |sessions| {
+                sessions::change(self.outside.sessions, |sessions| {
                     sessions.resets_at(session, at);
                     Ok(())
                 })?;
@@ -453,7 +455,7 @@ impl ExecutionService<'_> {
         reason: Option<String>,
         consumed: Observation,
     ) -> Result<Vec<String>, Refusal> {
-        let session = backlog::change(self.tasks, |tasks| {
+        let session = backlog::change(self.outside.tasks, |tasks| {
             tasks.finish(id, state, reason.clone());
             tasks.record(id, consumed.clone());
             Ok(tasks.find(id).and_then(Task::session))
@@ -477,13 +479,13 @@ impl ExecutionService<'_> {
         let spent = self.spending(&held)?;
         // A share cannot be worked out again once the session has stopped.
         // What was read here is what is reported for it afterwards.
-        let now = self.clock.now();
-        sessions::change(self.sessions, |sessions| {
+        let now = self.outside.clock.now();
+        sessions::change(self.outside.sessions, |sessions| {
             sessions.record(session, spent, now);
             Ok(())
         })?;
 
-        let (left, running, waiting, cost) = backlog::read(self.tasks).map(|tasks| {
+        let (left, running, waiting, cost) = backlog::read(self.outside.tasks).map(|tasks| {
             let cost = match (held.budget().usage, spent) {
                 // Tokens mean the same in every session, so what a task costs is what tasks have cost here at all.
                 (Usage::Tokens(_), _) => {
@@ -507,8 +509,8 @@ impl ExecutionService<'_> {
         if let Some(why) = self.why_it_stops(&held, left, running, waiting, cost)? {
             return self.stop(session, why).map(|()| Vec::new());
         }
-        let room = room_for(left, cost, running);
-        backlog::change(self.tasks, |tasks| {
+        let room = room_for(left, cost, running, self.at_once);
+        backlog::change(self.outside.tasks, |tasks| {
             Ok((0..room).filter_map(|_| tasks.assign(session)).collect())
         })
     }
@@ -525,17 +527,17 @@ impl ExecutionService<'_> {
         // A count nobody could read leaves a budget that cannot be measured.
         // A budget that cannot be measured cannot be held to.
         if matches!(
-            backlog::read(self.tasks)?.consumed_by(held.id()),
+            backlog::read(self.outside.tasks)?.consumed_by(held.id()),
             Observation::Unreadable { .. }
         ) {
             return Ok(Some(StoppedReason::ObservationUnreadable));
         }
-        if held.out_of_time(self.clock.now()) {
+        if held.out_of_time(self.outside.clock.now()) {
             return Ok(Some(StoppedReason::BudgetHardlock));
         }
         // Nothing more fits, and nothing is running that would make room.
         // Waiting for a task that will never start is not carrying on.
-        if running == 0 && room_for(left, cost, 0) == 0 {
+        if running == 0 && room_for(left, cost, 0, self.at_once) == 0 {
             return Ok(Some(StoppedReason::BudgetHardlock));
         }
         if running == 0 && !waiting {
@@ -546,12 +548,12 @@ impl ExecutionService<'_> {
 
     /// Stops the session and ends whatever it still had running.
     fn stop(&self, session: SessionId, why: StoppedReason) -> Result<(), Refusal> {
-        let now = self.clock.now();
-        sessions::change(self.sessions, |sessions| {
+        let now = self.outside.clock.now();
+        sessions::change(self.outside.sessions, |sessions| {
             sessions.stop(session, why, now);
             Ok(())
         })?;
-        backlog::change(self.tasks, |tasks| {
+        backlog::change(self.outside.tasks, |tasks| {
             Ok(!tasks.interrupt(session, &why.to_string()).is_empty())
         })
         .map(|_: bool| ())
@@ -559,7 +561,7 @@ impl ExecutionService<'_> {
 
     /// The same, for a session named only by its number.
     fn spending_of(&self, session: SessionId) -> Result<Spending, Refusal> {
-        let held = sessions::read(self.sessions)?;
+        let held = sessions::read(self.outside.sessions)?;
         let held = held
             .sessions()
             .iter()
@@ -583,7 +585,8 @@ impl ExecutionService<'_> {
                 ),
             }),
             (Usage::Tokens(_), _) => Ok(Spending::Tokens(
-                Consumption::total(backlog::read(self.tasks)?.counted_in(held.id())).tokens(),
+                Consumption::total(backlog::read(self.outside.tasks)?.counted_in(held.id()))
+                    .tokens(),
             )),
         }
     }
@@ -591,7 +594,7 @@ impl ExecutionService<'_> {
     /// The session, if it is one this still decides for.
     fn held(&self, session: SessionId) -> Result<Option<Session>, Refusal> {
         let mut found = None;
-        sessions::change(self.sessions, |sessions| {
+        sessions::change(self.outside.sessions, |sessions| {
             found = sessions
                 .sessions()
                 .iter()
@@ -610,6 +613,9 @@ fn labelled(ids: Vec<TaskId>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    /// The hands the composition root gives the core, fixed here.
+    const AT_ONCE: usize = 4;
+
     use std::sync::{Mutex, PoisonError};
 
     use crate::core::{
@@ -905,13 +911,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         let started = execution.run(declaring("50%", "8h")).unwrap();
@@ -929,13 +938,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
         execution.run(declaring("2M", "30m")).unwrap();
 
@@ -955,13 +967,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
         execution.run(declaring("50%", "8h")).unwrap();
 
@@ -977,13 +992,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
         execution.run(declaring("50%", "8h")).unwrap();
 
@@ -1010,13 +1028,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         assert_eq!(
@@ -1033,13 +1054,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         assert_eq!(
@@ -1080,13 +1104,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         let refused = execution.run(declaring("50%", "8h")).unwrap_err();
@@ -1100,13 +1127,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("50%", "8h")).unwrap();
@@ -1138,13 +1168,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("50%", "8h")).unwrap();
@@ -1177,13 +1210,16 @@ mod tests {
         };
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("50%", "8h")).unwrap();
@@ -1210,13 +1246,16 @@ mod tests {
             },
         });
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("50%", "8h")).unwrap();
@@ -1255,13 +1294,16 @@ mod tests {
             }),
         });
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("50%", "8h")).unwrap();
@@ -1282,13 +1324,16 @@ mod tests {
             observed: spending(),
         });
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("50%", "8h")).unwrap();
@@ -1311,13 +1356,16 @@ mod tests {
             observed: spending(),
         });
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("2M", "8h")).unwrap();
@@ -1345,13 +1393,16 @@ mod tests {
             refuse: false,
         };
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &full,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &full,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("2M", "8h")).unwrap();
@@ -1383,13 +1434,16 @@ mod tests {
             refuse: false,
         };
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &room,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &room,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("2M", "8h")).unwrap();
@@ -1417,13 +1471,16 @@ mod tests {
             refuse: true,
         };
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &silent,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &silent,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("2M", "8h")).unwrap();
@@ -1441,13 +1498,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         // The stand-in agent reports far more than this budget allows, so the first task spends the whole of it.
@@ -1483,13 +1543,16 @@ mod tests {
             step: 50,
         };
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &moving,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &moving,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         // The first decision has no task to go on, so one starts alone.
@@ -1515,13 +1578,16 @@ mod tests {
             step: 100,
         };
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &moving,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &moving,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("1%", "8h")).unwrap();
@@ -1542,13 +1608,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         // A budget one task overruns.
@@ -1571,13 +1640,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("1000", "8h")).unwrap();
@@ -1596,13 +1668,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         for (page, limit) in [(Some("0"), None), (None, Some("0")), (Some("one"), None)] {
@@ -1620,13 +1695,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         assert_eq!(execution.sessions(None, None).unwrap().sessions, Vec::new());
@@ -1639,13 +1717,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("2M", "8h")).unwrap();
@@ -1670,13 +1751,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("2M", "8h")).unwrap();
@@ -1702,13 +1786,16 @@ mod tests {
             refuse: false,
         };
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &full,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &full,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("2M", "8h")).unwrap();
@@ -1726,13 +1813,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         assert_eq!(
@@ -1750,13 +1840,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("2M", "8h")).unwrap();
@@ -1782,13 +1875,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("2M", "8h")).unwrap();
@@ -1817,13 +1913,16 @@ mod tests {
             observed: spending(),
         });
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("2M", "8h")).unwrap();
@@ -1841,13 +1940,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         assert_eq!(execution.interrupt(), Err(Refusal::NoSessionRunning));
@@ -1862,24 +1964,30 @@ mod tests {
         let agent = Standing::finishing();
         let late = Frozen(1_000 + 8 * 3_600);
         let opened = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
         opened.run(declaring("2M", "8h")).unwrap();
 
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &late,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &late,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
         let assigned = execution.carry_on("task:1").unwrap();
 
@@ -1898,13 +2006,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         // The supervisor is what assigns more than one.
@@ -1938,13 +2049,16 @@ mod tests {
         };
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         execution.run(declaring("50%", "8h")).unwrap();
@@ -1970,13 +2084,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         assert!(!execution.trace("1", None).unwrap().done);
@@ -1992,13 +2109,16 @@ mod tests {
         let areas = Areas::default();
         let agent = Standing::finishing();
         let execution = ExecutionService::new(
-            &sessions,
-            &tasks,
-            &areas,
-            &agent,
-            &STILL,
-            &UNTOUCHED,
-            &NOTHING_KEPT,
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
         );
 
         assert_eq!(

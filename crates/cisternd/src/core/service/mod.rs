@@ -11,5 +11,5 @@ mod sessions;
 
 pub use backlog::BacklogService;
 pub use configuration::ConfigurationService;
-pub use execution::ExecutionService;
+pub use execution::{ExecutionService, Outside};
 pub use review::ReviewService;
