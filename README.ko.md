@@ -121,7 +121,7 @@ task:1 applied to working tree
 
 ## 기여
 
-초기 개발 단계이며 제안은 언제든 환영합니다. 개발 환경과 컨벤션은 [CONTRIBUTING](CONTRIBUTING.md)에, 구조와 설계 결정은 [docs/](docs/)에 정리해 두었고, 지금 무엇을 만들고 있는지는 [v0.1.0 마일스톤](https://github.com/BuildWithYJ/quota-cistern/milestone/1)에서 볼 수 있습니다.
+초기 개발 단계이며 제안은 언제든 환영합니다. 개발 환경과 컨벤션은 [CONTRIBUTING](CONTRIBUTING.md)에, 구조와 설계 결정은 [docs/](docs/)에 정리해 두었습니다.
 
 ## 라이선스
 

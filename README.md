@@ -123,7 +123,7 @@ The agent runs with `--permission-mode bypassPermissions`. A work area is not a 
 
 ## Contributing
 
-The project is in early development and proposals are welcome. [CONTRIBUTING](CONTRIBUTING.md) has the development setup and the conventions, [docs/](docs/) has the structure and the design decisions, and the [v0.1.0 milestone](https://github.com/BuildWithYJ/quota-cistern/milestone/1) shows what is being built now.
+The project is in early development and proposals are welcome. [CONTRIBUTING](CONTRIBUTING.md) has the development setup and the conventions, and [docs/](docs/) has the structure and the design decisions.
 
 ## License
 
