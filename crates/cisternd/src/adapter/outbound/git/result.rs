@@ -9,7 +9,7 @@ use std::{
 };
 
 use crate::core::port::outbound::{
-    Between, Changes, Counts, NotApplied, Results, Touched, Unavailable,
+    Between, Changes, Commit, Counts, NotApplied, Results, Touched, Unavailable,
 };
 
 use super::said;
@@ -32,6 +32,20 @@ impl Results for GitResults {
                 &["rev-list", "--count", &behind(between.branch, between.base)],
             )?),
         })
+    }
+
+    fn made(&self, between: Between<'_>) -> Option<Vec<Commit>> {
+        let range = behind(between.base, between.branch);
+        let written = git(
+            between.repository,
+            &[
+                "log",
+                &format!("--format={MARKS}%h%x09%s"),
+                "--numstat",
+                &range,
+            ],
+        )?;
+        Some(made(&written))
     }
 
     fn changes(&self, between: Between<'_>) -> Option<Changes> {
@@ -173,6 +187,54 @@ fn putting(repository: &str, patch: &str, asking: Asking) -> Result<(), String> 
     }
 }
 
+/// What marks the start of a commit in what `git log` wrote.
+///
+/// The counted lines that follow a commit are tab-separated too, so a tab alone does not tell
+/// one from the other.
+/// This is the record separator, which cannot appear in a subject.
+const MARKS: &str = "\u{1e}";
+
+/// Commits as `git log` writes them, each followed by the files it touched.
+///
+/// A merge names no files and comes back counted as nothing, which is what it changed.
+fn made(written: &str) -> Vec<Commit> {
+    let mut all: Vec<Commit> = Vec::new();
+    for line in written.lines().filter(|line| !line.trim().is_empty()) {
+        match line.strip_prefix(MARKS) {
+            Some(said) => {
+                let (sha, subject) = said.split_once('\t').unwrap_or((said, ""));
+                all.push(Commit {
+                    sha: sha.to_owned(),
+                    subject: subject.to_owned(),
+                    added: "0".to_owned(),
+                    removed: "0".to_owned(),
+                });
+            }
+            None => {
+                let Some(one) = all.last_mut() else { continue };
+                let mut said = line.split('\t');
+                let (Some(added), Some(removed)) = (said.next(), said.next()) else {
+                    continue;
+                };
+                one.added = added_to(&one.added, added);
+                one.removed = added_to(&one.removed, removed);
+            }
+        }
+    }
+    all
+}
+
+/// One more file's count added to what a commit has so far.
+///
+/// git counts no lines in a binary file, so a commit of nothing but those keeps the count it
+/// had rather than becoming unreadable.
+fn added_to(so_far: &str, one: &str) -> String {
+    match (so_far.parse::<u64>(), one.parse::<u64>()) {
+        (Ok(so_far), Ok(one)) => (so_far + one).to_string(),
+        _ => so_far.to_owned(),
+    }
+}
+
 /// Per-file counts, as `--numstat` writes them.
 ///
 /// A binary file is counted with a dash rather than a number.
@@ -268,6 +330,44 @@ mod tests {
         let counts = GitResults.counts(between(&at, "cistern/1")).unwrap();
         assert_eq!(counts.commits, "1");
         assert_eq!(counts.base_ahead, "0");
+    }
+
+    /// Section 2.1 lists what the branch holds, newest first, with what each commit counted.
+    #[test]
+    fn every_commit_the_branch_gained_is_listed_newest_first() {
+        let dir = a_repository_with_a_result();
+        let at = path_of(&dir);
+        run(dir.path(), &["switch", "-q", "cistern/1"]);
+        write(dir.path(), "notes.md", "later\n");
+        run(dir.path(), &["add", "."]);
+        run(dir.path(), &["commit", "-m", "and a note"]);
+        run(dir.path(), &["switch", "-q", "main"]);
+
+        let made = GitResults.made(between(&at, "cistern/1")).unwrap();
+        assert_eq!(made.len(), 2);
+        assert_eq!(made[0].subject, "and a note");
+        assert_eq!(made[0].added, "1");
+        assert_eq!(made[0].removed, "0");
+        assert_eq!(made[1].subject, "the work");
+        assert_eq!(made[1].added, "2");
+        assert!(!made[0].sha.is_empty());
+    }
+
+    /// A subject holding a tab would be read as a count if a tab were what told them apart.
+    #[test]
+    fn a_subject_with_a_tab_in_it_is_still_one_commit() {
+        let dir = a_repository_with_a_result();
+        let at = path_of(&dir);
+        run(dir.path(), &["switch", "-q", "cistern/1"]);
+        write(dir.path(), "more.md", "x\n");
+        run(dir.path(), &["add", "."]);
+        run(dir.path(), &["commit", "-m", "one\ttwo\tthree"]);
+        run(dir.path(), &["switch", "-q", "main"]);
+
+        let made = GitResults.made(between(&at, "cistern/1")).unwrap();
+        assert_eq!(made.len(), 2);
+        assert_eq!(made[0].subject, "one\ttwo\tthree");
+        assert_eq!(made[0].added, "1");
     }
 
     /// Section 2.4 reports how far the base has moved since the task left it.

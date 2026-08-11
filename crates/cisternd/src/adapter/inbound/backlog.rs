@@ -94,6 +94,13 @@ fn detailed(detail: Detail) -> Value {
         "reason": detail.reason,
         "worktree": detail.worktree,
         "disposition": detail.disposition,
+        "commits": detail.commits.map(|made| made.into_iter().map(|one| serde_json::json!({
+            "sha": one.sha,
+            "subject": one.subject,
+            "added": one.added,
+            "removed": one.removed,
+        })).collect::<Vec<_>>()),
+        "base_ahead": detail.base_ahead,
     })
 }
 
@@ -183,6 +190,8 @@ mod tests {
                 reason: None,
                 worktree: None,
                 disposition: None,
+                commits: None,
+                base_ahead: None,
             }))
         }
 

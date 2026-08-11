@@ -236,7 +236,7 @@ fn count(written: &str) -> Option<u64> {
 mod tests {
     use std::sync::Mutex;
 
-    use crate::core::port::outbound::{Counts, StoredBacklog, StoredTask, Unavailable};
+    use crate::core::port::outbound::{Commit, Counts, StoredBacklog, StoredTask, Unavailable};
 
     use super::*;
 
@@ -343,6 +343,10 @@ mod tests {
     }
 
     impl Results for Repository {
+        fn made(&self, _between: Between<'_>) -> Option<Vec<Commit>> {
+            Some(Vec::new())
+        }
+
         fn counts(&self, between: Between<'_>) -> Option<Counts> {
             self.asked.lock().unwrap().push(format!(
                 "counts {} {}..{}",

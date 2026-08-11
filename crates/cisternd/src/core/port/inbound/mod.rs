@@ -9,7 +9,7 @@ mod execution;
 mod review;
 mod work;
 
-pub use backlog::{Added, BacklogUseCase, Detail, Listing, Registration, Removed, Waiting};
+pub use backlog::{Added, BacklogUseCase, Detail, Listing, Made, Registration, Removed, Waiting};
 pub use configuration::{Applied, ConfigurationUseCase, View};
 pub use execution::{
     Declaration, Declared, ExecutionUseCase, Happened, Listed, Page, Ran, Report, Started, Stopped,

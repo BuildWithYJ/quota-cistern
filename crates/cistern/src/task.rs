@@ -226,7 +226,7 @@ fn detailed(data: &Value) {
     println!("{id}  {}", text(data, "state").unwrap_or("(none)"));
     line(DETAILED, "session", text(data, "session"));
     line(DETAILED, "title", text(data, "title"));
-    line(DETAILED, "base", text(data, "base_branch"));
+    line(DETAILED, "base", based(data).as_deref());
     line(DETAILED, "after", text(data, "after"));
     line(
         DETAILED,
@@ -236,7 +236,54 @@ fn detailed(data: &Value) {
     line(DETAILED, "branch", text(data, "branch"));
     line(DETAILED, "reason", text(data, "reason"));
     line(DETAILED, "worktree", text(data, "worktree"));
+    made(data);
     line(DETAILED, "disposition", text(data, "disposition"));
+}
+
+/// The base branch, and how far it has moved since the task left it.
+fn based(data: &Value) -> Option<String> {
+    let base = text(data, "base_branch")?.to_owned();
+    match data.get("base_ahead").and_then(Value::as_u64) {
+        Some(0) | None => Some(base),
+        Some(1) => Some(format!("{base} (1 commit ahead)")),
+        Some(ahead) => Some(format!("{base} ({ahead} commits ahead)")),
+    }
+}
+
+/// The commits on the result branch, one per line, as section 2.1 shows them.
+fn made(data: &Value) {
+    let Some(made) = data.get("commits").and_then(Value::as_array) else {
+        return;
+    };
+    if made.is_empty() {
+        return;
+    }
+    let width = made
+        .iter()
+        .filter_map(|one| text(one, "subject"))
+        .map(str::len)
+        .max()
+        .unwrap_or(0);
+
+    println!("  commits:");
+    for one in made {
+        let (Some(sha), Some(subject)) = (text(one, "sha"), text(one, "subject")) else {
+            continue;
+        };
+        println!(
+            "    {sha}  {subject:<width$}  {} {}",
+            counted('+', one.get("added")),
+            counted('-', one.get("removed"))
+        );
+    }
+}
+
+/// A count of lines a commit gained or lost, or a dash where git counted none.
+fn counted(sign: char, held: Option<&Value>) -> String {
+    match held.and_then(Value::as_u64) {
+        Some(count) => format!("{sign}{count}"),
+        None => "-".to_owned(),
+    }
 }
 
 fn waiting(data: &Value) {

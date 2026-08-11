@@ -3,13 +3,16 @@
 use crate::core::{
     domain::{
         Backlog, Consumption, Disposition, NotABacklog, Observation, RemovalRefused, Repository,
-        Restored, SessionId, TaskId, TaskState,
+        Restored, SessionId, Task, TaskId, TaskState,
     },
     port::{
         inbound::{
-            Added, BacklogUseCase, Detail, Listing, Refusal, Registration, Removed, Waiting,
+            Added, BacklogUseCase, Detail, Listing, Made, Refusal, Registration, Removed, Waiting,
         },
-        outbound::{BacklogStore, RepositoryRoots, StoredBacklog, StoredConsumption, StoredTask},
+        outbound::{
+            BacklogStore, Between, RepositoryRoots, Results, StoredBacklog, StoredConsumption,
+            StoredTask,
+        },
     },
 };
 
@@ -20,11 +23,56 @@ use crate::core::{
 pub struct BacklogService<'a> {
     store: &'a dyn BacklogStore,
     roots: &'a dyn RepositoryRoots,
+    results: &'a dyn Results,
 }
 
 impl<'a> BacklogService<'a> {
-    pub fn new(store: &'a dyn BacklogStore, roots: &'a dyn RepositoryRoots) -> Self {
-        BacklogService { store, roots }
+    pub fn new(
+        store: &'a dyn BacklogStore,
+        roots: &'a dyn RepositoryRoots,
+        results: &'a dyn Results,
+    ) -> Self {
+        BacklogService {
+            store,
+            roots,
+            results,
+        }
+    }
+
+    /// What a task left on its branch, for a task whose run has ended.
+    ///
+    /// Section 2.1 answers with nothing while a task is still waiting, and nothing again for a
+    /// branch the user has since deleted.
+    fn left(&self, task: &Task) -> (Option<Vec<Made>>, Option<u64>) {
+        if !task.state().ended() {
+            return (None, None);
+        }
+        let Some(branch) = task.result_branch() else {
+            return (None, None);
+        };
+        let repository = task.repository().to_string();
+        let base = task.base_branch();
+        let asked = || Between {
+            repository: &repository,
+            base: &base,
+            branch: &branch,
+        };
+
+        (
+            self.results.made(asked()).map(|made| {
+                made.into_iter()
+                    .map(|one| Made {
+                        sha: one.sha,
+                        subject: one.subject,
+                        added: one.added.parse().ok(),
+                        removed: one.removed.parse().ok(),
+                    })
+                    .collect()
+            }),
+            self.results
+                .counts(asked())
+                .and_then(|counts| counts.base_ahead.parse().ok()),
+        )
     }
 }
 
@@ -105,6 +153,7 @@ impl BacklogUseCase for BacklogService<'_> {
             });
         };
 
+        let (commits, base_ahead) = self.left(task);
         Ok(Detail {
             id: task.id().labelled(),
             session: task.session().map(|id| id.labelled()),
@@ -118,6 +167,8 @@ impl BacklogUseCase for BacklogService<'_> {
             reason: task.reason().map(str::to_owned),
             worktree: task.worktree().map(str::to_owned),
             disposition: task.disposition().map(|it| it.to_string()),
+            commits,
+            base_ahead,
         })
     }
 
@@ -415,17 +466,50 @@ mod tests {
         }
     }
 
+    /// A repository holding no branch a task made, which is every task in these tests.
+    struct NoBranch;
+
+    impl Results for NoBranch {
+        fn made(&self, _between: Between<'_>) -> Option<Vec<crate::core::port::outbound::Commit>> {
+            None
+        }
+
+        fn counts(&self, _between: Between<'_>) -> Option<crate::core::port::outbound::Counts> {
+            None
+        }
+
+        fn changes(&self, _between: Between<'_>) -> Option<crate::core::port::outbound::Changes> {
+            None
+        }
+
+        fn apply(
+            &self,
+            _between: Between<'_>,
+        ) -> Result<
+            Vec<crate::core::port::outbound::Touched>,
+            crate::core::port::outbound::NotApplied,
+        > {
+            Err(crate::core::port::outbound::NotApplied::NotThere)
+        }
+
+        fn reachable(&self, _repository: &str) -> Result<(), Unavailable> {
+            Ok(())
+        }
+    }
+
+    static NO_BRANCH: NoBranch = NoBranch;
+
     static IN_A_REPOSITORY: Somewhere = Somewhere {
         root: Some("/work/api"),
     };
     static NOWHERE: Somewhere = Somewhere { root: None };
 
     fn in_a_repository(tasks: &Remembered) -> BacklogService<'_> {
-        BacklogService::new(tasks, &IN_A_REPOSITORY)
+        BacklogService::new(tasks, &IN_A_REPOSITORY, &NO_BRANCH)
     }
 
     fn outside_one(tasks: &Remembered) -> BacklogService<'_> {
-        BacklogService::new(tasks, &NOWHERE)
+        BacklogService::new(tasks, &NOWHERE, &NO_BRANCH)
     }
 
     fn registering(title: &str) -> Registration<'_> {

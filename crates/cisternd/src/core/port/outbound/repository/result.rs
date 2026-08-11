@@ -28,6 +28,15 @@ pub struct Changes {
     pub patch: String,
 }
 
+/// One commit a task made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Commit {
+    pub sha: String,
+    pub subject: String,
+    pub added: String,
+    pub removed: String,
+}
+
 /// How far the two branches have moved apart.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Counts {
@@ -62,6 +71,11 @@ pub trait Results: Sync {
     /// Nothing is answered for a branch or a repository that is not there.
     /// A task whose result was deleted is still a task and must still be listed.
     fn counts(&self, between: Between<'_>) -> Option<Counts>;
+
+    /// What the branch gained after it left the base, newest first.
+    ///
+    /// Apart from [`Results::changes`] for the reason [`Results::counts`] gives.
+    fn made(&self, between: Between<'_>) -> Option<Vec<Commit>>;
 
     /// What lies between the two branches.
     ///

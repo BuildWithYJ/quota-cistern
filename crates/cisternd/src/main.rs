@@ -79,7 +79,7 @@ fn main() -> ExitCode {
     };
 
     let configuration = ConfigurationService::new(&configuration_store, known);
-    let backlog = BacklogService::new(&backlog_store, &roots);
+    let backlog = BacklogService::new(&backlog_store, &roots, &results);
     let review = ReviewService::new(&backlog_store, &results);
     let execution = ExecutionService::new(
         Outside {

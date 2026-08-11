@@ -58,6 +58,19 @@ pub struct Detail {
     pub reason: Option<String>,
     pub worktree: Option<String>,
     pub disposition: Option<String>,
+    /// What the branch holds, for a task whose run has ended.
+    pub commits: Option<Vec<Made>>,
+    /// Commits the base has gained since the task left it.
+    pub base_ahead: Option<u64>,
+}
+
+/// One commit a task made, as `task show` lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Made {
+    pub sha: String,
+    pub subject: String,
+    pub added: Option<u64>,
+    pub removed: Option<u64>,
 }
 
 /// The tasks waiting to be assigned.
