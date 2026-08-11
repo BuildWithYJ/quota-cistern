@@ -10,7 +10,6 @@ These apply to every command.
 
 | Flag | Value | Default | Description |
 | --- | --- | --- | --- |
-| `-o`, `--output` | `text` · `json` · `id` | `text` | Output format. `id` is valid only for identifier and list commands |
 | `-h`, `--help` | — | — | Prints usage to stdout and exits (code 0) |
 
 `cistern --version` prints the version. Running `cistern` with no subcommand, or with invalid arguments, prints usage to stderr and exits with code 2.
@@ -26,15 +25,9 @@ These apply to every command.
 | 4 | State conflict | Operation not possible in the current state |
 | 5 | Core error | The core is not running, its version does not match the surface's, or it failed while handling the request |
 
-### Output format
+### Output
 
-`json` prints the command's output fields as they are, `text` prints a human-readable layout, and `id` prints the identifier only. The output table in each command section defines the `json` fields. In `text`, a value that is absent is shown in parentheses, such as `(none)` or `(pending)`, whether it stands as a labelled field or as the whole output.
-
-With `-o json`, stdout carries a single JSON object and nothing else. Logs and progress go to stderr. Errors in JSON form are printed to stdout as follows.
-
-```json
-{ "error": { "code": 4, "message": "session:1 is not running" } }
-```
+Output is text. The output table in each command section names the fields that command answers with, and [the IPC document](ipc.md) records how they reach a surface. A value that is absent is shown in parentheses, such as `(none)`, whether it stands as a labelled field or as the whole output.
 
 ### Identifiers
 
@@ -77,7 +70,7 @@ The tool never deletes or moves result branches. Pushing, merging, and cleanup a
 
 ### List output
 
-List commands (`backlog`, `session ls`, `review ls`) succeed with code 0 even when empty. `text` prints nothing and `json` prints an empty array.
+List commands (`backlog`, `session ls`, `review ls`) succeed with code 0 even when empty, printing nothing.
 
 ## 2. Commands
 
@@ -94,7 +87,7 @@ The backlog is stored at `$XDG_DATA_HOME/cistern/backlog.json`, or `~/.local/sha
 Adds a task to the backlog as `Pending`. It is not assigned to a session directly; which session picks it up is decided by the core when a session opens.
 
 ```
-cistern task add --title <T> --instruction <I> [--branch <B>] [--after <task>] [--model <M>] [-o <fmt>]
+cistern task add --title <T> --instruction <I> [--branch <B>] [--after <task>] [--model <M>]
 ```
 
 **Arguments**
@@ -150,7 +143,7 @@ Removes a task from the backlog. Only `Pending` tasks that have not been assigne
 A task that was waiting for the removed one waits for what that one was waiting for, and waits for nothing when it was first in the chain. Its base branch follows, since the branch the removed task would have produced is never made.
 
 ```
-cistern task rm <task> [-o <fmt>]
+cistern task rm <task>
 ```
 
 **Output**
@@ -181,7 +174,7 @@ task:3 removed from backlog
 Lists `Pending` tasks that have not been assigned yet.
 
 ```
-cistern backlog [-o <fmt>]
+cistern backlog
 ```
 
 **Output** — array of items
@@ -192,7 +185,7 @@ cistern backlog [-o <fmt>]
 | `title` | string | Task title |
 | `base_branch` | string | Base branch |
 
-`json` prints `{ "backlog": [...] }` and `text` prints one item per line.
+One item per line.
 
 **Exit codes**
 
@@ -215,7 +208,7 @@ $ cistern backlog
 Prints the detail of one task.
 
 ```
-cistern task show <task> [-o <fmt>]
+cistern task show <task>
 ```
 
 **Output**
@@ -232,8 +225,6 @@ cistern task show <task> [-o <fmt>]
 | `repository` | string | Repository the task was added from. Shown with the home directory as `~` |
 | `branch` | string | Result branch, or null |
 | `reason` | string | Reason it ended, or null |
-| `commits` | array | Commits on the result branch, each with `sha`, `subject`, `added`, `removed`. Present only in terminal states, otherwise null |
-| `base_ahead` | int | Commits the base branch has gained since the task diverged. Computed at query time |
 | `worktree` | string | Path of the work area, or null once it has been cleaned up |
 | `disposition` | enum | `applied` · `discarded` · null while undisposed |
 
@@ -250,17 +241,15 @@ cistern task show <task> [-o <fmt>]
 ```console
 $ cistern task show 2
 task:2  Interrupted
-  session:  session:1
-  title:    add tests
-  base:     main (2 commits ahead)
-  after:    (none)
-  repo:     ~/work/api
-  branch:   cistern/2
-  reason:   budget hardlock
-  worktree: (cleaned)
-  commits:
-    a1b2c3d  test: cover the boundary cases        +48 -2
-  disposition: (pending)
+  session:     session:1
+  title:       add tests
+  base:        main
+  after:       (none)
+  repo:        ~/work/api
+  branch:      cistern/2
+  reason:      budget hardlock
+  worktree:    ~/.local/share/cistern/worktrees/2
+  disposition: (none)
 ```
 
 ### 2.2 Sessions and execution
@@ -274,7 +263,7 @@ A task runs in a checkout of its own, made with `git worktree` under `$XDG_DATA_
 Declares a budget and starts the session's unattended loop. It is non-blocking and returns at once.
 
 ```
-cistern run --usage <N> --time <T> [--model <M>] [--follow] [-o <fmt>]
+cistern run --usage <N> --time <T> [--model <M>]
 ```
 
 **Arguments**
@@ -284,7 +273,6 @@ cistern run --usage <N> --time <T> [--model <M>] [--follow] [-o <fmt>]
 | `--usage <N>` | yes | percentage or token count | `50%` · `2M` | With `%`, a share of the vendor's five-hour limit; without it, a token count |
 | `--time <T>` | yes | duration | `8h` · `2h30m` | Time limit |
 | `--model <M>` | no | model name | `opus` · `sonnet` | Default for tasks that name no model. Falls back to the vendor default |
-| `--follow` | no | flag | — | Streams progress instead of returning. Ctrl-C ends the stream only; the loop keeps running |
 
 On start the core assigns some of the backlog and runs those tasks in parallel. Assignment is dynamic: each time a task ends, the core decides from what that task actually consumed whether one more fits in the remaining budget, and tasks that are not assigned stay `Pending` in the backlog. A task whose predecessor has not reached `Completed` is not eligible.
 
@@ -304,8 +292,6 @@ The session stops automatically at whichever runs out first, usage or time. Cons
 | `state` | enum | `running` |
 | `assigned` | int | Tasks assigned at start. Assignment is dynamic, so this grows afterwards |
 | `budget` | object | The declared budget (usage, time) |
-
-With `--follow`, progress events are streamed to stderr. Tasks run in parallel, so events interleave.
 
 **Exit codes**
 
@@ -327,25 +313,12 @@ session:1 running (2 tasks assigned to start)
   stop:    cistern interrupt
 ```
 
-`--follow` prints the following to stderr. Assignment is dynamic, so `assigned` appears after the start as well.
-
-```
-[assigned]    2 tasks to start
-[running]     task:1
-[running]     task:2
-[completed]   task:1 → cistern/1
-[assigned]    task:3 (budget allows one more)
-[running]     task:3
-[interrupted] task:2 (budget hardlock)
-[stopped]     session:1 · budget hardlock · consumed 50% · time 3h12m
-```
-
 #### `cistern interrupt`
 
 Stops the running session. Only one session runs at a time, so no target is given; tasks still running end as `Interrupted`.
 
 ```
-cistern interrupt [-o <fmt>]
+cistern interrupt
 ```
 
 **Output**
@@ -379,7 +352,7 @@ session:1 interrupted
 Lists sessions, newest first.
 
 ```
-cistern session ls [--page <N>] [--limit <M>] [-o <fmt>]
+cistern session ls [--page <N>] [--limit <M>]
 ```
 
 **Arguments**
@@ -399,7 +372,7 @@ cistern session ls [--page <N>] [--limit <M>] [-o <fmt>]
 | `task_count` | int | Number of tasks in the session |
 | `updated_at` | string | Last update |
 
-`json` prints `{ "page", "limit", "sessions": [...] }` and `text` prints one session per line.
+One session per line, newest first.
 
 **Exit codes**
 
@@ -422,7 +395,7 @@ session:1  stopped    usage 50%   3 tasks   3h ago
 Prints the detail of one session, including its task list.
 
 ```
-cistern session show <session> [-o <fmt>]
+cistern session show <session>
 ```
 
 **Output**
@@ -436,7 +409,7 @@ cistern session show <session> [-o <fmt>]
 | `updated_at` | string | Last update |
 | `tasks` | array | Tasks in the session, each with id, state, title, branch, reason |
 
-`text` shows `stopped_reason` in parentheses on the first line; while running it shows `running` and no reason.
+`stopped_reason` is shown in parentheses on the first line; while running the line shows `running` and no reason.
 
 **Exit codes**
 
@@ -466,7 +439,7 @@ session:1  stopped (budget hardlock)
 Reads a task's trace. While the task runs this returns the trace so far; after it ends, the stored trace.
 
 ```
-cistern trace <task> [--follow] [--since <cursor>] [-o <fmt>]
+cistern trace <task> [--follow] [--since <cursor>]
 ```
 
 **Arguments**
@@ -487,7 +460,7 @@ The trace is the agent's own output, which the core stores append-only. This com
 | `cursor` | string | Where to resume |
 | `done` | bool | True once the task is terminal and the trace can no longer grow |
 
-`text` prints one event per line, timestamp followed by content.
+One event per line, the time it happened followed by what it said.
 
 **Exit codes**
 
@@ -515,7 +488,7 @@ $ cistern trace 1
 Prints what the task changed on its branch.
 
 ```
-cistern diff <task> [--stat] [-o <fmt>]
+cistern diff <task> [--stat]
 ```
 
 **Arguments**
@@ -534,7 +507,7 @@ cistern diff <task> [--stat] [-o <fmt>]
 | `files` | array | Per file: `path`, `added`, `removed` |
 | `patch` | string | Unified diff |
 
-`text` prints a standard unified diff, or the per-file summary with `--stat`. With no changes it prints `(no changes)`.
+A standard unified diff, or the per-file summary with `--stat`. With no changes it prints `(no changes)`.
 
 **Exit codes**
 
@@ -563,7 +536,7 @@ $ cistern diff 1 --stat
 Lists tasks waiting for disposition across all sessions. `Completed`, `Interrupted`, and `Error` appear together.
 
 ```
-cistern review ls [-o <fmt>]
+cistern review ls
 ```
 
 **Output** — array of items
@@ -578,7 +551,7 @@ cistern review ls [-o <fmt>]
 | `commit_count` | int | Commits on the result branch |
 | `base_ahead` | int | Commits the base branch has gained since the task diverged |
 
-`json` prints `{ "review_queue": [...] }` and `text` prints one task per line.
+One task per line.
 
 A disposed task leaves the queue. `base_ahead` is computed on every query. A task whose branch cannot be read stays in the queue, with both counts absent.
 
@@ -602,7 +575,7 @@ $ cistern review ls
 Applies the result branch's changes to the working tree of the repository the task was added from. It does not commit, and it does not move or delete any branch.
 
 ```
-cistern apply <task> [-o <fmt>]
+cistern apply <task>
 ```
 
 The range applied runs from where the base branch and the result branch diverged up to the result branch, the same range `diff` uses.
@@ -642,7 +615,7 @@ task:5 applied to working tree
 Removes a task from the review queue. It changes neither the branch, the worktree, nor the task state.
 
 ```
-cistern discard <task> [-o <fmt>]
+cistern discard <task>
 ```
 
 The result branch stays, so a disposed task can still be read with `task show` and applied later.

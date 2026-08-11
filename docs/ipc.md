@@ -21,12 +21,12 @@ One message per line, terminated by `\n`.
 
 A message is a JSON object serialized without indentation, so no unescaped newline appears inside one.
 
-A request is one line. A response is one or more lines, and the surface reads until the core closes the connection. A connection closed before a request arrives is answered with nothing, which is what makes connecting and leaving a way to ask whether a core is there.
+A request is one line and so is the response. A connection closed before a request arrives is answered with nothing, which is what makes connecting and leaving a way to ask whether a core is there.
 
 ## Request
 
 ```json
-{"version":"0.1.0","type":"task_show","params":{"task":1}}
+{"version":"0.1.0","type":"task_show","params":{"task":"2"}}
 ```
 
 | Field | Type | Description |
@@ -35,12 +35,12 @@ A request is one line. A response is one or more lines, and the surface reads un
 | `type` | string | The command, in snake_case |
 | `params` | object | The command's arguments |
 
-`type` is the command name with spaces replaced by underscores: `task add` is `task_add`. What `params` holds is the argument table in that command's section of the CLI specification, together with what a surface supplies on the user's behalf. `task_add` carries `cwd`, the directory the command was run in, because the core runs as a daemon and its own working directory is not the user's.
+`type` is the command name with spaces replaced by underscores: `task add` is `task_add`. What `params` holds is the argument table in that command's section of the CLI specification, together with what a surface supplies on the user's behalf. `task_add` carries `cwd`, the directory the command was run in, because the core runs as a daemon and its own working directory is not the user's. Every value in `params` crosses as a string, whatever form the argument table gives it; a value of another type is refused with code 2 and never reaches the core.
 
 ## Response
 
 ```json
-{"type":"task_show","data":{"id":1,"state":"Completed"}}
+{"type":"task_show","data":{"id":"task:2","state":"Completed"}}
 ```
 
 | Field | Type | Description |
@@ -48,7 +48,7 @@ A request is one line. A response is one or more lines, and the surface reads un
 | `type` | string | The `type` of the request being answered |
 | `data` | object | The command's output fields |
 
-What `data` holds is the output table in that command's section of the CLI specification. A response of more than one line carries `data` on each.
+What `data` holds is the output table in that command's section of the CLI specification.
 
 ## Error
 

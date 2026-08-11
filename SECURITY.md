@@ -2,7 +2,11 @@
 
 ## Supported versions
 
-Supported versions will be listed once the first release is out.
+| Version | Supported |
+| --- | --- |
+| 0.1.x | yes |
+
+While the major is 0, only the most recent release is supported. A fix arrives in a new release rather than as a patch to an older one.
 
 ## Reporting a vulnerability
 

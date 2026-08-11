@@ -9,10 +9,9 @@
 모든 커맨드에 적용된다.
 
 
-| 플래그              | 값                      | 기본     | 설명                           |
-| ---------------- | ---------------------- | ------ | ---------------------------- |
-| `-o`, `--output` | `text` · `json` · `id` | `text` | 출력 형식. `id`는 식별자·목록 커맨드에만 유효 |
-| `-h`, `--help`   | —                      | —      | 사용법을 stdout에 출력하고 종료 (코드 0)  |
+| 플래그            | 값 | 기본 | 설명                                |
+| -------------- | - | -- | --------------------------------- |
+| `-h`, `--help` | — | —  | 사용법을 stdout에 출력하고 종료 (코드 0) |
 
 
 최상위 `cistern --version`은 버전을 출력한다. 서브커맨드 없이 `cistern`을 실행하거나 인자가 잘못되면 사용법을 stderr에 출력하고 코드 2로 끝낸다.
@@ -30,15 +29,9 @@
 | 5   | 코어 내부 오류 | 코어가 실행 중이 아니거나, 코어와 버전이 맞지 않거나, 요청 처리 중 실패함 |
 
 
-### 출력 형식
+### 출력
 
-`json`은 커맨드의 출력 필드를 그대로, `text`는 사람이 읽는 레이아웃으로, `id`는 식별자만 출력한다. 각 커맨드 절의 출력 표가 `json`의 필드를 정의하며, `text`는 값이 없으면 `(none)`·`(pending)`처럼 괄호로 표시한다. 라벨이 붙은 필드든 출력 전체든 같다.
-
-`-o json`이면 stdout에 단일 JSON 객체만 출력한다. 로그·진행 표시는 전부 stderr로 출력한다. 에러도 JSON일 때는 stdout에 다음 형태로 출력한다.
-
-```json
-{ "error": { "code": 4, "message": "session:1 is not running" } }
-```
+출력은 텍스트다. 각 커맨드 절의 출력 표는 그 커맨드가 답하는 필드를 정의하며, 그것이 서피스에 어떻게 도달하는지는 [IPC 문서](ipc.md)에 있다. 값이 없으면 `(none)`처럼 괄호로 표시하며, 라벨이 붙은 필드든 출력 전체든 같다.
 
 ### 식별자 표기
 
@@ -85,7 +78,7 @@
 
 ### 목록 출력
 
-목록 커맨드(`backlog` · `session ls` · `review ls`)는 항목이 없어도 성공(0)으로 끝난다. `text`는 아무것도 출력하지 않고 `json`은 빈 배열을 출력한다.
+목록 커맨드(`backlog` · `session ls` · `review ls`)는 항목이 없어도 성공(0)으로 끝나며 아무것도 출력하지 않는다.
 
 ## 2. 커맨드
 
@@ -102,7 +95,7 @@
 작업을 백로그에 `Pending`으로 등록한다. 세션에 직접 배정하지 않으며, 어느 세션에 편성될지는 세션을 열 때 코어가 정한다.
 
 ```
-cistern task add --title <T> --instruction <I> [--branch <B>] [--after <task>] [--model <M>] [-o <fmt>]
+cistern task add --title <T> --instruction <I> [--branch <B>] [--after <task>] [--model <M>]
 ```
 
 **인자**
@@ -162,7 +155,7 @@ task:1 added to backlog
 백로그에서 작업을 지운다. 아직 편성되지 않은 `Pending` 작업만 대상이며, 끝난 작업은 `discard`가 심사 큐에서 제외한다.
 
 ```
-cistern task rm <task> [-o <fmt>]
+cistern task rm <task>
 ```
 
 **출력**
@@ -197,7 +190,7 @@ task:3 removed from backlog
 편성 전 Pending 작업(백로그)을 나열한다.
 
 ```
-cistern backlog [-o <fmt>]
+cistern backlog
 ```
 
 **출력** — 항목 배열
@@ -210,7 +203,7 @@ cistern backlog [-o <fmt>]
 | `base_branch` | string | 기준 브랜치 |
 
 
-`json`은 `{ "backlog": [...] }`로, `text`는 한 줄에 한 항목으로 출력한다.
+한 줄에 한 항목으로 출력한다.
 
 **종료 코드**
 
@@ -235,7 +228,7 @@ $ cistern backlog
 작업 하나의 상세를 출력한다.
 
 ```
-cistern task show <task> [-o <fmt>]
+cistern task show <task>
 ```
 
 **출력**
@@ -253,8 +246,6 @@ cistern task show <task> [-o <fmt>]
 | `repository`  | string | 작업을 등록한 저장소. 홈 디렉터리는 `~`로 표시                                                   |
 | `branch`      | string | 결과 브랜치. 없으면 null                                                               |
 | `reason`      | string | 종료 사유. 없으면 null                                                                |
-| `commits`     | array  | 결과 브랜치의 커밋. 각 항목은 `sha`·`subject`·`added`·`removed`. 종료 상태에서만 값이 있고 그 밖에는 null |
-| `base_ahead`  | int    | 작업이 갈라져 나온 뒤 기준 브랜치가 앞서간 커밋 수. 조회 시 계산                                         |
 | `worktree`    | string | 작업 공간 경로. 정리된 뒤에는 null                                                         |
 | `disposition` | enum   | `applied` · `discarded` · 아직 처분하지 않았으면 null                                    |
 
@@ -274,17 +265,15 @@ cistern task show <task> [-o <fmt>]
 ```console
 $ cistern task show 2
 task:2  Interrupted
-  session:  session:1
-  title:    테스트 추가
-  base:     main (2 commits ahead)
-  after:    (none)
-  repo:     ~/work/api
-  branch:   cistern/2
-  reason:   budget hardlock
-  worktree: (cleaned)
-  commits:
-    a1b2c3d  test: 경계 조건을 채운다        +48 -2
-  disposition: (pending)
+  session:     session:1
+  title:       테스트 추가
+  base:        main
+  after:       (none)
+  repo:        ~/work/api
+  branch:      cistern/2
+  reason:      budget hardlock
+  worktree:    ~/.local/share/cistern/worktrees/2
+  disposition: (none)
 ```
 
 ### 2.2 세션 · 실행
@@ -298,7 +287,7 @@ task:2  Interrupted
 예산을 선언하고 세션의 무인 루프를 기동한다. 논블로킹이라 즉시 반환한다.
 
 ```
-cistern run --usage <N> --time <T> [--model <M>] [--follow] [-o <fmt>]
+cistern run --usage <N> --time <T> [--model <M>]
 ```
 
 **인자**
@@ -309,7 +298,6 @@ cistern run --usage <N> --time <T> [--model <M>] [--follow] [-o <fmt>]
 | `--usage <N>` | 예   | 백분율 또는 토큰 수 | `50%` · `2M`      | `%`면 벤더의 5시간 한도에 대한 몫, `%` 없으면 토큰 수                  |
 | `--time <T>`  | 예   | 기간          | `8h` · `2h30m`    | 시간 한도                                                |
 | `--model <M>` | 아니오 | 모델 이름       | `opus` · `sonnet` | 모델을 지정하지 않은 작업의 기본값. 생략 시 vendor 기본                  |
-| `--follow`    | 아니오 | 플래그         | —                 | 반환하지 않고 진행을 스트림으로 표시. Ctrl-C는 follow만 중단하고 루프는 계속 실행 |
 
 
 기동하면 코어가 백로그에서 일부를 편성해 병렬로 실행한다. 편성은 동적이어서 작업이 끝날
@@ -337,8 +325,6 @@ cistern run --usage <N> --time <T> [--model <M>] [--follow] [-o <fmt>]
 | `budget`   | object | 선언한 예산 (usage·time)              |
 
 
-`--follow`면 진행 이벤트를 stderr로 연속 출력한다. 작업이 병렬이라 이벤트가 교차한다.
-
 **종료 코드**
 
 
@@ -361,25 +347,12 @@ session:1 running (2 tasks assigned to start)
   stop:    cistern interrupt
 ```
 
-`--follow`는 다음 형태로 stderr에 출력한다. 편성이 동적이므로 `assigned`는 시작 시점 이후에도 출력된다.
-
-```
-[assigned]    2 tasks to start
-[running]     task:1
-[running]     task:2
-[completed]   task:1 → cistern/1
-[assigned]    task:3 (budget allows one more)
-[running]     task:3
-[interrupted] task:2 (budget hardlock)
-[stopped]     session:1 · budget hardlock · consumed 50% · time 3h12m
-```
-
 #### `cistern interrupt`
 
 실행 중인 세션을 중단한다. 세션은 동시에 하나만 실행되므로 대상을 지정하지 않으며, 실행 중이던 작업은 `Interrupted`로 종료한다.
 
 ```
-cistern interrupt [-o <fmt>]
+cistern interrupt
 ```
 
 **출력**
@@ -417,7 +390,7 @@ session:1 interrupted
 세션을 최신순으로 나열한다.
 
 ```
-cistern session ls [--page <N>] [--limit <M>] [-o <fmt>]
+cistern session ls [--page <N>] [--limit <M>]
 ```
 
 **인자**
@@ -441,7 +414,7 @@ cistern session ls [--page <N>] [--limit <M>] [-o <fmt>]
 | `updated_at` | string | 갱신 시각   |
 
 
-`json`은 `{ "page", "limit", "sessions": [...] }`로, `text`는 한 줄에 한 세션으로 출력한다.
+최신 세션부터 한 줄에 하나씩 출력한다.
 
 **종료 코드**
 
@@ -466,7 +439,7 @@ session:1  stopped    usage 50%   3 tasks   3h ago
 세션 하나의 상세를 출력하며 내부 작업 목록을 포함한다.
 
 ```
-cistern session show <session> [-o <fmt>]
+cistern session show <session>
 ```
 
 **출력**
@@ -482,7 +455,7 @@ cistern session show <session> [-o <fmt>]
 | `tasks`          | array  | 세션 작업. 각 항목은 id·state·title·branch·reason |
 
 
-`text`는 첫 줄 괄호에 `stopped_reason`을 표시하며, 실행 중이면 `running`으로 표시하고 사유를 표시하지 않는다.
+첫 줄 괄호에 `stopped_reason`을 표시하며, 실행 중이면 `running`으로 표시하고 사유를 표시하지 않는다.
 
 **종료 코드**
 
@@ -514,7 +487,7 @@ session:1  stopped (budget hardlock)
 작업의 트레이스를 조회한다. 실행 중이면 진행 중인 것을, 종료 후면 보관된 것을 반환한다.
 
 ```
-cistern trace <task> [--follow] [--since <cursor>] [-o <fmt>]
+cistern trace <task> [--follow] [--since <cursor>]
 ```
 
 **인자**
@@ -539,7 +512,7 @@ cistern trace <task> [--follow] [--since <cursor>] [-o <fmt>]
 | `done`   | bool   | 종료 상태에 도달해 더 이상 늘지 않으면 true |
 
 
-`text`는 이벤트를 한 줄씩(타임스탬프 + 내용) 출력한다.
+이벤트를 한 줄씩 출력하며, 일어난 시각과 내용을 함께 적는다.
 
 **종료 코드**
 
@@ -569,7 +542,7 @@ $ cistern trace 1
 작업이 만든 브랜치의 변경 내용을 출력한다.
 
 ```
-cistern diff <task> [--stat] [-o <fmt>]
+cistern diff <task> [--stat]
 ```
 
 **인자**
@@ -592,7 +565,7 @@ cistern diff <task> [--stat] [-o <fmt>]
 | `patch`  | string | unified diff                 |
 
 
-`text`는 표준 unified diff를 출력하고 `--stat`이면 파일 요약만 출력한다. 변경이 없으면 `(no changes)`를 출력한다.
+표준 unified diff를 출력하고 `--stat`이면 파일 요약만 출력한다. 변경이 없으면 `(no changes)`를 출력한다.
 
 **종료 코드**
 
@@ -624,7 +597,7 @@ $ cistern diff 1 --stat
 처분을 기다리는 작업을 세션 구분 없이 모아 나열한다. `Completed`·`Interrupted`·`Error`가 함께 나열된다.
 
 ```
-cistern review ls [-o <fmt>]
+cistern review ls
 ```
 
 **출력** — 항목 배열
@@ -641,7 +614,7 @@ cistern review ls [-o <fmt>]
 | `base_ahead`   | int    | 갈라져 나온 뒤 기준 브랜치가 앞서간 커밋 수 |
 
 
-`json`은 `{ "review_queue": [...] }`로, `text`는 한 줄에 한 작업으로 출력한다.
+한 줄에 한 작업으로 출력한다.
 
 처분한 작업은 큐에서 제외한다. `base_ahead`는 조회할 때마다 계산한다. 브랜치를 읽을 수 없는 작업도
 큐에 남으며, 이때 두 개수는 비어 있다.
@@ -669,7 +642,7 @@ $ cistern review ls
 않는다.
 
 ```
-cistern apply <task> [-o <fmt>]
+cistern apply <task>
 ```
 
 적용 범위는 기준 브랜치와 결과 브랜치가 갈라진 지점부터 결과 브랜치까지다. `diff`와 같은
@@ -715,7 +688,7 @@ task:5 applied to working tree
 작업을 심사 큐에서 제외한다. 브랜치와 워크트리, 작업 상태 어느 것도 바꾸지 않는다.
 
 ```
-cistern discard <task> [-o <fmt>]
+cistern discard <task>
 ```
 
 결과 브랜치는 그대로 남으므로 처분한 뒤에도 `task show`로 조회하고 `apply`할 수 있다.
