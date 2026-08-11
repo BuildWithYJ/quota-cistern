@@ -234,10 +234,14 @@ impl ExecutionUseCase for ExecutionService<'_> {
         // A task the vendor was still running reports nothing, and a share is read from the vendor.
         let spent = self.spending_of(running)?;
         let now = self.outside.clock.now();
-        sessions::change(self.outside.sessions, |sessions| {
-            sessions.record(running, spent, now);
-            Ok(())
-        })?;
+        // What was last recorded stands where the vendor has stopped answering.
+        // A session being stopped by hand is stopped either way.
+        if let Some(spent) = spent {
+            sessions::change(self.outside.sessions, |sessions| {
+                sessions.record(running, spent, now);
+                Ok(())
+            })?;
+        }
 
         // The runs end before the tasks do, so nothing is recorded as ended while its agent is still working.
         for task in backlog::read(self.outside.tasks)?.taken_by(running) {
@@ -497,7 +501,13 @@ impl ExecutionService<'_> {
             return Ok(Vec::new());
         };
 
-        let spent = self.spending(&held)?;
+        // Section 1 stops a session whose usage can no longer be read, and for a share that
+        // reading is the vendor's own limit.
+        let Some(spent) = self.spending(&held)? else {
+            return self
+                .stop(session, StoppedReason::ObservationUnreadable)
+                .map(|()| Vec::new());
+        };
         // A share cannot be worked out again once the session has stopped.
         // What was read here is what is reported for it afterwards.
         let now = self.outside.clock.now();
@@ -557,7 +567,7 @@ impl ExecutionService<'_> {
     }
 
     /// The same, for a session named only by its number.
-    fn spending_of(&self, session: SessionId) -> Result<Spending, Refusal> {
+    fn spending_of(&self, session: SessionId) -> Result<Option<Spending>, Refusal> {
         let held = sessions::read(self.outside.sessions)?;
         let held = held
             .sessions()
@@ -567,12 +577,19 @@ impl ExecutionService<'_> {
         self.spending(held)
     }
 
-    /// What the session has consumed of its usage budget.
-    fn spending(&self, held: &Session) -> Result<Spending, Refusal> {
+    /// What the session has consumed of its usage budget, or nothing when that can no longer
+    /// be read.
+    ///
+    /// A share is read from the vendor, so a vendor that stops answering leaves the figure
+    /// unknown rather than zero.
+    /// Section 1 stops a session in that state, and nothing is a failure for the caller to
+    /// carry.
+    fn spending(&self, held: &Session) -> Result<Option<Spending>, Refusal> {
         match (held.budget().usage, held.limit_at_start()) {
-            (Usage::Share(_), Some(at_start)) => {
-                Ok(Spending::Share(self.limit_now()?.saturating_sub(at_start)))
-            }
+            (Usage::Share(_), Some(at_start)) => Ok(self
+                .limit_now()
+                .ok()
+                .map(|now| Spending::Share(now.saturating_sub(at_start)))),
             // A share with nothing to measure from is a store this core cannot use.
             // Nothing else can be said about how much of it is spent.
             (Usage::Share(_), None) => Err(Refusal::Unavailable {
@@ -581,10 +598,10 @@ impl ExecutionService<'_> {
                     held.id().labelled()
                 ),
             }),
-            (Usage::Tokens(_), _) => Ok(Spending::Tokens(
+            (Usage::Tokens(_), _) => Ok(Some(Spending::Tokens(
                 Consumption::total(backlog::read(self.outside.tasks)?.counted_in(held.id()))
                     .tokens(),
-            )),
+            ))),
         }
     }
 
@@ -792,12 +809,26 @@ mod tests {
     struct AtPercent {
         /// Hundredths of a percent, as the port carries it.
         used: Mutex<u64>,
-        refuse: bool,
+        refuse: Mutex<bool>,
+    }
+
+    impl AtPercent {
+        /// A limit that reads, until a test says it stops reading.
+        fn at(used: u64) -> Self {
+            AtPercent {
+                used: Mutex::new(used),
+                refuse: Mutex::new(false),
+            }
+        }
+
+        fn refuse(&self) {
+            *self.refuse.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        }
     }
 
     impl Limit for AtPercent {
         fn read(&self) -> Result<Reading, Unavailable> {
-            if self.refuse {
+            if *self.refuse.lock().unwrap_or_else(PoisonError::into_inner) {
                 return Err(Unavailable::new("the status line said nothing"));
             }
             Ok(Reading {
@@ -835,7 +866,7 @@ mod tests {
     /// A limit nothing asks for, since the session was declared in tokens.
     static UNTOUCHED: AtPercent = AtPercent {
         used: Mutex::new(0),
-        refuse: false,
+        refuse: Mutex::new(false),
     };
 
     /// What an agent that answered with a count it could read reports.
@@ -1387,7 +1418,7 @@ mod tests {
         });
         let full = AtPercent {
             used: Mutex::new(100 * HUNDREDTHS),
-            refuse: false,
+            refuse: Mutex::new(false),
         };
         let execution = ExecutionService::new(
             Outside {
@@ -1428,7 +1459,7 @@ mod tests {
         });
         let room = AtPercent {
             used: Mutex::new(40 * HUNDREDTHS),
-            refuse: false,
+            refuse: Mutex::new(false),
         };
         let execution = ExecutionService::new(
             Outside {
@@ -1465,7 +1496,7 @@ mod tests {
         });
         let silent = AtPercent {
             used: Mutex::new(0),
-            refuse: true,
+            refuse: Mutex::new(true),
         };
         let execution = ExecutionService::new(
             Outside {
@@ -1780,7 +1811,7 @@ mod tests {
         });
         let full = AtPercent {
             used: Mutex::new(100 * HUNDREDTHS),
-            refuse: false,
+            refuse: Mutex::new(false),
         };
         let execution = ExecutionService::new(
             Outside {
@@ -2123,6 +2154,41 @@ mod tests {
             Err(Refusal::NoSuchTask {
                 id: "task:7".to_owned()
             })
+        );
+    }
+    /// Section 1 stops a session whose usage can no longer be read.
+    ///
+    /// For a share that reading is the vendor's limit, and a session that cannot be measured
+    /// must not go on spending against a budget nobody can check.
+    #[test]
+    fn a_share_whose_limit_stops_being_readable_stops_the_session() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+        let areas = Areas::default();
+        let agent = Standing::finishing();
+        let limit = AtPercent::at(1_000);
+        let execution = ExecutionService::new(
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &limit,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
+        );
+        execution.run(declaring("50%", "8h")).unwrap();
+
+        limit.refuse();
+        execution.carry_on("1").unwrap();
+
+        let held = sessions.load();
+        assert_eq!(held.sessions[0].state, "stopped");
+        assert_eq!(
+            held.sessions[0].stopped_reason.as_deref(),
+            Some("observation unreadable")
         );
     }
 }
