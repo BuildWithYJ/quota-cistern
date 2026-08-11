@@ -14,7 +14,7 @@ mod vendor;
 
 pub use backlog::{BacklogStore, StoredBacklog, StoredConsumption, StoredTask};
 pub use clock::Clock;
-pub use configuration::{ConfigurationStore, StoredConfiguration};
+pub use configuration::ConfigurationStore;
 pub use repository::{
     Between, Changes, Counts, Cut, NotApplied, RepositoryRoots, Results, Touched, Worktrees,
 };

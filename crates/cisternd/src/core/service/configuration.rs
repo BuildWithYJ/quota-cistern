@@ -4,7 +4,7 @@ use crate::core::{
     domain::{Configuration, Key, Known, Setting},
     port::{
         inbound::{Applied, ConfigurationUseCase, Refusal, View},
-        outbound::{ConfigurationStore, StoredConfiguration},
+        outbound::ConfigurationStore,
     },
 };
 
@@ -83,15 +83,16 @@ impl ConfigurationUseCase for ConfigurationService<'_> {
 /// A configuration file can be edited by hand, so what a store hands back is a claim rather than a fact.
 /// The domain is given values it can take, never the text they were kept as, so reading them is this layer's work.
 fn read(settings: &dyn ConfigurationStore, known: &Known) -> Result<Configuration, Refusal> {
-    let stored = settings.load()?;
-    let held = [(Key::Vendor, stored.vendor)];
-
     let mut configuration = Configuration::default();
-    for (key, value) in held {
-        let Some(value) = value else { continue };
-        let Some(setting) = Setting::parse(key, &value, known) else {
+    for (key, value) in settings.load()? {
+        // A file holding a key section 2.5 does not name is refused the way an argument
+        // naming one is, since a person wrote both.
+        let Some(parsed) = Key::parse(&key) else {
+            return Err(Refusal::UnknownKey { key });
+        };
+        let Some(setting) = Setting::parse(parsed, &value, known) else {
             return Err(Refusal::BadValue {
-                key: key.to_string(),
+                key: parsed.to_string(),
                 value,
             });
         };
@@ -101,10 +102,12 @@ fn read(settings: &dyn ConfigurationStore, known: &Known) -> Result<Configuratio
 }
 
 /// Hands the configuration to a store as the text a user would have typed.
-fn written(configuration: &Configuration) -> StoredConfiguration {
-    StoredConfiguration {
-        vendor: configuration.value_of(Key::Vendor),
-    }
+fn written(configuration: &Configuration) -> Vec<(String, String)> {
+    configuration
+        .entries()
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value))
+        .collect()
 }
 
 #[cfg(test)]
@@ -123,13 +126,13 @@ mod tests {
     /// A store held in memory, so the steps can be checked without a file.
     #[derive(Default)]
     struct Remembered {
-        stored: Mutex<StoredConfiguration>,
+        stored: Mutex<Vec<(String, String)>>,
         /// Makes every read fail, standing in for a store that is there but cannot be understood.
         broken: bool,
     }
 
     impl Remembered {
-        fn holding(stored: StoredConfiguration) -> Self {
+        fn holding(stored: Vec<(String, String)>) -> Self {
             Remembered {
                 stored: Mutex::new(stored),
                 broken: false,
@@ -138,15 +141,15 @@ mod tests {
     }
 
     impl ConfigurationStore for Remembered {
-        fn load(&self) -> Result<StoredConfiguration, Unavailable> {
+        fn load(&self) -> Result<Vec<(String, String)>, Unavailable> {
             match self.broken {
                 true => Err(Unavailable::new("not valid TOML")),
                 false => Ok(self.stored.lock().unwrap().clone()),
             }
         }
 
-        fn store(&self, stored: &StoredConfiguration) -> Result<(), Unavailable> {
-            *self.stored.lock().unwrap() = stored.clone();
+        fn store(&self, stored: &[(String, String)]) -> Result<(), Unavailable> {
+            *self.stored.lock().unwrap() = stored.to_vec();
             Ok(())
         }
     }
@@ -232,9 +235,7 @@ mod tests {
     /// A number that is not one this key takes is refused where every other value is.
     #[test]
     fn a_stored_value_of_another_type_is_refused_the_same_way() {
-        let settings = Remembered::holding(StoredConfiguration {
-            vendor: Some("-1".to_owned()),
-        });
+        let settings = Remembered::holding(vec![("vendor".to_owned(), "-1".to_owned())]);
         assert_eq!(
             over(&settings).get(None),
             Err(Refusal::BadValue {
@@ -244,11 +245,21 @@ mod tests {
         );
     }
 
+    /// Section 2.5 gives an unknown key the code an argument gets, not a store's.
+    #[test]
+    fn a_key_edited_into_the_store_is_refused_as_an_unknown_key() {
+        let settings = Remembered::holding(vec![("colour".to_owned(), "red".to_owned())]);
+        assert_eq!(
+            over(&settings).get(None),
+            Err(Refusal::UnknownKey {
+                key: "colour".to_owned()
+            })
+        );
+    }
+
     #[test]
     fn a_value_edited_into_the_store_by_hand_is_refused_too() {
-        let settings = Remembered::holding(StoredConfiguration {
-            vendor: Some("codex".to_owned()),
-        });
+        let settings = Remembered::holding(vec![("vendor".to_owned(), "codex".to_owned())]);
         assert_eq!(
             over(&settings).get(None),
             Err(Refusal::BadValue {

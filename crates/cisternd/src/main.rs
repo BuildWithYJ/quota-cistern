@@ -181,10 +181,11 @@ impl<U: Carrying> Carrying for Queueing<'_, U> {
 /// The check belongs here because only this file knows which adapters it holds.
 /// Failing once beats failing on every task a session assigns.
 fn runnable(store: &dyn ConfigurationStore, known: &[String]) -> Result<(), String> {
-    let Some(name) = store.load().map_err(|e| e.reason)?.vendor else {
+    let held = store.load().map_err(|e| e.reason)?;
+    let Some((_, name)) = held.iter().find(|(key, _)| key == "vendor") else {
         return Ok(());
     };
-    if known.contains(&name) {
+    if known.contains(name) {
         return Ok(());
     }
     Err(format!(

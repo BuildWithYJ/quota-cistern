@@ -5,27 +5,13 @@
 
 use std::{env, path::PathBuf};
 
-use serde::{Deserialize, Serialize};
-
-use crate::core::port::outbound::{ConfigurationStore, StoredConfiguration, Unavailable};
+use crate::core::port::outbound::{ConfigurationStore, Unavailable};
 
 use super::kept::Kept;
 
 /// The configuration, kept as TOML at a path fixed when this is built.
 pub struct FileConfiguration {
     kept: Kept,
-}
-
-/// The whole file, as TOML sees it.
-///
-/// Apart from the port's type, since the key spelling and which TOML type a value is written as belong to the format.
-/// A value is held as whatever TOML found.
-/// A file holding the wrong sort of one reaches the core and is refused there.
-#[derive(Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Written {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    vendor: Option<toml::Value>,
 }
 
 /// The text a user would have typed for what TOML holds.
@@ -59,22 +45,28 @@ impl FileConfiguration {
 }
 
 impl ConfigurationStore for FileConfiguration {
-    fn load(&self) -> Result<StoredConfiguration, Unavailable> {
+    /// Every key the file holds, whether or not the core has heard of it.
+    ///
+    /// A table gives its keys back in the order they were written, which is the order
+    /// `config get` prints them in.
+    fn load(&self) -> Result<Vec<(String, String)>, Unavailable> {
         // Nothing stored yet is an empty configuration rather than a failure.
         let Some(written) = self.kept.read()? else {
-            return Ok(StoredConfiguration::default());
+            return Ok(Vec::new());
         };
 
-        let document: Written = toml::from_str(&written).map_err(|e| self.kept.failing(e))?;
-        Ok(StoredConfiguration {
-            vendor: document.vendor.map(as_text),
-        })
+        let document: toml::Table = toml::from_str(&written).map_err(|e| self.kept.failing(e))?;
+        Ok(document
+            .into_iter()
+            .map(|(key, value)| (key, as_text(value)))
+            .collect())
     }
 
-    fn store(&self, stored: &StoredConfiguration) -> Result<(), Unavailable> {
-        let document = Written {
-            vendor: stored.vendor.clone().map(toml::Value::String),
-        };
+    fn store(&self, stored: &[(String, String)]) -> Result<(), Unavailable> {
+        let document: toml::Table = stored
+            .iter()
+            .map(|(key, value)| (key.clone(), toml::Value::String(value.clone())))
+            .collect();
         let written = toml::to_string(&document).map_err(|e| self.kept.failing(e))?;
         self.kept.write(&written)
     }
@@ -94,10 +86,8 @@ mod tests {
         (dir, settings)
     }
 
-    fn a_plan() -> StoredConfiguration {
-        StoredConfiguration {
-            ..Default::default()
-        }
+    fn a_setting() -> Vec<(String, String)> {
+        vec![("vendor".to_owned(), "claude".to_owned())]
     }
 
     /// Where the file goes is `kept`'s; which file it is belongs here.
@@ -111,17 +101,17 @@ mod tests {
     #[test]
     fn nothing_stored_reads_as_nothing_set() {
         let (_dir, settings) = in_a_temporary_directory();
-        assert_eq!(settings.load(), Ok(StoredConfiguration::default()));
+        assert_eq!(settings.load(), Ok(Vec::new()));
     }
 
     #[test]
     fn what_was_written_is_there_for_the_next_process_to_read() {
         let (dir, settings) = in_a_temporary_directory();
-        settings.store(&a_plan()).unwrap();
+        settings.store(&a_setting()).unwrap();
 
         // A second reader over the same path is what a restarted core is.
         let restarted = FileConfiguration::at(dir.path().join("config.toml"));
-        assert_eq!(restarted.load(), Ok(a_plan()));
+        assert_eq!(restarted.load(), Ok(a_setting()));
     }
 
     #[test]
@@ -131,11 +121,16 @@ mod tests {
         assert!(settings.load().is_err());
     }
 
+    /// A key section 2.5 does not name is the core's to refuse, so it arrives.
+    /// Refusing it here would answer with a code the specification gives to something else.
     #[test]
-    fn a_key_the_specification_does_not_have_fails() {
+    fn a_key_the_specification_does_not_have_still_reads() {
         let (dir, settings) = in_a_temporary_directory();
         fs::write(dir.path().join("config.toml"), "colour = \"red\"\n").unwrap();
-        assert!(settings.load().is_err());
+        assert_eq!(
+            settings.load(),
+            Ok(vec![("colour".to_owned(), "red".to_owned())])
+        );
     }
 
     /// A value no key takes is the core's to refuse, so the file is read.
@@ -145,9 +140,7 @@ mod tests {
         fs::write(dir.path().join("config.toml"), "vendor = \"codex\"\n").unwrap();
         assert_eq!(
             settings.load(),
-            Ok(StoredConfiguration {
-                vendor: Some("codex".to_owned()),
-            })
+            Ok(vec![("vendor".to_owned(), "codex".to_owned())])
         );
     }
 
@@ -159,16 +152,14 @@ mod tests {
         fs::write(dir.path().join("config.toml"), "vendor = 123\n").unwrap();
         assert_eq!(
             settings.load(),
-            Ok(StoredConfiguration {
-                vendor: Some("123".to_owned()),
-            })
+            Ok(vec![("vendor".to_owned(), "123".to_owned())])
         );
     }
 
     #[test]
     fn the_staged_file_does_not_outlive_the_write() {
         let (dir, settings) = in_a_temporary_directory();
-        settings.store(&a_plan()).unwrap();
+        settings.store(&a_setting()).unwrap();
         assert!(!dir.path().join("config.toml.new").exists());
     }
 }
