@@ -2,7 +2,7 @@
 
 [한국어](README.ko.md)
 
-> Runs delegated coding work within a budget you declare, and keeps each result on its own branch to review and apply. Early development, with no usable release yet.
+> Delegates coding work to Claude Code within a budget you declare, and keeps each result on its own branch to review and apply.
 
 A focused day exhausts the session limit early. By the time direction and structure are settled, there is little quota left for turning any of it into code. The limit resets overnight, but those are not hours anyone can spend working, and what goes unused does not carry over.
 
@@ -12,11 +12,47 @@ quota-cistern removes that constraint. Register the work to delegate, declare ho
 
 You could build something yourself to run an agent unattended. Preparing it and watching it takes human hours again, and without control over how much it spends, a bad run is only discovered afterwards.
 
+## Requirements
+
+- macOS or Linux. The daemon listens on a Unix socket and reads the vendor's limit through a pseudo-terminal.
+- git.
+- Claude Code on your `PATH`, already logged in. 0.1.0 was verified against 2.1.227.
+
+## Getting started
+
+Installing gives you two commands, `cisternd` and `cistern`.
+
+```console
+$ cargo install --git https://github.com/BuildWithYJ/quota-cistern cistern cisternd
+```
+
+`cisternd` is the daemon that runs the tasks and holds the state. Leave it running while you work; it says nothing while it is idle.
+
+```console
+$ cisternd
+```
+
+After that, `cistern` works from any directory. `--version` says whether the two sides are talking.
+
+```console
+$ cistern --version
+cistern 0.1.0
+core    0.1.0
+```
+
+Every command goes through the daemon, so without one a command prints `the core is not running` and exits 5. Ctrl-C stops the daemon.
+
+Run `cistern task add` from the repository you want the work done in. It walks up from the current directory to find one and refuses when there is none, and it records the path it found, so moving that repository afterwards leaves the task without one.
+
+After upgrading, restart the daemon. A command and a core of different versions refuse each other, and everything but `cistern --version` exits 5 until both sides are the same build.
+
+One session runs at a time, and it opens when you run `run`.
+
 ## Workflow
 
 ### Registering work
 
-A task carries a title and an instruction, and tasks in the backlog are assigned when a session opens. With `--after`, a task takes its predecessor's result branch as its base and continues from there, and the base branch and the model can both be set per task. Declaring a budget as a percentage requires a plan, which is set once with `config set plan`.
+A task carries a title and an instruction, and tasks in the backlog are assigned when a session opens. With `--after`, a task takes its predecessor's result branch as its base and continues from there, and the base branch and the model can both be set per task. A budget declared as a percentage is measured against the vendor's five-hour limit.
 
 ### Unattended execution
 
@@ -37,11 +73,13 @@ $ cistern task add --title "refactor utils" --instruction "tidy up src/utils"
 task:1 added to backlog
   title:  refactor utils
   branch: main (base)
+  repo:   ~/work/api
 
 $ cistern task add --title "update docs" --instruction "document the new API"
 task:2 added to backlog
   title:  update docs
   branch: main (base)
+  repo:   ~/work/api
 
 $ cistern run --usage 50% --time 8h
 session:1 running (2 tasks assigned to start)
@@ -64,20 +102,24 @@ task:1 applied to working tree
 
 | Command | What it does |
 | --- | --- |
-| `config set`, `config get` | Vendor and plan |
+| `config set`, `config get` | The vendor |
 | `task add`, `task rm`, `task show`, `backlog` | Registering and reading tasks |
 | `run`, `interrupt` | Declaring a budget, running, stopping |
 | `session ls`, `session show` | Reading sessions |
 | `trace`, `diff` | Progress and changes |
 | `review ls`, `apply`, `discard` | Review and disposition |
 
-Every command takes `-o json` for machine-readable output. Arguments, output, and exit codes are in the [CLI specification](docs/cli.md).
+Arguments, output, and exit codes are in the [CLI specification](docs/cli.md).
 
-## Getting started
+## What the agent may do
 
-There is no release yet. Building from source is covered in [CONTRIBUTING](CONTRIBUTING.md).
+The agent runs with `--permission-mode bypassPermissions`. A work area is not a sandbox, so a task can read and write outside it, and discarding the result does not undo those changes.
 
-0.1.0 covers one vendor, `claude`, on a single machine. One session runs at a time, and it opens when you run `run`.
+## Known limitations
+
+- A budget declared as a percentage is measured against the vendor's limit, which is read from its status line, so `run --usage 50%` and `interrupt` wait up to 90 seconds and the daemon answers nothing else while they do. A budget declared in tokens does not read it.
+- That reading depends on how Claude Code presents its limit, so a change there stops percentage budgets from working until this catches up.
+- Work areas stay under the data directory and result branches stay in the repository. Nothing removes either for you.
 
 ## Contributing
 

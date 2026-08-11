@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-> 선언한 예산 안에서 코딩 에이전트에게 작업을 맡기고 결과를 브랜치로 받아 확인한 뒤 반영하는 도구입니다. 개발 초기라 아직 사용할 수 있는 릴리스가 없습니다.
+> 선언한 예산 안에서 Claude Code에 작업을 맡기고 결과를 브랜치로 받아 확인한 뒤 반영하는 도구입니다.
 
 집중해서 작업한 날일수록 세션 한도를 빨리 소진합니다. 무엇을 만들지 정하고 구조를 잡는 데 시간을 쓰고 나면 정작 그것을 코드로 옮길 차례에는 한도가 얼마 남지 않습니다. 밤에는 한도가 리셋되지만 그 시간을 작업에 쓰기는 어렵고 쓰지 못한 몫은 이월되지 않고 사라집니다.
 
@@ -10,11 +10,47 @@
 
 quota-cistern은 그 제약을 없앱니다. 위임할 작업을 등록하고 자리를 비우기 전에 얼마까지 쓸지 선언하면 남은 한도 안에서 작업을 처리하고 선언한 값에 이르면 중단합니다. 돌아오면 작업마다 결과가 브랜치에 보존되어 있습니다.
 
+## 요구 사항
+
+- macOS 또는 Linux. 데몬은 유닉스 소켓으로 통신하고 의사 터미널로 벤더의 한도를 읽습니다.
+- git.
+- `PATH`에 있고 로그인된 Claude Code. 0.1.0은 2.1.227에서 확인했습니다.
+
+## 시작하기
+
+설치하면 `cisternd`와 `cistern` 두 명령이 생깁니다.
+
+```console
+$ cargo install --git https://github.com/BuildWithYJ/quota-cistern cistern cisternd
+```
+
+`cisternd`는 작업을 실행하고 상태를 보관하는 데몬입니다. 실행한 채로 두고 작업하며, 대기 중에는 아무것도 출력하지 않습니다.
+
+```console
+$ cisternd
+```
+
+이후에는 어느 디렉터리에서든 `cistern`으로 지시합니다. 양쪽이 연결되었는지는 `--version`으로 확인합니다.
+
+```console
+$ cistern --version
+cistern 0.1.0
+core    0.1.0
+```
+
+모든 명령은 데몬을 거치므로 데몬이 실행되지 않은 상태에서는 `the core is not running`을 출력하고 종료 코드 5로 끝납니다. 데몬은 Ctrl-C로 중단합니다.
+
+`cistern task add`는 작업을 맡길 리포지터리 안에서 실행합니다. 현재 디렉터리에서 위로 올라가며 리포지터리를 찾고 없으면 거부하며, 찾은 경로를 기록하므로 그 리포지터리를 옮기면 그 작업은 리포지터리를 잃습니다.
+
+업그레이드한 뒤에는 데몬을 재시작합니다. 버전이 다른 명령줄과 코어는 서로를 거부하며, 양쪽이 같은 빌드가 될 때까지 `cistern --version` 외의 모든 명령이 종료 코드 5로 끝납니다.
+
+세션은 한 번에 하나만 실행되며 `run`을 실행한 시점에 열립니다.
+
 ## 워크플로우
 
 ### 작업 등록
 
-작업은 제목과 지시문으로 등록하며 백로그에 있는 작업은 세션이 열릴 때 배정됩니다. `--after`로 선행 작업을 지정하면 그 작업의 결과 브랜치를 기준으로 이어서 진행하고 기준 브랜치와 모델은 작업마다 따로 지정할 수 있습니다. 예산을 비율로 선언하려면 `config set plan`으로 요금제를 지정해야 합니다.
+작업은 제목과 지시문으로 등록하며 백로그에 있는 작업은 세션이 열릴 때 배정됩니다. `--after`로 선행 작업을 지정하면 그 작업의 결과 브랜치를 기준으로 이어서 진행하고 기준 브랜치와 모델은 작업마다 따로 지정할 수 있습니다. 예산을 비율로 선언하면 벤더의 5시간 한도를 기준으로 측정합니다.
 
 ### 무인 실행
 
@@ -35,11 +71,13 @@ $ cistern task add --title "refactor utils" --instruction "tidy up src/utils"
 task:1 added to backlog
   title:  refactor utils
   branch: main (base)
+  repo:   ~/work/api
 
 $ cistern task add --title "update docs" --instruction "document the new API"
 task:2 added to backlog
   title:  update docs
   branch: main (base)
+  repo:   ~/work/api
 
 $ cistern run --usage 50% --time 8h
 session:1 running (2 tasks assigned to start)
@@ -62,20 +100,24 @@ task:1 applied to working tree
 
 | 명령어 | 하는 일 |
 | --- | --- |
-| `config set` · `config get` | 벤더와 요금제 |
+| `config set` · `config get` | 벤더 |
 | `task add` · `task rm` · `task show` · `backlog` | 작업 등록과 조회 |
 | `run` · `interrupt` | 예산 선언과 실행, 중단 |
 | `session ls` · `session show` | 세션 조회 |
 | `trace` · `diff` | 진행 상황과 변경 내용 |
 | `review ls` · `apply` · `discard` | 검토와 처분 |
 
-모두 `-o json`으로 기계가 읽을 형식을 출력합니다. 인자와 출력, 종료 코드는 [CLI 명세](docs/cli.md)에 있습니다.
+인자와 출력, 종료 코드는 [CLI 명세](docs/cli.md)에 있습니다.
 
-## 시작하기
+## 에이전트의 권한
 
-아직 릴리스가 없습니다. 소스에서 빌드하는 방법은 [CONTRIBUTING](CONTRIBUTING.md)에 있습니다.
+에이전트 자체는 `--permission-mode bypassPermissions`로 실행됩니다. 작업 공간은 격리 수단이 아니므로 작업이 외부를 읽고 쓸 수 있으며 결과를 폐기해도 외부의 변경은 되돌아가지 않습니다.
 
-0.1.0이 다루는 범위는 벤더 `claude` 하나와 장비 한 대이며, 세션은 한 번에 하나만 실행되고 `run`을 실행한 시점에 열립니다.
+## 알려진 제약
+
+- 비율로 선언한 예산은 벤더의 한도를 상태줄에서 읽으므로 `run --usage 50%`와 `interrupt`가 최대 90초 대기하며, 그동안 데몬은 다른 명령에도 응답하지 않습니다. 토큰으로 선언하면 한도를 읽지 않습니다.
+- 이 읽기는 Claude Code가 한도를 표시하는 방식에 의존하므로 그것이 바뀌면 비율 예산은 이쪽이 따라잡을 때까지 동작하지 않습니다.
+- 작업 공간은 데이터 디렉터리 아래에 남고 결과 브랜치도 남습니다. 둘 다 정리하는 명령은 없습니다.
 
 ## 기여
 
