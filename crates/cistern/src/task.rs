@@ -1,8 +1,7 @@
 //! The `task` commands and `backlog`.
 //!
-//! What was typed goes to the core as it was given. Whether a value is allowed
-//! and whether a task exists are the core's to decide, so this file has no list
-//! of either.
+//! What was typed goes to the core as it was given.
+//! Whether a value is allowed and whether a task exists are the core's to decide, so this file has no list of either.
 
 use std::{env, ffi::OsString, io::Read, process::ExitCode};
 
@@ -13,8 +12,7 @@ use crate::cli::TaskCommand;
 
 /// The mark `docs/cli.md` puts beside a task waiting to be assigned.
 ///
-/// Written as an escape because a source file here holds ASCII only. What
-/// reaches the terminal is the character the specification shows.
+/// Written as an escape because a source file here holds ASCII only.
 const WAITING: &str = "\u{25cb}";
 
 pub fn run(command: TaskCommand) -> ExitCode {
@@ -44,8 +42,8 @@ fn add(
     after: Option<String>,
     model: Option<String>,
 ) -> ExitCode {
-    // The core runs as a daemon, so where it was started is not where this
-    // command was. It cannot learn that from anywhere but here.
+    // The core runs as a daemon, so where it was started is not where this command was.
+    // It cannot learn that from anywhere but here.
     let Ok(cwd) = env::current_dir() else {
         eprintln!("cistern: the current directory cannot be read");
         return ExitCode::from(USAGE_ERROR);
@@ -72,8 +70,8 @@ fn add(
     )
 }
 
-/// `docs/cli.md` gives `-` the meaning of standard input, so that an
-/// instruction longer than a line does not have to fit in an argument.
+/// `docs/cli.md` gives `-` the meaning of standard input.
+/// An instruction longer than a line does not have to fit in an argument.
 fn read_instruction(given: &str) -> std::io::Result<String> {
     if given != "-" {
         return Ok(given.to_owned());
@@ -85,9 +83,8 @@ fn read_instruction(given: &str) -> std::io::Result<String> {
 
 /// How long to leave the core alone between asks while following.
 ///
-/// The core answers one connection at a time and a task that is working has
-/// nothing new to say most of the time. Asking oftener would take the core
-/// away from the run being followed.
+/// The core answers one connection at a time and a task that is working has nothing new to say most of the time.
+/// Asking oftener would take the core away from the run being followed.
 const BETWEEN_ASKS: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub fn trace(task: &str, follow: bool, since: Option<String>) -> ExitCode {
@@ -116,10 +113,8 @@ pub fn trace(task: &str, follow: bool, since: Option<String>) -> ExitCode {
             _ => false,
         };
 
-        // The core answers with as much as it will hold at once, so reaching
-        // the end takes as many asks as it takes. Each is printed as it comes
-        // rather than gathered up, so a long run costs no more to read than a
-        // short one.
+        // The core answers with as much as it holds at once, so each piece is printed as it comes.
+        // A long run costs no more to read.
         if carried_on {
             continue;
         }
@@ -132,8 +127,7 @@ pub fn trace(task: &str, follow: bool, since: Option<String>) -> ExitCode {
 
 /// How far this machine's clock stands from the count, in seconds.
 ///
-/// Asked of `date`, which is the one place here that knows what time zone
-/// this machine keeps, and asked once.
+/// Asked of `date`, which is the one place here that knows what time zone this machine keeps, and asked once.
 fn offset() -> i64 {
     static OFFSET: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
     *OFFSET.get_or_init(|| {
@@ -167,9 +161,8 @@ fn happened(data: &Value) {
 
 /// A moment as the clock on this machine reads it.
 ///
-/// Section 2.3 prints the time of day rather than a count of seconds. The
-/// count is the same everywhere and the time of day is not, and whoever is
-/// reading is looking at their own clock.
+/// Section 2.3 prints the time of day rather than a count of seconds.
+/// The count is the same everywhere and the time of day is not, and whoever is reading is looking at their own clock.
 fn clock_of(at: &str) -> String {
     let Ok(at) = at.parse::<i64>() else {
         return "--:--:--".to_owned();
@@ -201,8 +194,8 @@ fn send(command: &str, params: Value, print: fn(&Value)) -> ExitCode {
     }
 }
 
-/// The layout section 2.1 shows, which is narrower than the one `task show`
-/// uses because it has no label as long as `disposition`.
+/// The layout section 2.1 shows, which is narrower than the one `task show` uses.
+/// It has no label as long as `disposition`.
 const REGISTERED: usize = 8;
 const DETAILED: usize = 13;
 
@@ -268,8 +261,7 @@ fn waiting(data: &Value) {
 
 /// One line of a labelled layout.
 ///
-/// `docs/cli.md` shows a value that is absent in parentheses, so a field that
-/// holds nothing is still printed.
+/// `docs/cli.md` shows a value that is absent in parentheses, so a field that holds nothing is still printed.
 fn line(width: usize, label: &str, value: Option<&str>) {
     println!(
         "  {:<width$}{}",
@@ -284,11 +276,8 @@ fn home_relative(path: Option<&str>) -> Option<String> {
 
 /// A path under the home directory, written the way a user would.
 ///
-/// Only what is printed changes. The core keeps the path it was given, and
-/// `-o json` will carry that one.
-///
-/// The home directory is an argument rather than a read, so that both outcomes
-/// can be checked without setting a variable the whole process sees.
+/// The home directory is an argument rather than a read.
+/// Both outcomes can be checked without setting a variable the whole process sees.
 fn under_home(path: &str, home: Option<OsString>) -> String {
     let Some(home) = home else {
         return path.to_owned();

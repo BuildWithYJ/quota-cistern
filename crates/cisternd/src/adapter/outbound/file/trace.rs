@@ -15,9 +15,8 @@ use crate::core::port::outbound::{Event, Read, Traces, Unavailable};
 
 /// How much of a trace one read may answer with.
 ///
-/// A run that worked for an hour wrote more than anyone wants at once, and
-/// section 2.3 says the reader is not made to hold all of it. The cursor is
-/// how the rest is asked for.
+/// A run that worked for an hour wrote more than anyone wants at once.
+/// Section 2.3 says the reader is not made to hold all of it.
 const AT_MOST: usize = 64 * 1024;
 
 /// Traces kept as one file per task.
@@ -26,8 +25,9 @@ pub struct FileTraces {
 }
 
 impl FileTraces {
-    /// Takes the directory it is given. This is how a test reaches a
-    /// temporary one.
+    /// Takes the directory it is given.
+    ///
+    /// This is how a test reaches a temporary one.
     pub fn at(at: PathBuf) -> Self {
         FileTraces { at }
     }
@@ -98,13 +98,11 @@ impl Traces for FileTraces {
         let read = held.read(&mut written).map_err(|e| self.failing(&at, e))?;
         written.truncate(read);
 
-        // A read may stop in the middle of a line, and half a line is not an
-        // event. What is left starts the next read.
+        // A read may stop in the middle of a line, and half a line is not an event.
+        // What is left starts the next read.
         let Some(ends) = written.iter().rposition(|&byte| byte == b'\n') else {
-            // A line longer than one read holds. Nothing here is an event and
-            // starting the next read where this one did would ask the same
-            // question forever, so it is stepped over. The line stays in the
-            // file for a reading that can take it whole.
+            // A line longer than one read holds.
+            // Reading again from where this stopped would never finish, so it is stepped over.
             let over = self.past_the_line(&mut held, from + read as u64)?;
             return Ok(Read {
                 events: Vec::new(),
@@ -132,9 +130,8 @@ fn cursor_at(at: u64) -> String {
 
 /// One line of what was kept, as an event.
 ///
-/// A line is the time it arrived, a tab, and what the vendor wrote. What the
-/// vendor wrote is left as it was, so a reading written later can make more
-/// of it than this one does.
+/// A line is the time it arrived, a tab, and what the vendor wrote.
+/// What the vendor wrote is left as it was, so a reading written later can make more of it than this one does.
 fn event_in(line: &str) -> Option<Event> {
     let (at, said) = line.split_once('\t')?;
     Some(Event {
@@ -145,25 +142,22 @@ fn event_in(line: &str) -> Option<Event> {
 
 /// What one line of the vendor's output amounts to.
 ///
-/// What the agent said and what it reached for, one sentence each. Its
-/// thinking is left out: it is long, and it is not addressed to anyone.
-/// Everything else the vendor writes is book-keeping.
+/// What the agent said and what it reached for, one sentence each.
+/// Its thinking is left out, being long and addressed to nobody.
 fn sentence_in(written: &str) -> Option<String> {
     let held: Value = serde_json::from_str(written).ok()?;
     match held.get("type").and_then(Value::as_str)? {
         "assistant" => said_in(&held),
         "user" => failed_in(&held),
-        // The last line repeats the last thing the agent said, which is
-        // already an event of its own.
+        // The last line repeats the last thing the agent said, which is already an event of its own.
         _ => None,
     }
 }
 
 /// What came back from something the run reached for, when it did not work.
 ///
-/// What did work is what a file holds or a command printed, which is not
-/// something a person reads a trace for. What did not is where a run turned,
-/// and it is the first thing looked for.
+/// What did work is what a file holds or a command printed, which is not something a person reads a trace for.
+/// What did not is where a run turned, and it is the first thing looked for.
 fn failed_in(held: &Value) -> Option<String> {
     let blocks = held.get("message")?.get("content")?.as_array()?;
     for block in blocks {
@@ -209,8 +203,8 @@ fn said_in(held: &Value) -> Option<String> {
 
 /// The one thing a tool call is most about.
 ///
-/// A tool takes an object of arguments and one of them is what a person would
-/// say it acted on. The rest is left in the file.
+/// A tool takes an object of arguments and one of them is what a person would say it acted on.
+/// The rest is left in the file.
 fn asked_for(block: &Value) -> String {
     let Some(given) = block.get("input").and_then(Value::as_object) else {
         return String::new();
@@ -230,9 +224,9 @@ fn asked_for(block: &Value) -> String {
 
 /// A path as it reads beside the work area it is in.
 ///
-/// A run works in a directory of the core's making, several levels below a
-/// temporary root, and every path it touches carries all of that. What tells
-/// one file from another is the end of it.
+/// A run works in a directory of the core's making, several levels below a temporary root.
+/// Every path it touches carries all of that.
+/// What tells one file from another is the end of it.
 fn within_the_work_area(path: &str) -> String {
     match path.split_once("/worktrees/") {
         Some((_, within)) => match within.split_once('/') {
@@ -346,8 +340,7 @@ mod tests {
         assert_eq!(traces.read("1", "").unwrap().events, Vec::new());
     }
 
-    /// A run that failed at something says so where it happened, and that is
-    /// where a reader looks first.
+    /// A run that failed at something says so where it happened, and that is where a reader looks first.
     #[test]
     fn what_a_run_failed_at_is_an_event() {
         let (_dir, traces) = in_a_temporary_directory();
@@ -366,8 +359,8 @@ mod tests {
         assert!(events[0].said.starts_with("failed:"), "{}", events[0].said);
     }
 
-    /// Most of what comes back is what a file holds or a command printed, and
-    /// a run that worked has nothing to answer for.
+    /// Most of what comes back is what a file holds or a command printed.
+    /// A run that worked has nothing to answer for.
     #[test]
     fn what_a_run_did_not_fail_at_is_not_an_event() {
         let (_dir, traces) = in_a_temporary_directory();
@@ -401,8 +394,7 @@ mod tests {
         assert_eq!(more.events[0].said, "two");
     }
 
-    /// A line longer than one read holds is stepped over rather than asked
-    /// for again, which would never end.
+    /// A line longer than one read holds is stepped over rather than asked for again, which would never end.
     #[test]
     fn a_line_too_long_to_read_at_once_does_not_stop_the_rest() {
         let (_dir, traces) = in_a_temporary_directory();
@@ -439,8 +431,8 @@ mod tests {
         assert_ne!(read.cursor, cursor_at(0));
     }
 
-    /// A run works several levels below a temporary root, and the whole of
-    /// that in front of every path leaves no room for the file itself.
+    /// A run works several levels below a temporary root.
+    /// The whole of that in front of every path leaves no room for the file itself.
     #[test]
     fn a_path_reads_as_it_stands_in_the_work_area() {
         assert_eq!(

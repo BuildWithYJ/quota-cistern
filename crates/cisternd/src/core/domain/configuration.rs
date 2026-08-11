@@ -1,8 +1,8 @@
 //! The configuration and what a valid one is.
 //!
 //! Section 2.5 of `docs/cli.md` fixes the keys and the values each one takes.
-//! This module is private, so a value that reached here was parsed on the way
-//! in and no later step has to check it again.
+//! This module is private, so a value that reached here was parsed on the way in.
+//! No later step has to check it again.
 
 use std::fmt::{self, Display};
 
@@ -20,8 +20,7 @@ pub enum Key {
 
 /// A key together with a value that key takes.
 ///
-/// Building one is the only way to name a value, so a value is checked once,
-/// where the string is read.
+/// Building one is the only way to name a value, so a value is checked once, where the string is read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Setting {
     Vendor(Vendor),
@@ -29,7 +28,7 @@ pub enum Setting {
 
 /// What is stored.
 ///
-/// Every field is optional because nothing is set until a user sets it, and
+/// Every field is optional because nothing is set until a user sets it.
 /// `config get` has to answer before any of it exists.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Configuration {
@@ -54,8 +53,7 @@ impl Display for Key {
     }
 }
 
-/// One spelling for what a user types, what a store holds, and what is
-/// printed, so the three cannot drift apart.
+/// One spelling for what a user types, what a store holds, and what is printed, so the three cannot drift apart.
 impl Display for Vendor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -67,8 +65,8 @@ impl Display for Vendor {
 impl Setting {
     /// Reads a value against the key it was given for.
     ///
-    /// The key has to be known first, so that a key nobody has heard of is
-    /// told apart from a key holding a value it does not take.
+    /// The key has to be known first.
+    /// A key nobody has heard of is told apart from a key holding a value it does not take.
     pub fn parse(key: Key, value: &str) -> Option<Self> {
         match key {
             Key::Vendor => match value {

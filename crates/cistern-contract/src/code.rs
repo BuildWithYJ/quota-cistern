@@ -1,7 +1,7 @@
 //! The exit codes `docs/cli.md` defines.
 //!
-//! The core chooses one when it refuses, and the surface exits with it, so the
-//! meanings have to be the same on both sides.
+//! The core chooses one when it refuses, and the surface exits with it.
+//! The meanings have to be the same on both sides.
 
 /// The operation was refused.
 pub const GENERAL_FAILURE: u8 = 1;

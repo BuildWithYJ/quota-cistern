@@ -1,11 +1,9 @@
 //! One exchange between a surface and the core.
 //!
-//! `docs/ipc.md` records the address and the framing. Both programs read and
-//! write over the same socket, so the rule that one line carries one message is
-//! written here once rather than at each end.
-//!
-//! Whether the version of a surface matches the core is settled here too. It
-//! depends on the envelope alone, never on which command arrived.
+//! `docs/ipc.md` records the address and the framing.
+//! Both programs read and write over the same socket.
+//! The rule that one line carries one message is written here once.
+//! Whether the two versions match is settled here too, from the envelope alone.
 
 use std::io::{self, BufRead, BufReader, Write};
 
@@ -19,17 +17,15 @@ use crate::{
 
 /// Sends one request and reads the answer.
 ///
-/// Fails with [`io::ErrorKind::ConnectionRefused`] or
-/// [`io::ErrorKind::NotFound`] when no core is listening.
+/// Fails when no core is listening, with [`io::ErrorKind::ConnectionRefused`] or [`io::ErrorKind::NotFound`].
 pub fn ask(command: &str, params: serde_json::Value) -> io::Result<Response> {
     ask_at(name()?, command, params)
 }
 
 /// Sends one request to a given address.
 ///
-/// [`ask`] is this at the address `docs/ipc.md` names. A test reaches a
-/// temporary socket through here, the way an adapter takes the path it is
-/// given.
+/// [`ask`] is this at the address `docs/ipc.md` names.
+/// A test reaches a temporary socket through here, the way an adapter takes the path it is given.
 pub(crate) fn ask_at(
     name: Name<'_>,
     command: &str,
@@ -51,8 +47,7 @@ pub(crate) fn ask_at(
 
 /// The socket the core listens on.
 ///
-/// It holds the listener rather than handing it out, so that no caller has to
-/// name the socket library.
+/// It holds the listener rather than handing it out, so that no caller has to name the socket library.
 pub struct Server(Listener);
 
 /// One connection that has arrived and not yet been answered.
@@ -76,9 +71,8 @@ pub(crate) fn listen_at(name: Name<'_>) -> io::Result<Server> {
 impl Server {
     /// Waits for the next connection.
     ///
-    /// How long to keep accepting, and what to do when one connection fails,
-    /// are the core's to decide, so this hands back a single connection instead
-    /// of looping over them.
+    /// How long to keep accepting, and what to do when one connection fails, are the core's to decide.
+    /// This hands back a single connection instead of looping over them.
     pub fn accept(&self) -> io::Result<Exchange> {
         self.0.accept().map(Exchange)
     }
@@ -87,13 +81,13 @@ impl Server {
 impl Exchange {
     /// Reads one request, answers it, and writes one response.
     ///
-    /// A line that is not a request never reaches `respond`, and neither does a
-    /// request from a surface of another version. What arrived is the framing's
-    /// business, and the framing is here.
+    /// A line that is not a request never reaches `respond`.
+    /// Neither does a request from a surface of another version.
+    /// What arrived is the framing's business, and the framing is here.
     pub fn answer(self, respond: impl FnOnce(Request) -> Response) -> io::Result<()> {
         let mut line = String::new();
-        // Connecting and leaving is how a surface finds out whether anyone is
-        // listening. There is nothing to answer and nothing went wrong.
+        // Connecting and leaving is how a surface finds out whether anyone is listening.
+        // There is nothing to answer and nothing went wrong.
         if BufReader::new(&self.0).read_line(&mut line)? == 0 {
             return Ok(());
         }
@@ -108,9 +102,8 @@ impl Exchange {
 
 /// Answers what the envelope alone decides, and passes on the rest.
 ///
-/// A daemon outlives the install that replaced it, so a surface can be newer
-/// than the core it reached. `core_version` is exempt from the comparison: it
-/// is how a surface finds out which side is behind.
+/// A daemon outlives the install that replaced it, so a surface can be newer than the core it reached.
+/// `core_version` is exempt from the comparison: it is how a surface finds out which side is behind.
 fn settle(request: Request, respond: impl FnOnce(Request) -> Response) -> Response {
     if request.command == "core_version" {
         return Response::Data(Answer {
@@ -211,9 +204,9 @@ mod tests {
 
 /// A round trip over a real socket.
 ///
-/// Only the framing is exercised, so the core is a closure that echoes. The
-/// socket lives in a directory of the test's own, which leaves a running core
-/// alone and keeps two tests from meeting on one address.
+/// Only the framing is exercised, so the core is a closure that echoes.
+/// The socket lives in a directory of the test's own.
+/// That leaves a running core alone and keeps two tests from meeting on one address.
 #[cfg(all(test, unix))]
 mod round_trip {
     use std::{

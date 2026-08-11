@@ -6,8 +6,7 @@ use super::Refusal;
 
 /// One file a task changed.
 ///
-/// A count is absent for a file git counts no lines in, which is what a binary
-/// file is.
+/// A count is absent for a file git counts no lines in, which is what a binary file is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Changed {
     pub path: String,
@@ -27,9 +26,9 @@ pub struct Difference {
 
 /// One task waiting to be disposed of.
 ///
-/// The two counts are absent for a task whose branch cannot be read. The
-/// repository belongs to whoever is using this and they may delete a branch;
-/// a task that was registered still has to appear.
+/// The two counts are absent for a task whose branch cannot be read.
+/// The repository belongs to whoever is using this and they may delete a branch.
+/// A task that was registered still has to appear.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Awaiting {
     pub id: String,
@@ -66,8 +65,8 @@ pub struct Dropped {
 pub trait ReviewUseCase {
     /// What a task changed on its branch.
     ///
-    /// A task that never got a branch changed nothing, which section 2.3
-    /// reports the same way as a branch holding nothing.
+    /// A task that never got a branch changed nothing.
+    /// Section 2.3 reports that the same way as a branch holding nothing.
     fn diff(&self, id: &str) -> Result<Difference, Refusal>;
 
     /// Everything waiting to be disposed of, across sessions.

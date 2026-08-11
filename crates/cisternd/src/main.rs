@@ -1,7 +1,7 @@
 //! The quota-cistern daemon.
 //!
-//! It listens on a local socket and answers one request per connection. This
-//! is where the adapters and the services are built and joined.
+//! It listens on a local socket and answers one request per connection.
+//! This is where the adapters and the services are built and joined.
 
 // Tests may panic to signal failure.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
@@ -84,9 +84,8 @@ fn main() -> ExitCode {
         Err(e) => return quit(e),
     };
 
-    // A task outlives the request that assigned it, so what a run leaves behind
-    // is queued here and a thread beside the accept loop carries it on. The
-    // core says what one task is; when it happens is arranged here.
+    // A task outlives the request that assigned it.
+    // The core says what one task is, and this arranges when it happens.
     let queued = Queue::default();
     let execution = Queueing {
         execution: &execution,
@@ -94,9 +93,8 @@ fn main() -> ExitCode {
     };
 
     thread::scope(|threads| {
-        // Section 2.2 runs tasks in parallel. How many run at once is the
-        // core's, decided from the budget; these are only the hands to run
-        // them with, and one waiting on the queue costs nothing.
+        // How many run at once is the core's, decided from the budget.
+        // These are only the hands, and one waiting on the queue costs nothing.
         for _ in 0..AT_ONCE {
             threads.spawn(|| {
                 loop {
@@ -108,9 +106,7 @@ fn main() -> ExitCode {
             });
         }
 
-        // Each group owns the names its own commands arrive under, so this
-        // offers the request to one and then the next. It grows by a line per
-        // group, not by a line per command.
+        // Each group owns the names its commands arrive under, so this offers the request to one and then the next.
         let answer = |request| {
             inbound::configuration::respond(&configuration, request)
                 .or_else(|request| inbound::backlog::respond(&backlog, request))
@@ -124,8 +120,7 @@ fn main() -> ExitCode {
 
 /// The core's own execution, with what it assigned put on the queue.
 ///
-/// It stands between the adapter and the service so that neither has to know
-/// there are threads. Joining them is what this file is for.
+/// It stands between the adapter and the service so that neither has to know there are threads.
 struct Queueing<'a, U: ExecutionUseCase> {
     execution: &'a U,
     queued: &'a Queue,

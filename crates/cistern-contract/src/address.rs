@@ -1,7 +1,7 @@
 //! Where a surface and the core meet.
 //!
-//! `docs/ipc.md` records the address. Both sides read it from here so the two
-//! cannot drift apart.
+//! `docs/ipc.md` records the address.
+//! Both sides read it from here so the two cannot drift apart.
 
 #[cfg(unix)]
 mod platform {
@@ -11,8 +11,8 @@ mod platform {
 
     /// `$XDG_RUNTIME_DIR`, or `~/.local/state` where that is unset.
     ///
-    /// The two are arguments rather than reads, so that the choice between
-    /// them can be tested without setting a variable the whole process sees.
+    /// The two are arguments rather than reads.
+    /// The choice between them can be tested without setting a variable the whole process sees.
     pub(super) fn base_of(runtime: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
         if let Some(runtime) = runtime {
             return Some(PathBuf::from(runtime));
@@ -41,8 +41,9 @@ mod platform {
         path()?.to_fs_name::<GenericFilePath>()
     }
 
-    /// Makes the directory the socket goes in. Only the core calls this; a
-    /// surface finding it absent has found that no core is running.
+    /// Makes the directory the socket goes in.
+    ///
+    /// Only the core calls this; a surface finding it absent has found that no core is running.
     pub fn prepare() -> io::Result<()> {
         match path()?.parent() {
             Some(parent) => std::fs::create_dir_all(parent),
@@ -50,9 +51,9 @@ mod platform {
         }
     }
 
-    /// A socket file outlives a core that was killed, and binding to one that
-    /// is still there fails. Connecting tells the two apart: an answer means a
-    /// core holds it, a refusal means nobody does.
+    /// A socket file outlives a core that was killed, and binding to one that is still there fails.
+    ///
+    /// Connecting tells the two apart: an answer means a core holds it, a refusal means nobody does.
     pub fn clear_if_dead() -> io::Result<()> {
         let path = path()?;
         if !path.exists() {
@@ -67,8 +68,9 @@ mod platform {
         }
     }
 
-    /// Takes the socket file away. A file that is already gone is the wanted
-    /// state, not a failure.
+    /// Takes the socket file away.
+    ///
+    /// A file that is already gone is the wanted state, not a failure.
     pub fn remove() -> io::Result<()> {
         match std::fs::remove_file(path()?) {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -93,8 +95,8 @@ mod platform {
         Ok(())
     }
 
-    /// A named pipe is a kernel object that goes away with the process that
-    /// held it, so nothing is left behind to clear.
+    /// A named pipe is a kernel object that goes away with the process that held it.
+    /// Nothing is left behind to clear.
     pub fn clear_if_dead() -> io::Result<()> {
         Ok(())
     }

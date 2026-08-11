@@ -1,7 +1,7 @@
 //! The backlog file.
 //!
-//! The only place that knows the path and the file format. Neither reaches the
-//! core.
+//! The only place that knows the path and the file format.
+//! Neither reaches the core.
 
 use std::{env, path::PathBuf};
 
@@ -24,9 +24,9 @@ pub struct FileBacklog {
 
 /// The whole file, as JSON sees it.
 ///
-/// A value is held as whatever JSON found rather than as what the field is
-/// supposed to take. Which values a field takes is the core's to decide, so a
-/// file holding the wrong sort of one reaches it and is refused there.
+/// A value is held as whatever JSON found rather than as what the field is supposed to take.
+/// Which values a field takes is the core's to decide.
+/// A file holding the wrong sort of one reaches it and is refused there.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Written {
@@ -64,9 +64,9 @@ struct Entry {
 
 /// What a task consumed, as the file holds it.
 ///
-/// An object of its own rather than five fields beside the others, so that a
-/// task that never ran carries no counts at all and a reader can see which of
-/// the three states a task is in without comparing five keys.
+/// An object of its own rather than five fields beside the others.
+/// That way a task that never ran carries no counts at all.
+/// A reader can see which of the three states a task is in without comparing five keys.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Counted {
@@ -81,7 +81,8 @@ struct Counted {
 const NAMED: &str = "backlog.json";
 
 impl FileBacklog {
-    /// Takes the path it is given. This is how a test reaches a temporary one.
+    /// Takes the path it is given.
+    /// This is how a test reaches a temporary one.
     pub fn at(path: PathBuf) -> Self {
         FileBacklog {
             kept: Kept::at(path),
@@ -231,8 +232,7 @@ mod tests {
         }
     }
 
-    /// Puts a backlog in place, which is what a change does when it replaces
-    /// everything it was handed.
+    /// Puts a backlog in place, which is what a change does when it replaces everything it was handed.
     fn put(tasks: &FileBacklog, backlog: &StoredBacklog) {
         tasks
             .update(&mut |held| {
@@ -286,8 +286,8 @@ mod tests {
         assert!(tasks.load().is_err());
     }
 
-    /// Which values a field takes is the core's to decide, so a file holding
-    /// the wrong sort of one has to arrive rather than fail on the way.
+    /// Which values a field takes is the core's to decide.
+    /// A file holding the wrong sort of one has to arrive rather than fail on the way.
     #[test]
     fn a_value_of_another_type_reads_as_the_text_it_was_written_as() {
         let (dir, tasks) = in_a_temporary_directory();
@@ -319,8 +319,7 @@ mod tests {
         assert_eq!(read.tasks[0].branch, None);
     }
 
-    /// A number crosses the port as text and goes back as a number, so the file
-    /// stays JSON a person would have written.
+    /// A number crosses the port as text and goes back as a number, so the file stays JSON a person would have written.
     #[test]
     fn identifiers_go_back_into_the_file_as_numbers() {
         let (dir, tasks) = in_a_temporary_directory();
@@ -343,9 +342,9 @@ mod tests {
         assert!(written.contains("\"after\": 1"), "{written}");
     }
 
-    /// The figures are numbers, and a task that never ran carries neither the
-    /// object nor the reason. That is what tells the three states apart in a
-    /// file a person reads.
+    /// The figures are numbers, and a task that never ran carries neither the object nor the reason.
+    ///
+    /// That is what tells the three states apart in a file a person reads.
     #[test]
     fn what_a_task_consumed_goes_back_into_the_file_as_numbers() {
         let (dir, tasks) = in_a_temporary_directory();
@@ -401,8 +400,8 @@ mod tests {
         );
     }
 
-    /// A task registered before this core counted anything has neither key, and
-    /// a file written by an older one still reads.
+    /// A task registered before this core counted anything has neither key.
+    /// A file written by an older one still reads.
     #[test]
     fn a_task_with_no_count_at_all_writes_neither_key() {
         let (dir, tasks) = in_a_temporary_directory();
@@ -420,8 +419,8 @@ mod tests {
         assert!(!dir.path().join("backlog.json.new").exists());
     }
 
-    /// A refused command reads the backlog and changes nothing, and the file it
-    /// read should be the file that is still there.
+    /// A refused command reads the backlog and changes nothing.
+    /// The file it read should be the file that is still there.
     #[test]
     fn a_change_that_changed_nothing_leaves_the_file_where_it_was() {
         let (dir, tasks) = in_a_temporary_directory();
@@ -440,9 +439,9 @@ mod tests {
         assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
     }
 
-    /// Two tasks ending at the same moment both record their state. Reading and
-    /// writing as two calls would let the later write drop the earlier one, so
-    /// this counts what survived.
+    /// Two tasks ending at the same moment both record their state.
+    ///
+    /// Reading and writing as two calls would let the later write drop the earlier one, so this counts what survived.
     #[test]
     fn two_writers_at_once_do_not_write_over_each_other() {
         let (_dir, tasks) = in_a_temporary_directory();

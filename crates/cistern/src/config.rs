@@ -1,8 +1,7 @@
 //! The `config` command.
 //!
-//! What was typed goes to the core as it was given. Whether a key exists and
-//! whether a value belongs to it are the core's to decide, so this file has no
-//! list of either.
+//! What was typed goes to the core as it was given.
+//! Whether a key exists and whether a value belongs to it are the core's to decide, so this file has no list of either.
 
 use std::process::ExitCode;
 
@@ -24,8 +23,8 @@ pub fn run(command: ConfigCommand) -> ExitCode {
 
 /// Asks the core and prints what came back.
 ///
-/// A refusal carries the code `docs/cli.md` gives it, so the surface exits
-/// with the core's answer rather than deciding one of its own.
+/// A refusal carries the code `docs/cli.md` gives it.
+/// The surface exits with the core's answer rather than deciding one of its own.
 fn send(command: &str, params: Value, print: fn(&Value)) -> ExitCode {
     match exchange::ask(command, params) {
         Ok(Response::Data(answer)) => {
@@ -52,8 +51,8 @@ fn said(data: &Value) {
 
 /// One key, or every key that holds something.
 ///
-/// A key that holds nothing prints nothing, which is also what an empty
-/// configuration prints. Both are a successful read of nothing.
+/// A key that holds nothing prints nothing, which is also what an empty configuration prints.
+/// Both are a successful read of nothing.
 fn shown(data: &Value) {
     if let Some(value) = text(data, "value") {
         println!("{value}");

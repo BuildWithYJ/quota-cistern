@@ -54,8 +54,7 @@ impl<'a> ExecutionService<'a> {
 
     /// How far the vendor's limit is spent, as a whole number of percent.
     ///
-    /// Only a session declared as a share asks, since only a share is measured
-    /// against it and asking costs something.
+    /// Only a session declared as a share asks, since only a share is measured against it and asking costs something.
     fn limit_now(&self) -> Result<u64, Refusal> {
         let reading = self.limit.read()?;
         reading
@@ -76,8 +75,8 @@ impl ExecutionUseCase for ExecutionService<'_> {
             value: declared.time.to_owned(),
         })?;
 
-        // Asked before a session is opened, so that a run with nothing to do
-        // does not leave one behind that has to be stopped again.
+        // Asked before a session is opened.
+        // A run with nothing to do would otherwise leave one behind that has to be stopped again.
         if backlog::read(self.tasks)?.next_to_assign().is_none() {
             return Err(Refusal::NothingToAssign);
         }
@@ -85,8 +84,8 @@ impl ExecutionUseCase for ExecutionService<'_> {
         let budget = Budget { usage, time };
         let model = declared.model.map(str::to_owned);
 
-        // Read before the session opens, so that a share is measured from
-        // where the vendor's limit stood when this session had spent nothing.
+        // Read before the session opens.
+        // A share is measured from where the vendor's limit stood when this session had spent nothing.
         let started_at = self.clock.now();
         let limit_at_start = match usage {
             Usage::Share(_) => Some(self.limit_now()?),
@@ -205,9 +204,8 @@ impl ExecutionUseCase for ExecutionService<'_> {
         let task = held.find(wanted).ok_or_else(|| Refusal::NoSuchTask {
             id: wanted.labelled(),
         })?;
-        // Asked before the trace is read. A run that ends between the two
-        // would leave a reader told the task was still going with the last of
-        // what it wrote already in hand, and nothing would fetch it again.
+        // Before the trace is read.
+        // A run ending between the two would leave a reader holding the last of it and told there is more.
         let done = task.state() != TaskState::Running;
 
         let read = self
@@ -231,9 +229,8 @@ impl ExecutionUseCase for ExecutionService<'_> {
         let held = sessions::read(self.sessions)?;
         let running = held.running().ok_or(Refusal::NoSessionRunning)?.id();
 
-        // Read before anything is ended. A task the vendor was still running
-        // will not report what it spent, and for a share the vendor's own
-        // figure has that in it.
+        // Before anything is ended.
+        // A task the vendor was still running reports nothing, and a share is read from the vendor.
         let spent = self.spending_of(running)?;
         let now = self.clock.now();
         sessions::change(self.sessions, |sessions| {
@@ -241,8 +238,7 @@ impl ExecutionUseCase for ExecutionService<'_> {
             Ok(())
         })?;
 
-        // The runs end before the tasks do, so nothing is recorded as ended
-        // while its agent is still working.
+        // The runs end before the tasks do, so nothing is recorded as ended while its agent is still working.
         for task in backlog::read(self.tasks)?.taken_by(running) {
             if task.state() == TaskState::Running {
                 self.agent.stop(&task.id().to_string());
@@ -302,9 +298,7 @@ impl ExecutionUseCase for ExecutionService<'_> {
             task: &id.to_string(),
         }) {
             Ok(at) => at,
-            // A task that could not be given a place to work in has ended, and
-            // saying so is what keeps it from being read as still running.
-            // Nothing ran, so there is nothing to have consumed.
+            // A task with nowhere to work has ended, and nothing ran, so there is nothing to have consumed.
             Err(e) => return self.ended(id, TaskState::Error, Some(e.reason), Observation::NotYet),
         };
         backlog::change(self.tasks, |tasks| {
@@ -325,18 +319,15 @@ impl ExecutionUseCase for ExecutionService<'_> {
                 let consumed = observed(ended.observed);
                 match ended.outcome {
                     Outcome::Finished => self.ended(id, TaskState::Completed, None, consumed),
-                    // Section 1 gives a run stopped at its ceiling a reason of
-                    // its own, and says the session carries on.
+                    // Section 1 gives a run stopped at its ceiling a reason of its own.
+                    // It also says the session carries on.
                     Outcome::AtCeiling => self.ended(
                         id,
                         TaskState::Interrupted,
                         Some(AT_CEILING.to_owned()),
                         consumed,
                     ),
-                    // A run the vendor would not take fails the same way as
-                    // one that went wrong, and only the vendor's limit tells
-                    // them apart. It is asked here rather than on every task,
-                    // since asking costs a turn and a task rarely fails.
+                    // Only the vendor's limit tells a run it would not take from one that went wrong.
                     Outcome::Failed => match self.at_its_limit() {
                         true => self.turned_away(id, consumed),
                         false => self.ended(id, TaskState::Error, ended.reason, consumed),
@@ -350,9 +341,9 @@ impl ExecutionUseCase for ExecutionService<'_> {
 
 /// Reads what the agent said it consumed.
 ///
-/// The port answers in the core's own words already, so this only tells the two
-/// answers apart. A count the adapter could not read is not a count of nothing,
-/// and section 1 keeps the two apart as far as the reason a session stops.
+/// The port answers in the core's own words already, so this only tells the two answers apart.
+/// A count the adapter could not read is not a count of nothing.
+/// Section 1 keeps the two apart as far as the reason a session stops.
 fn observed(observed: Observed) -> Observation {
     match observed {
         Observed::Unreadable { why } => Observation::Unreadable { why },
@@ -378,8 +369,8 @@ fn counted(spent: &Spent) -> Option<Consumption> {
 
 /// A count a caller wrote, or what it defaults to when nobody wrote one.
 ///
-/// Zero is refused for both. Section 2.2 names `--page 0` as an argument
-/// error, and a page of nothing is the same kind of nothing.
+/// Zero is refused for both.
+/// Section 2.2 names `--page 0` as an argument error, and a page of nothing is the same kind of nothing.
 fn counted_from(key: &str, written: Option<&str>, unless: u32) -> Result<u32, Refusal> {
     let Some(written) = written else {
         return Ok(unless);
@@ -403,8 +394,8 @@ const FULL: u64 = 100 * HUNDREDTHS;
 impl ExecutionService<'_> {
     /// How long the session has run.
     ///
-    /// A session still running has run until now. One that stopped ran until
-    /// the moment it last changed, which is the moment it stopped.
+    /// A session still running has run until now.
+    /// One that stopped ran until the moment it last changed, which is the moment it stopped.
     fn elapsed(&self, session: &Session) -> Span {
         let until = match session.state() {
             SessionState::Running => self.clock.now(),
@@ -415,18 +406,18 @@ impl ExecutionService<'_> {
 
     /// Whether the vendor has nothing left to give.
     ///
-    /// A reading this cannot take is not a limit that has been reached. The
-    /// run failed either way, and calling it the vendor's doing on a question
-    /// nobody could answer would stop a session that had room left.
+    /// A reading this cannot take is not a limit that has been reached.
+    /// The run failed either way.
+    /// Calling it the vendor's doing on a question nobody could answer would stop a session that had room left.
     fn at_its_limit(&self) -> bool {
         self.limit_now().is_ok_and(|used| used >= FULL)
     }
 
     /// A task the vendor would not run, and the session it belonged to.
     ///
-    /// The task goes back to waiting, since nothing about it was wrong and it
-    /// is the vendor that has to change its mind. The session stops, because
-    /// every other task in it would be turned away the same way.
+    /// The task goes back to waiting, since nothing about it was wrong.
+    /// It is the vendor that has to change its mind.
+    /// The session stops, because every other task in it would be turned away the same way.
     fn turned_away(&self, id: TaskId, consumed: Observation) -> Result<Vec<String>, Refusal> {
         let starts_over = self
             .limit
@@ -452,11 +443,9 @@ impl ExecutionService<'_> {
         Ok(Vec::new())
     }
 
-    /// Moves a task to the state it ended in, records what it consumed, and
-    /// decides what happens next.
+    /// Moves a task to the state it ended in, records what it consumed, and decides what happens next.
     ///
-    /// The first two are one change, so that a task is never stored as ended
-    /// with what it consumed still missing.
+    /// The first two are one change, so that a task is never stored as ended with what it consumed still missing.
     fn ended(
         &self,
         id: TaskId,
@@ -486,8 +475,8 @@ impl ExecutionService<'_> {
         };
 
         let spent = self.spending(&held)?;
-        // A share cannot be worked out again once the session has stopped, so
-        // what was read here is what is reported for it afterwards.
+        // A share cannot be worked out again once the session has stopped.
+        // What was read here is what is reported for it afterwards.
         let now = self.clock.now();
         sessions::change(self.sessions, |sessions| {
             sessions.record(session, spent, now);
@@ -496,13 +485,11 @@ impl ExecutionService<'_> {
 
         let (left, running, waiting, cost) = backlog::read(self.tasks).map(|tasks| {
             let cost = match (held.budget().usage, spent) {
-                // Tokens mean the same in every session, so what a task costs
-                // is what tasks have cost here at all.
+                // Tokens mean the same in every session, so what a task costs is what tasks have cost here at all.
                 (Usage::Tokens(_), _) => {
                     Some(cost_of(tasks.counted().iter().map(Consumption::tokens)))
                 }
-                // A share is how far this session moved the vendor's limit,
-                // and only this session's tasks moved it.
+                // A share is how far this session moved the vendor's limit, and only this session's tasks moved it.
                 (Usage::Share(_), Spending::Share(spent)) => Some(Cost {
                     total: spent,
                     over: tasks.ended_in(session) as u64,
@@ -535,8 +522,8 @@ impl ExecutionService<'_> {
         waiting: bool,
         cost: Option<Cost>,
     ) -> Result<Option<StoppedReason>, Refusal> {
-        // A count nobody could read leaves a budget that cannot be measured,
-        // and a budget that cannot be measured cannot be held to.
+        // A count nobody could read leaves a budget that cannot be measured.
+        // A budget that cannot be measured cannot be held to.
         if matches!(
             backlog::read(self.tasks)?.consumed_by(held.id()),
             Observation::Unreadable { .. }
@@ -587,8 +574,8 @@ impl ExecutionService<'_> {
             (Usage::Share(_), Some(at_start)) => {
                 Ok(Spending::Share(self.limit_now()?.saturating_sub(at_start)))
             }
-            // A share with nothing to measure from is a store this core cannot
-            // use. Nothing else can be said about how much of it is spent.
+            // A share with nothing to measure from is a store this core cannot use.
+            // Nothing else can be said about how much of it is spent.
             (Usage::Share(_), None) => Err(Refusal::Unavailable {
                 reason: format!(
                     "{} declared a share and does not say what the limit was at",
@@ -663,9 +650,8 @@ mod tests {
             &self,
             change: &mut dyn FnMut(&mut StoredSessions) -> bool,
         ) -> Result<(), Unavailable> {
-            // The lock is held across the read and the write, which is what
-            // the port promises. A fake that let go between them would allow
-            // the very thing the real store is written to prevent.
+            // Held across the read and the write, as the port promises.
+            // A fake that let go would allow what the real store prevents.
             let mut held = self.stored.lock().unwrap();
             let mut sessions = held.clone();
             if change(&mut sessions) {
@@ -823,8 +809,8 @@ mod tests {
 
     /// A vendor limit that moves every time it is read.
     ///
-    /// A session declared as a share is measured against a figure that grows
-    /// while its tasks run, and nothing else here makes it grow.
+    /// A session declared as a share is measured against a figure that grows while its tasks run.
+    /// Nothing else here makes it grow.
     struct Advancing {
         used: Mutex<u64>,
         step: u64,
@@ -859,7 +845,7 @@ mod tests {
         })
     }
 
-    /// An agent that answers as it was told to, and remembers what it was asked.
+    /// An agent that answers as told, and remembers what it was asked.
     struct Standing {
         ended: Ended,
         asked: Mutex<Vec<(String, String, Option<String>)>>,
@@ -959,8 +945,8 @@ mod tests {
         assert_eq!(held.sessions[0].usage, "2000000");
     }
 
-    /// A task that was assigned is running and belongs to the session that
-    /// took it, so nothing else may take it as well.
+    /// A task that was assigned is running and belongs to the session that took it.
+    /// Nothing else may take it as well.
     #[test]
     fn the_task_that_was_assigned_says_which_session_took_it() {
         let sessions = Remembered::empty();
@@ -1171,15 +1157,15 @@ mod tests {
         assert_eq!(counted.cost, "92170");
         assert_eq!(tasks.first().unreadable, None);
 
-        // The backlog held one task and it is done, so nothing is left to
-        // assign and the session has nothing more to do.
+        // The backlog held one task and it is done.
+        // Nothing is left to assign, and the session has nothing more to do.
         let session = sessions.load().sessions[0].clone();
         assert_eq!(session.state, "stopped");
         assert_eq!(session.stopped_reason.as_deref(), Some("all done"));
     }
 
-    /// A task that never reached the agent has not consumed nothing; it has not
-    /// consumed at all, and neither field says otherwise.
+    /// A task that never reached the agent has not consumed nothing; it has not consumed at all.
+    /// Neither field says otherwise.
     #[test]
     fn a_task_that_never_ran_is_stored_with_no_count_at_all() {
         let sessions = Remembered::empty();
@@ -1208,8 +1194,8 @@ mod tests {
         assert_eq!(held.unreadable, None);
     }
 
-    /// A budget is a figure, and a session that cannot be measured against its
-    /// own would run past it without anything noticing.
+    /// A budget is a figure.
+    /// A session that cannot be measured against its own would run past it without anything noticing.
     #[test]
     fn a_session_whose_count_could_not_be_read_stops_and_says_so() {
         let sessions = Remembered::empty();
@@ -1312,8 +1298,7 @@ mod tests {
         assert_eq!(held.reason.as_deref(), Some("it went wrong"));
     }
 
-    /// Section 1 says the session carries on when one task hits the ceiling
-    /// on a single run.
+    /// Section 1 says the session carries on when one task hits the ceiling on a single run.
     #[test]
     fn a_task_stopped_at_its_ceiling_says_so_and_the_session_carries_on() {
         let sessions = Remembered::empty();
@@ -1343,8 +1328,7 @@ mod tests {
         assert_eq!(sessions.load().sessions[0].state, "running");
     }
 
-    /// A vendor that will not run one task will not run the next either, and
-    /// nothing about the task was wrong.
+    /// A vendor that will not run one task will not run the next either, and nothing about the task was wrong.
     #[test]
     fn a_task_the_vendor_would_not_run_waits_again_and_the_session_stops() {
         let sessions = Remembered::empty();
@@ -1382,8 +1366,7 @@ mod tests {
         assert_eq!(session.stopped_reason.as_deref(), Some("vendor limit"));
     }
 
-    /// A run can fail on its own account, and the vendor having room left is
-    /// what says so.
+    /// A run can fail on its own account, and the vendor having room left is what says so.
     #[test]
     fn a_task_that_failed_with_room_left_is_an_error() {
         let sessions = Remembered::empty();
@@ -1448,8 +1431,8 @@ mod tests {
         assert_eq!(tasks.first().state, "Error");
     }
 
-    /// The other half of the hardlock: a session that has spent the tokens it
-    /// declared stops, whether or not its time is up.
+    /// The other half of the hardlock: a session that has spent the tokens it declared stops.
+    /// It stops whether or not its time is up.
     #[test]
     fn a_session_that_spent_what_it_declared_stops_and_says_so() {
         let sessions = Remembered::empty();
@@ -1466,8 +1449,7 @@ mod tests {
             &NOTHING_KEPT,
         );
 
-        // The stand-in agent reports far more than this budget allows, so the
-        // first task spends the whole of it.
+        // The stand-in agent reports far more than this budget allows, so the first task spends the whole of it.
         execution.run(declaring("1000", "8h")).unwrap();
         let assigned = execution.carry_on("task:1").unwrap();
 
@@ -1479,9 +1461,9 @@ mod tests {
         assert_eq!(tasks.load().unwrap().tasks[1].state, "Pending");
     }
 
-    /// A task moves the vendor's limit by less than a point, and for a while
-    /// that read as costing nothing at all. Several tasks have to start once
-    /// there is anything to divide by.
+    /// A task moves the vendor's limit by less than a point, and for a while that read as costing nothing at all.
+    ///
+    /// Several tasks have to start once there is anything to divide by.
     #[test]
     fn a_share_starts_several_once_it_knows_what_a_task_costs() {
         let sessions = Remembered::empty();
@@ -1494,8 +1476,7 @@ mod tests {
         ]);
         let areas = Areas::default();
         let agent = Standing::finishing();
-        // Half a point every time it is asked, which is what a task cost when
-        // this was measured against the vendor.
+        // Half a point every time it is asked, which is what a task cost when this was measured against the vendor.
         let moving = Advancing {
             used: Mutex::new(0),
             step: 50,
@@ -1514,14 +1495,13 @@ mod tests {
         let started = execution.run(declaring("5%", "8h")).unwrap();
         assert_eq!(started.assigned.len(), 1);
 
-        // The second knows what one task cost, and the rest of the budget
-        // holds far more than a handful.
+        // The second knows what one task cost, and the rest of the budget holds far more than a handful.
         let assigned = execution.carry_on("task:1").unwrap();
         assert_eq!(assigned.len(), 4);
     }
 
-    /// A share is spent against a figure the vendor keeps, so a session that
-    /// reaches it stops however few tokens its own tasks reported.
+    /// A share is spent against a figure the vendor keeps.
+    /// A session that reaches it stops however few tokens its own tasks reported.
     #[test]
     fn a_share_that_reached_what_it_declared_stops() {
         let sessions = Remembered::empty();
@@ -1553,8 +1533,7 @@ mod tests {
         assert_eq!(tasks.load().unwrap().tasks[1].state, "Pending");
     }
 
-    /// Section 2.2 lists them newest first, which is the order the numbers
-    /// were handed out in.
+    /// Section 2.2 lists them newest first, which is the order the numbers were handed out in.
     #[test]
     fn sessions_are_listed_newest_first() {
         let sessions = Remembered::empty();
@@ -1571,8 +1550,8 @@ mod tests {
             &NOTHING_KEPT,
         );
 
-        // A budget one task overruns, so the first session ends after one and
-        // the second task is left for a session of its own.
+        // A budget one task overruns.
+        // The first session ends after one, and the second task is left for a session of its own.
         execution.run(declaring("1000", "8h")).unwrap();
         execution.carry_on("task:1").unwrap();
         execution.run(declaring("1000", "2h")).unwrap();
@@ -1792,8 +1771,9 @@ mod tests {
         assert_eq!(tasks.first().reason.as_deref(), Some("interrupted"));
     }
 
-    /// The run has to end before the task does. A task recorded as ended
-    /// while its agent still works is a task nobody is watching.
+    /// The run has to end before the task does.
+    ///
+    /// A task recorded as ended while its agent still works is a task nobody is watching.
     #[test]
     fn interrupting_ends_the_run_of_every_task_it_interrupts() {
         let sessions = Remembered::empty();
@@ -1823,8 +1803,8 @@ mod tests {
         );
     }
 
-    /// The thread waiting on a killed agent comes back to say it failed, and
-    /// the task has already ended for a better reason.
+    /// The thread waiting on a killed agent comes back to say it failed.
+    /// The task has already ended for a better reason.
     #[test]
     fn what_the_agent_says_afterwards_does_not_undo_the_interruption() {
         let sessions = Remembered::empty();
@@ -1872,8 +1852,7 @@ mod tests {
         assert_eq!(execution.interrupt(), Err(Refusal::NoSessionRunning));
     }
 
-    /// A session that has run as long as it declared stops, and whatever it
-    /// still had running ends where it got to.
+    /// A session that has run as long as it declared stops, and whatever it still had running ends where it got to.
     #[test]
     fn a_session_out_of_time_stops_and_interrupts_what_was_running() {
         let sessions = Remembered::empty();
@@ -1909,9 +1888,8 @@ mod tests {
         assert_eq!(session.stopped_reason.as_deref(), Some("budget hardlock"));
     }
 
-    /// The executor is called for one task at a time and several at once, so
-    /// two running together have to end in their own places without either
-    /// losing what the other recorded.
+    /// The executor is called for one task at a time and several at once.
+    /// Two running together have to end in their own places without either losing what the other recorded.
     #[test]
     fn two_tasks_carried_on_at_once_each_end_in_their_own_place() {
         let sessions = Remembered::empty();
@@ -1928,8 +1906,8 @@ mod tests {
             &NOTHING_KEPT,
         );
 
-        // The supervisor is what assigns more than one; until it exists a test
-        // stands in for it by assigning the second task itself.
+        // The supervisor is what assigns more than one.
+        // Until it exists, a test stands in for it by assigning the second task itself.
         execution.run(declaring("50%", "8h")).unwrap();
         let opened = SessionId::parse("1").unwrap();
         backlog::change(&tasks, |held| Ok(held.assign(opened))).unwrap();
@@ -1948,8 +1926,7 @@ mod tests {
         assert_eq!(held[1].worktree.as_deref(), Some("/areas/2"));
     }
 
-    /// A task with nowhere to work has ended, and saying so is what keeps it
-    /// from being read as still running.
+    /// A task with nowhere to work has ended, and saying so is what keeps it from being read as still running.
     #[test]
     fn a_work_area_that_could_not_be_made_leaves_the_task_in_error() {
         let sessions = Remembered::empty();
@@ -1978,8 +1955,9 @@ mod tests {
         assert!(agent.asked.lock().unwrap().is_empty());
     }
 
-    /// A reader is told whether more can still arrive. The run's state answers
-    /// that, and the run is this service's to know.
+    /// A reader is told whether more can still arrive.
+    ///
+    /// The run's state answers that, and the run is this service's to know.
     #[test]
     fn a_trace_says_whether_it_can_still_grow() {
         let sessions = Remembered::empty();

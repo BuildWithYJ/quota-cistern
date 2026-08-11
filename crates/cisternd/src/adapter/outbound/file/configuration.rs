@@ -1,7 +1,7 @@
 //! The configuration file.
 //!
-//! The only place that knows the path and the file format. Neither reaches the
-//! core.
+//! The only place that knows the path and the file format.
+//! Neither reaches the core.
 
 use std::{env, path::PathBuf};
 
@@ -18,13 +18,9 @@ pub struct FileConfiguration {
 
 /// The whole file, as TOML sees it.
 ///
-/// It stands apart from the port's type because the key spelling, the
-/// absent-field rules, and which TOML type a value is written as all belong to
-/// the format, not to what is being stored.
-///
-/// A value is held as whatever TOML found rather than as what the key is
-/// supposed to take. Which values a key takes is the core's to decide, so a
-/// file holding the wrong sort of one reaches it and is refused there.
+/// Apart from the port's type, since the key spelling and which TOML type a value is written as belong to the format.
+/// A value is held as whatever TOML found.
+/// A file holding the wrong sort of one reaches the core and is refused there.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Written {
@@ -34,9 +30,8 @@ struct Written {
 
 /// The text a user would have typed for what TOML holds.
 ///
-/// A string keeps its contents; everything else is rendered as the file writes
-/// it, so a number, a boolean, and a table all reach the core as something it
-/// can read and refuse.
+/// A string keeps its contents; everything else is rendered as the file writes it.
+/// A number, a boolean, and a table all reach the core as something it can read and refuse.
 fn as_text(value: toml::Value) -> String {
     match value {
         toml::Value::String(text) => text,
@@ -48,7 +43,8 @@ fn as_text(value: toml::Value) -> String {
 const NAMED: &str = "config.toml";
 
 impl FileConfiguration {
-    /// Takes the path it is given. This is how a test reaches a temporary one.
+    /// Takes the path it is given.
+    /// This is how a test reaches a temporary one.
     pub fn at(path: PathBuf) -> Self {
         FileConfiguration {
             kept: Kept::at(path),
@@ -155,8 +151,8 @@ mod tests {
         );
     }
 
-    /// A file can hold a TOML type the key does not take. Refusing that is the
-    /// core's, so it has to arrive rather than fail on the way.
+    /// A file can hold a TOML type the key does not take.
+    /// Refusing that is the core's, so it has to arrive rather than fail on the way.
     #[test]
     fn a_value_of_another_type_reads_as_the_text_it_was_written_as() {
         let (dir, settings) = in_a_temporary_directory();

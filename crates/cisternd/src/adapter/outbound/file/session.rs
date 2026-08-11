@@ -1,7 +1,7 @@
 //! The sessions file.
 //!
-//! The only place that knows the path and the file format. Neither reaches the
-//! core.
+//! The only place that knows the path and the file format.
+//! Neither reaches the core.
 
 use std::{env, path::PathBuf};
 
@@ -22,8 +22,7 @@ pub struct FileSessions {
 
 /// The whole file, as JSON sees it.
 ///
-/// A value is held as whatever JSON found rather than as what the field is
-/// supposed to take, for the reason `file::backlog` gives.
+/// A value is held as whatever JSON found rather than as what the field is supposed to take.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Written {
@@ -51,12 +50,12 @@ struct Entry {
     resets_at: Value,
 }
 
-/// What the file is called. `file::backlog` gives the reason it sits beside
-/// the backlog.
+/// What the file is called.
 const NAMED: &str = "sessions.json";
 
 impl FileSessions {
-    /// Takes the path it is given. This is how a test reaches a temporary one.
+    /// Takes the path it is given.
+    /// This is how a test reaches a temporary one.
     pub fn at(path: PathBuf) -> Self {
         FileSessions {
             kept: Kept::at(path),

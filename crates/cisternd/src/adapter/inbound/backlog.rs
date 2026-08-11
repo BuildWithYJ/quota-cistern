@@ -9,8 +9,8 @@ use super::{answer, missing, text};
 
 /// Answers the commands this group owns.
 ///
-/// A command it does not own comes back untouched, so that whoever is routing
-/// can offer the request to the next group without keeping a list of names.
+/// A command it does not own comes back untouched.
+/// That way, whoever is routing can offer the request to the next group without keeping a list of names.
 pub fn respond(backlog: &impl BacklogUseCase, request: Request) -> Result<Response, Request> {
     match request.command.as_str() {
         "task_add" => Ok(add(backlog, request)),
@@ -22,8 +22,8 @@ pub fn respond(backlog: &impl BacklogUseCase, request: Request) -> Result<Respon
 }
 
 fn add(backlog: &impl BacklogUseCase, request: Request) -> Response {
-    // cwd is not an argument a user types. A surface adds it, so a request
-    // without one was built wrong rather than typed wrong.
+    // cwd is not an argument a user types.
+    // A surface adds it, so a request without one was built wrong rather than typed wrong.
     let given = match (
         text(&request, "cwd"),
         text(&request, "title"),
@@ -125,9 +125,9 @@ mod tests {
 
     /// Stands in for the core.
     ///
-    /// It answers rather than deciding, and records whether it was reached, so
-    /// that what is checked here is the envelope and nothing else. No store is
-    /// involved, because no command reaches one through this file.
+    /// It answers rather than deciding, and records whether it was reached.
+    /// That way, what is checked here is the envelope and nothing else.
+    /// No store is involved, because no command reaches one through this file.
     #[derive(Default)]
     struct Core {
         /// What every command ends in, when it is meant to end badly.
@@ -283,8 +283,7 @@ mod tests {
         assert!(!core.reached.get());
     }
 
-    /// cwd is not an argument a user types. A request without one was built
-    /// wrong rather than typed wrong, so it is refused here.
+    /// A missing cwd is refused the same as a missing typed argument.
     #[test]
     fn a_task_add_without_a_working_directory_never_reaches_the_core() {
         let core = Core::default();

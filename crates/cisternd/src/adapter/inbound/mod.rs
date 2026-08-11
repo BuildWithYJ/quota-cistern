@@ -1,11 +1,7 @@
 //! Where the envelope meets the commands the core offers.
 //!
-//! One file per command group, each owning the names its commands arrive
-//! under. Which group a request belongs to is settled where the services are
-//! built, so no file here reaches another beside it.
-//!
-//! What every group shares is here: reading a field out of the envelope, and
-//! turning a refusal into the code and sentence a surface exits with.
+//! One file per command group, each owning the names its commands arrive under, and none reaching another.
+//! What they share is here: reading a field out of the envelope, and turning a refusal into a code and a sentence.
 
 pub mod backlog;
 pub mod configuration;
@@ -35,8 +31,7 @@ pub(super) fn text<'a>(request: &'a Request, field: &str) -> Option<&'a str> {
 
 /// A request whose envelope does not carry what the command needs.
 ///
-/// It never reaches the core, because what arrived is the envelope's business
-/// and the envelope is read here.
+/// It never reaches the core, because what arrived is the envelope's business and the envelope is read here.
 pub(super) fn missing(why: &str) -> Response {
     Response::Error(Failure::new(USAGE_ERROR, why.to_owned()))
 }

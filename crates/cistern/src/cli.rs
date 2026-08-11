@@ -1,6 +1,7 @@
 //! What the command line accepts.
 //!
-//! `docs/cli.md` specifies it. Only what is implemented appears here.
+//! `docs/cli.md` specifies it.
+//! Only what is implemented appears here.
 
 use clap::{Parser, Subcommand};
 
@@ -8,8 +9,8 @@ use clap::{Parser, Subcommand};
 #[derive(Debug, Parser)]
 #[command(
     name = "cistern",
-    // clap would answer --version itself with the crate version. Ours has to
-    // reach the core, so it is an ordinary flag.
+    // clap would answer --version itself with the crate version.
+    // Ours has to reach the core, so it is an ordinary flag.
     disable_version_flag = true,
     // docs/cli.md: no subcommand prints usage and exits 2.
     arg_required_else_help = true
@@ -94,10 +95,12 @@ pub enum ReviewCommand {
 pub enum SessionCommand {
     /// Lists sessions, newest first.
     Ls {
-        /// Page number. Defaults to 1.
+        /// Page number.
+        /// Defaults to 1.
         #[arg(long)]
         page: Option<String>,
-        /// Items per page. Defaults to 20.
+        /// Items per page.
+        /// Defaults to 20.
         #[arg(long)]
         limit: Option<String>,
     },
@@ -112,13 +115,15 @@ pub enum TaskCommand {
         /// Task title.
         #[arg(long)]
         title: String,
-        /// Instruction for the agent. `-` reads from stdin.
+        /// Instruction for the agent.
+        /// `-` reads from stdin.
         #[arg(long)]
         instruction: String,
         /// Branch the task starts from.
         #[arg(long)]
         branch: Option<String>,
-        /// Predecessor task. This task waits until that one completes.
+        /// Predecessor task.
+        /// This task waits until that one completes.
         #[arg(long)]
         after: Option<String>,
         /// Model for this task.
@@ -141,8 +146,7 @@ pub enum ConfigCommand {
 
 /// Reads the command line.
 ///
-/// It stands between `main` and clap, so that swapping the parser touches only
-/// this file.
+/// It stands between `main` and clap, so that swapping the parser touches only this file.
 pub fn parse() -> Cli {
     Cli::parse()
 }

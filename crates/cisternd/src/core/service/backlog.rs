@@ -15,8 +15,8 @@ use crate::core::{
 
 /// The commands over the backlog, and what they need from outside.
 ///
-/// It holds the ports these commands use and no others, so that a command over
-/// the configuration cannot reach the backlog store through it.
+/// It holds the ports these commands use and no others.
+/// A command over the configuration cannot reach the backlog store through it.
 pub struct BacklogService<'a> {
     store: &'a dyn BacklogStore,
     roots: &'a dyn RepositoryRoots,
@@ -38,8 +38,8 @@ impl BacklogUseCase for BacklogService<'_> {
         }
         let after = given.after.map(identifier).transpose()?;
 
-        // Asked before the backlog is read, since a command run outside a
-        // repository is refused whatever the backlog holds.
+        // Asked before the backlog is read.
+        // A command run outside a repository is refused whatever the backlog holds.
         let Some(root) = self.roots.root_of(given.cwd)? else {
             return Err(Refusal::NotARepository {
                 at: given.cwd.to_owned(),
@@ -146,15 +146,15 @@ fn identifier(id: &str) -> Result<TaskId, Refusal> {
 
 /// Reads the store and holds it to the same standard as an argument.
 ///
-/// A backlog file can be edited by hand, so what a store hands back is a claim
-/// rather than a fact. Unlike the configuration, nobody is meant to write this
-/// file, so a backlog that does not add up is a store this core cannot use
-/// rather than something the user typed wrong.
+/// A backlog file can be edited by hand, so what a store hands back is a claim rather than a fact.
+/// Unlike the configuration, nobody is meant to write this file.
+/// A backlog that does not add up is a store this core cannot use, not something the user typed wrong.
 pub(super) fn read(tasks: &dyn BacklogStore) -> Result<Backlog, Refusal> {
     read_from(tasks.load()?)
 }
 
-/// Reads the backlog a store handed over. Held to the standard `read` names.
+/// Reads the backlog a store handed over.
+/// Held to the standard `read` names.
 fn read_from(stored: StoredBacklog) -> Result<Backlog, Refusal> {
     let next_id = stored_number("next_id", &stored.next_id)?;
 
@@ -170,12 +170,9 @@ fn read_from(stored: StoredBacklog) -> Result<Backlog, Refusal> {
 
 /// Reads the backlog, changes it, and writes it back as one step.
 ///
-/// `service::execution` uses this too: one store has one reader, so the two
-/// services cannot come to disagree about what a stored task means.
-///
-/// The answer travels out in a value this holds rather than out of the port,
-/// because a port that returned a refusal would have to name what one is, and
-/// that word belongs to the other edge.
+/// `service::execution` uses this too, so that one store has one reader.
+/// The answer travels out in a value this holds rather than out of the port.
+/// A port returning a refusal would have to name a word from the other edge.
 pub(super) fn change<T>(
     tasks: &dyn BacklogStore,
     with: impl FnOnce(&mut Backlog) -> Result<T, Refusal>,
@@ -184,8 +181,8 @@ pub(super) fn change<T>(
     let mut answer = None;
 
     tasks.update(&mut |stored| {
-        // A store that ran the change twice would apply it twice. Taking it
-        // leaves the second call nothing to run and nothing to write.
+        // A store that ran the change twice would apply it twice.
+        // Taking it leaves the second call nothing to run and nothing to write.
         let Some(with) = with.take() else {
             return false;
         };
@@ -216,8 +213,7 @@ pub(super) fn change<T>(
 
 /// Reads one task as a store handed it over.
 ///
-/// The domain is given values it can take, never the text they were kept as,
-/// so reading them is this layer's work.
+/// The domain is given values it can take, never the text they were kept as, so reading them is this layer's work.
 fn restored_from(held: StoredTask) -> Result<Restored, Refusal> {
     Ok(Restored {
         id: stored_id("id", &held.id)?,
@@ -280,8 +276,8 @@ fn written(backlog: &Backlog) -> StoredBacklog {
 
 /// Reads what a store held about one task's consumption.
 ///
-/// A store holding both a count and a reason it could not be counted is holding
-/// two answers to one question, and this core cannot tell which to believe.
+/// A store holding both a count and a reason it could not be counted is holding two answers to one question.
+/// This core cannot tell which to believe.
 fn observed(
     consumed: Option<StoredConsumption>,
     unreadable: Option<String>,
@@ -331,8 +327,7 @@ fn stored_count(field: &str, value: &str) -> Result<u64, Refusal> {
 
 /// A value the store holds that this core cannot read.
 ///
-/// Unlike an argument, nobody is meant to write this file, so it fails as a
-/// store rather than as something typed wrong.
+/// Unlike an argument, nobody is meant to write this file, so it fails as a store rather than as something typed wrong.
 fn unreadable(field: &str, value: &str) -> Refusal {
     Refusal::Unavailable {
         reason: format!("the backlog holds {value} where {field} belongs"),
@@ -363,8 +358,7 @@ mod tests {
     /// A backlog held in memory, so the steps can be checked without a file.
     struct Remembered {
         stored: Mutex<StoredBacklog>,
-        /// Makes every read fail, standing in for a store that is there but
-        /// cannot be understood.
+        /// Makes every read fail, standing in for a store that is there but cannot be understood.
         broken: bool,
         /// Counts reads, so a test can show that one never happened.
         reads: AtomicUsize,
@@ -396,8 +390,7 @@ mod tests {
             &self,
             change: &mut dyn FnMut(&mut StoredBacklog) -> bool,
         ) -> Result<(), Unavailable> {
-            // The lock is held across the read and the write, which is what
-            // the port promises.
+            // The lock is held across the read and the write, which is what the port promises.
             self.reads.fetch_add(1, Ordering::Relaxed);
             if self.broken {
                 return Err(Unavailable::new("not valid JSON"));
@@ -517,8 +510,7 @@ mod tests {
         assert_eq!(second.base_branch, "cistern/1");
     }
 
-    /// A command run outside a repository is refused whatever the backlog
-    /// holds, so the backlog is never read.
+    /// A command run outside a repository is refused whatever the backlog holds, so the backlog is never read.
     #[test]
     fn registering_outside_a_repository_is_refused_without_reading_the_backlog() {
         let tasks = Remembered::default();
@@ -538,8 +530,8 @@ mod tests {
         assert!(in_a_repository(&tasks).list().unwrap().items.is_empty());
     }
 
-    /// Removing a predecessor used to leave a file the core could not read,
-    /// so the next command refused with code 5 and nothing could be listed.
+    /// Removing a predecessor used to leave a file the core could not read.
+    /// The next command refused with code 5, and nothing could be listed.
     #[test]
     fn the_backlog_is_still_readable_after_a_predecessor_is_removed() {
         let tasks = Remembered::default();
@@ -627,8 +619,7 @@ mod tests {
         );
     }
 
-    /// A value the store holds that cannot be read is a store this core cannot
-    /// use, not something the user typed wrong.
+    /// A value the store holds that cannot be read is a store this core cannot use, not something the user typed wrong.
     #[test]
     fn a_state_edited_into_the_store_is_refused_on_reading_it() {
         let tasks = Remembered::default();
@@ -676,8 +667,7 @@ mod tests {
         ));
     }
 
-    /// A backlog file can be edited by hand, and one that does not add up is a
-    /// store this core cannot use.
+    /// A backlog file can be edited by hand, and one that does not add up is a store this core cannot use.
     #[test]
     fn a_cycle_edited_into_the_store_is_refused_on_reading_it() {
         let tasks = Remembered::default();
@@ -724,8 +714,8 @@ mod tests {
         ));
     }
 
-    /// A count and a reason it could not be counted are two answers to one
-    /// question, and nothing here can tell which one to believe.
+    /// A count and a reason it could not be counted are two answers to one question.
+    /// Nothing here can tell which one to believe.
     #[test]
     fn a_task_stored_with_both_a_count_and_a_reason_is_refused() {
         let tasks = Remembered::default();

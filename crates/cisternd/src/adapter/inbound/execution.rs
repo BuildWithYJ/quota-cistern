@@ -9,8 +9,8 @@ use crate::core::port::inbound::{
 
 use super::{answer, missing, text};
 
-/// Answers the commands this group owns. A command it does not own comes back
-/// untouched, so that whoever is routing can offer it to the next group.
+/// Answers the commands this group owns.
+/// A command it does not own comes back untouched, so that whoever is routing can offer it to the next group.
 pub fn respond(execution: &impl ExecutionUseCase, request: Request) -> Result<Response, Request> {
     match request.command.as_str() {
         "run" => Ok(run(execution, request)),
@@ -23,8 +23,8 @@ pub fn respond(execution: &impl ExecutionUseCase, request: Request) -> Result<Re
 }
 
 fn run(execution: &impl ExecutionUseCase, request: Request) -> Response {
-    // A model is optional. Null is how a surface says it named none, so only a
-    // model that is present and is neither is malformed.
+    // A model is optional.
+    // Null is how a surface says it named none, so only a model that is present and is neither is malformed.
     if request
         .params
         .get("model")
@@ -150,8 +150,8 @@ mod tests {
     use super::super::tests::{asked, data, failure};
     use super::*;
 
-    /// A core that answers whatever it was told to, and remembers what it was
-    /// asked. The adapter is what is under test, so nothing behind it runs.
+    /// A core that answers whatever it was told to, and remembers what it was asked.
+    /// The adapter is what is under test, so nothing behind it runs.
     struct Answering {
         outcome: Result<Started, Refusal>,
         asked: RefCell<Option<(String, String, Option<String>)>>,
@@ -176,8 +176,8 @@ mod tests {
             self.outcome.clone()
         }
 
-        /// Nothing here calls this: the adapter answers `run` and the queue is
-        /// what reaches this, which is the composition root's.
+        /// Nothing here calls this: the adapter answers `run` and the queue is what reaches this.
+        /// That is the composition root's.
         fn carry_on(&self, _task: &str) -> Result<Vec<String>, Refusal> {
             Ok(Vec::new())
         }

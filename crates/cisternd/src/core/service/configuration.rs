@@ -10,8 +10,8 @@ use crate::core::{
 
 /// The commands over the configuration, and what they need from outside.
 ///
-/// It holds the port these commands use and no others, so that a command over
-/// the configuration cannot reach the backlog store through it.
+/// It holds the port these commands use and no others.
+/// A command over the configuration cannot reach the backlog store through it.
 pub struct ConfigurationService<'a> {
     store: &'a dyn ConfigurationStore,
 }
@@ -23,8 +23,8 @@ impl<'a> ConfigurationService<'a> {
 }
 
 impl ConfigurationUseCase for ConfigurationService<'_> {
-    /// The value is read before the store is, so a value that was never valid
-    /// cannot leave a half-written configuration behind.
+    /// The value is read before the store is.
+    /// A value that was never valid cannot leave a half-written configuration behind.
     fn set(&self, key: &str, value: &str) -> Result<Applied, Refusal> {
         let Some(parsed) = Key::parse(key) else {
             return Err(Refusal::UnknownKey {
@@ -72,9 +72,8 @@ impl ConfigurationUseCase for ConfigurationService<'_> {
 
 /// Reads the store and holds it to the same standard as an argument.
 ///
-/// A configuration file can be edited by hand, so what a store hands back is a
-/// claim rather than a fact. The domain is given values it can take, never the
-/// text they were kept as, so reading them is this layer's work.
+/// A configuration file can be edited by hand, so what a store hands back is a claim rather than a fact.
+/// The domain is given values it can take, never the text they were kept as, so reading them is this layer's work.
 fn read(settings: &dyn ConfigurationStore) -> Result<Configuration, Refusal> {
     let stored = settings.load()?;
     let held = [(Key::Vendor, stored.vendor)];
@@ -116,8 +115,7 @@ mod tests {
     #[derive(Default)]
     struct Remembered {
         stored: Mutex<StoredConfiguration>,
-        /// Makes every read fail, standing in for a store that is there but
-        /// cannot be understood.
+        /// Makes every read fail, standing in for a store that is there but cannot be understood.
         broken: bool,
     }
 
@@ -221,8 +219,8 @@ mod tests {
         assert_eq!(over(&restarted).get(None), over(&settings).get(None));
     }
 
-    /// A store hands over text whatever it kept the value as, so a number that
-    /// is not one this key takes is refused where every other value is.
+    /// A store hands over text whatever it kept the value as.
+    /// A number that is not one this key takes is refused where every other value is.
     #[test]
     fn a_stored_value_of_another_type_is_refused_the_same_way() {
         let settings = Remembered::holding(StoredConfiguration {

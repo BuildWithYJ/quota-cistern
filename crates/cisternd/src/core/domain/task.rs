@@ -1,29 +1,23 @@
 //! A task and the rules over a backlog of them.
 //!
-//! Section 2.1 of `docs/cli.md` fixes the arguments and the output, and section
-//! 1 fixes the identifiers and the states. This module is private, so a value
-//! that reached here was parsed on the way in.
+//! Section 2.1 of `docs/cli.md` fixes the arguments and the output, and section 1 fixes the identifiers and the states.
+//! This module is private, so a value that reached here was parsed on the way in.
 
 use std::fmt::{self, Display};
 
 use super::{Consumption, Observation, SessionId};
 
-/// The branch a task starts from when it names neither a branch nor a
-/// predecessor.
+/// The branch a task starts from when it names neither a branch nor a predecessor.
 const DEFAULT_BRANCH: &str = "main";
 
 /// A task number.
 ///
-/// The core issues these. They only increase and are never reused, and
-/// sessions count on a sequence of their own.
+/// The core issues these.
+/// They only increase and are never reused, and sessions count on a sequence of their own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TaskId(u32);
 
 /// The five states section 1 lists.
-///
-/// Only `Pending` is reachable until something runs a task. The rest are
-/// declared now because the rule that only a `Pending` task may be removed
-/// cannot be written without them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskState {
     Pending,
@@ -35,9 +29,7 @@ pub enum TaskState {
 
 /// What was decided about a task's result.
 ///
-/// Kept apart from the state, since the state says how the run ended and this
-/// says what was done about it afterwards. A discarded result can still be
-/// applied, so neither is the other's consequence.
+/// Apart from the state, which says how the run ended rather than what was done about it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Disposition {
     Applied,
@@ -46,17 +38,15 @@ pub enum Disposition {
 
 /// The repository a task was added from.
 ///
-/// The core never reads this as a path. It does not join, open, or walk it; it
-/// keeps what an adapter handed over and hands it back. Only an adapter treats
-/// it as a place on a disk.
+/// Never read as a path here.
+/// The core keeps what an adapter handed over and hands it back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Repository(String);
 
 /// What a task was registered with.
 ///
-/// `branch` and `after` are separate because they answer separate questions.
-/// `after` decides when the task may be assigned and `branch` decides where it
-/// starts from, so a task may carry both, one, or neither.
+/// `after` decides when it may be assigned and `branch` decides where it starts from.
+/// A task may carry both, one, or neither.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Task {
     id: TaskId,
@@ -81,9 +71,7 @@ pub struct Task {
 
 /// A task on its way back from a store, with every value already read.
 ///
-/// The domain does not know what a store keeps or how it spells things, so
-/// whoever read it names the fields once here and the backlog checks them
-/// together.
+/// Whoever read it names the fields once here, and the backlog checks them together.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Restored {
     pub id: TaskId,
@@ -103,9 +91,8 @@ pub struct Restored {
 
 /// Every task, and the number the next one will get.
 ///
-/// The next number is kept rather than derived. Taking the highest number
-/// present and adding one would hand out the number of a removed newest task
-/// again, which section 1 forbids.
+/// The number is kept rather than derived.
+/// The highest one present plus one would hand out a removed task's number again.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Backlog {
     next_id: u32,
@@ -114,8 +101,7 @@ pub struct Backlog {
 
 /// A set of tasks that no backlog could be.
 ///
-/// Each of these takes the whole set to see. A value that could not be read is
-/// not here, because reading one is not the domain's work.
+/// A value that could not be read is not here, because reading one is not the domain's work.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotABacklog {
     /// Two tasks carry the same number.
@@ -144,8 +130,8 @@ pub enum DisposalRefused {
 impl TaskId {
     /// Reads an identifier as a user writes it.
     ///
-    /// `docs/cli.md` lets the `task:` prefix be left off in arguments, so both
-    /// spellings are read here and only the number is kept.
+    /// `docs/cli.md` lets the `task:` prefix be left off in arguments.
+    /// Both spellings are read here and only the number is kept.
     pub fn parse(id: &str) -> Option<Self> {
         let digits = id.strip_prefix("task:").unwrap_or(id);
         digits.parse().ok().map(TaskId)
@@ -153,9 +139,8 @@ impl TaskId {
 
     /// The identifier as section 1 writes it.
     ///
-    /// [`Display`] gives the number alone, which is what a branch name is built
-    /// from. Everything a caller is shown carries the prefix, and both
-    /// spellings come from here so they cannot drift apart.
+    /// [`Display`] gives the number alone, which is what a branch name is built from.
+    /// Both spellings come from here so they cannot drift apart.
     pub fn labelled(&self) -> String {
         format!("task:{}", self.0)
     }
@@ -168,8 +153,9 @@ impl Display for TaskId {
 }
 
 impl TaskState {
-    /// Reads a state name. One spelling is read and written, so what a store
-    /// holds and what is printed cannot drift apart.
+    /// Reads a state name.
+    ///
+    /// One spelling is read and written, so what a store holds and what is printed cannot drift apart.
     pub fn parse(state: &str) -> Option<Self> {
         match state {
             "Pending" => Some(TaskState::Pending),
@@ -183,8 +169,8 @@ impl TaskState {
 
     /// Whether the run is over, whatever it ended as.
     ///
-    /// Section 1 calls these the terminal states, and says every one of them
-    /// leaves a branch and enters the review queue.
+    /// Section 1 calls these the terminal states.
+    /// Section 1 says every one of them leaves a branch and enters the review queue.
     pub fn ended(self) -> bool {
         matches!(
             self,
@@ -206,8 +192,9 @@ impl Display for TaskState {
 }
 
 impl Disposition {
-    /// Reads a disposition. One spelling is read and written, so what a store
-    /// holds and what is printed cannot drift apart.
+    /// Reads a disposition.
+    ///
+    /// One spelling is read and written, so what a store holds and what is printed cannot drift apart.
     pub fn parse(disposition: &str) -> Option<Self> {
         match disposition {
             "applied" => Some(Disposition::Applied),
@@ -253,8 +240,7 @@ impl Task {
 
     /// The branch that was named, if one was.
     ///
-    /// [`Task::base_branch`] is where the task starts from, which is this only
-    /// when a branch was named.
+    /// [`Task::base_branch`] is where the task starts from, which is this only when a branch was named.
     pub fn branch(&self) -> Option<&str> {
         self.branch.as_deref()
     }
@@ -299,8 +285,7 @@ impl Task {
 
     /// The branch this task's result is kept on, once one has been cut.
     ///
-    /// A task that was never assigned has none, which is what section 2.1
-    /// reports as null.
+    /// A task that was never assigned has none, which is what section 2.1 reports as null.
     pub fn result_branch(&self) -> Option<String> {
         match self.state {
             TaskState::Pending => None,
@@ -310,9 +295,7 @@ impl Task {
 
     /// Where the task starts from.
     ///
-    /// Derived rather than stored, because a predecessor's result branch does
-    /// not exist when the task is registered. Naming a branch wins over a
-    /// predecessor, so a task can wait for one result and start from another.
+    /// Derived rather than stored, since a predecessor's result branch does not exist yet when the task is registered.
     pub fn base_branch(&self) -> String {
         match (&self.branch, self.after) {
             (Some(branch), _) => branch.clone(),
@@ -324,8 +307,8 @@ impl Task {
 
 /// The branch a task's result is kept on.
 ///
-/// A predecessor's is where a task that waits for it starts from, so both
-/// spellings come from here and cannot drift apart.
+/// A predecessor's is where a task that waits for it starts from.
+/// Both spellings come from here and cannot drift apart.
 fn result_branch_of(id: TaskId) -> String {
     format!("cistern/{id}")
 }
@@ -333,12 +316,8 @@ fn result_branch_of(id: TaskId) -> String {
 impl Backlog {
     /// Registers a task and hands back a copy of it.
     ///
-    /// The task rather than its number, so that whoever registered it can
-    /// answer with what was registered without looking it up again. Looking it
-    /// up would have to answer for not finding it, and there is no such answer.
-    ///
-    /// A copy rather than a reference, so that handing it back needs no line
-    /// that says what to do when the task that was just pushed is not there.
+    /// The task rather than its number.
+    /// Whoever registered it does not look it up again and answer for not finding what it just added.
     pub fn add(
         &mut self,
         title: String,
@@ -371,13 +350,8 @@ impl Backlog {
 
     /// Takes a task out of the backlog.
     ///
-    /// Whatever waited for it now waits for what it waited for. Leaving those
-    /// alone would name a task that is not there, which is the one thing a
-    /// stored backlog may not do, so removing one would make a file this core
-    /// cannot read.
-    ///
-    /// The next number is left where it is. A number that was handed out is
-    /// spent whether or not the task it named is still here.
+    /// Whatever waited for it now waits for what it waited for.
+    /// A task naming one that is not there is a backlog this core cannot read.
     pub fn remove(&mut self, id: TaskId) -> Result<Task, RemovalRefused> {
         let Some(at) = self.tasks.iter().position(|task| task.id == id) else {
             return Err(RemovalRefused::NoSuchTask);
@@ -397,10 +371,7 @@ impl Backlog {
 
     /// Hands the first task that may start to a session, and says which.
     ///
-    /// A task waiting for one that has not completed is not eligible, and
-    /// neither is one that is no longer waiting to be assigned. Nothing is
-    /// answered when none may start, which is what an empty backlog and a
-    /// backlog of blocked tasks both look like from here.
+    /// Nothing is answered when none may start, which an empty backlog and a blocked one both look like from here.
     pub fn assign(&mut self, to: SessionId) -> Option<TaskId> {
         let id = self.next_to_assign()?;
         for task in &mut self.tasks {
@@ -414,8 +385,8 @@ impl Backlog {
 
     /// The task `assign` would hand over, without handing it over.
     ///
-    /// A run that has nothing to start is refused before a session is opened,
-    /// and asking that question is what this is for.
+    /// A run that has nothing to start is refused before a session is opened.
+    /// Asking that question is what this is for.
     pub fn next_to_assign(&self) -> Option<TaskId> {
         self.tasks
             .iter()
@@ -438,15 +409,12 @@ impl Backlog {
         }
     }
 
-    /// Moves a task to the state it ended in.
+    /// Moves a task to the state it ended in, leaving the branch alone.
     ///
-    /// Every terminal state leaves the branch alone, so what changes here is
-    /// what the task says about itself.
-    ///
-    /// Only a task that is still running ends. A task interrupted by hand
-    /// ends the moment the user asks, and the thread that was waiting on its
-    /// agent comes back afterwards to say the agent failed. The first answer
-    /// is the true one.
+    /// Only a task that is still running ends.
+    /// One interrupted by hand ends the moment the user asks.
+    /// The thread waiting on its agent comes back afterwards to say it failed.
+    /// The first answer is the true one.
     pub fn finish(&mut self, id: TaskId, state: TaskState, reason: Option<String>) {
         for task in &mut self.tasks {
             if task.id == id && task.state == TaskState::Running {
@@ -458,8 +426,8 @@ impl Backlog {
 
     /// Records what running a task consumed.
     ///
-    /// Kept apart from [`Backlog::finish`] because a task can end without ever
-    /// having run, and what it consumed is then not nothing but unknown.
+    /// Kept apart from [`Backlog::finish`].
+    /// A task can end without ever having run, and what it consumed is then not nothing but unknown.
     pub fn record(&mut self, id: TaskId, consumed: Observation) {
         for task in &mut self.tasks {
             if task.id == id {
@@ -470,9 +438,8 @@ impl Backlog {
 
     /// Records what was decided about a task's result.
     ///
-    /// A task that was disposed of once may be disposed of again, since section
-    /// 2.4 keeps the branch either way and a discarded result can be applied
-    /// later. What is refused is deciding about a run that has not ended.
+    /// It may be decided again, since section 2.4 keeps the branch either way.
+    /// What is refused is deciding about a run that has not ended.
     pub fn dispose(&mut self, id: TaskId, disposition: Disposition) -> Result<(), DisposalRefused> {
         let Some(task) = self.tasks.iter_mut().find(|task| task.id == id) else {
             return Err(DisposalRefused::NoSuchTask);
@@ -486,8 +453,7 @@ impl Backlog {
 
     /// Every task waiting to be disposed of, in the order they were registered.
     ///
-    /// Across sessions rather than within one: what is waiting for the user is
-    /// waiting whichever run left it.
+    /// Across sessions rather than within one: what is waiting for the user is waiting whichever run left it.
     pub fn awaiting_review(&self) -> Vec<&Task> {
         self.tasks
             .iter()
@@ -497,14 +463,8 @@ impl Backlog {
 
     /// What a session has consumed, added up over the tasks it assigned.
     ///
-    /// Derived rather than kept beside the session, so that the figure cannot
-    /// disagree with the tasks it is the sum of.
-    ///
-    /// One task whose answer could not be read leaves the whole sum unreadable.
-    /// What is missing from a total is not visible in the total, and a session
-    /// held to a budget it cannot measure would be held to the wrong one. A
-    /// session none of whose tasks has run has consumed nothing, which is a
-    /// figure rather than a gap.
+    /// One task nobody could read leaves the whole sum unreadable.
+    /// What is missing from a total is not visible in it.
     pub fn consumed_by(&self, session: SessionId) -> Observation {
         let mut counted = Vec::new();
         for task in self
@@ -525,8 +485,7 @@ impl Backlog {
 
     /// Puts a task back where it was before it was assigned.
     ///
-    /// For a task nobody would run. It keeps its number and whatever it was
-    /// registered with, and waits for a session that can start it.
+    /// For a task nobody would run.
     pub fn wait_again(&mut self, id: TaskId) {
         for task in &mut self.tasks {
             if task.id == id {
@@ -547,9 +506,8 @@ impl Backlog {
 
     /// Ends every task a session still has running.
     ///
-    /// Whatever the agent committed by then is on the branch already, so
-    /// nothing is undone here. Section 1 says an interrupted task keeps its
-    /// partial work.
+    /// Nothing is undone.
+    /// Section 1 says an interrupted task keeps its partial work, which is on the branch already.
     pub fn interrupt(&mut self, session: SessionId, reason: &str) -> Vec<TaskId> {
         let mut ended = Vec::new();
         for task in &mut self.tasks {
@@ -564,9 +522,8 @@ impl Backlog {
 
     /// What each task that reported a count consumed, over the whole backlog.
     ///
-    /// A task from an earlier session counts. Tokens mean the same thing
-    /// whenever they were spent, and a session that has run nothing of its own
-    /// yet can still tell what a task around here costs.
+    /// A task from an earlier session counts.
+    /// A session which has run nothing of its own can still tell what a task around here costs.
     pub fn counted(&self) -> Vec<Consumption> {
         self.tasks
             .iter()
@@ -629,10 +586,8 @@ impl Backlog {
 
     /// Rebuilds a backlog that was stored, and refuses one that does not add up.
     ///
-    /// Every value has been read by the time it arrives here, so what is left
-    /// is what only the whole set can show: whether the numbers are distinct,
-    /// whether every predecessor is present, and whether following them ever
-    /// returns to where it started.
+    /// Every value arrives already read.
+    /// What is left is what only the whole set shows: distinct numbers, every predecessor present, and no cycle.
     pub fn restore(next_id: u32, restored: Vec<Restored>) -> Result<Self, NotABacklog> {
         let tasks = restored
             .into_iter()
@@ -683,13 +638,9 @@ impl Backlog {
         Ok(())
     }
 
-    /// `task add` cannot build a cycle, since a task may only name one that
-    /// already exists and identifiers only increase. A file edited by hand can,
-    /// which is why this is checked here rather than where the argument
-    /// arrives.
+    /// `task add` cannot build a cycle, since a task may only name one that already exists, but a hand-edited file can.
     ///
-    /// Walking at most as many steps as there are tasks is enough: a chain
-    /// longer than that has visited something twice.
+    /// Walking as many steps as there are tasks is enough: a longer chain has visited something twice.
     fn no_cycle(&self) -> Result<(), NotABacklog> {
         for task in &self.tasks {
             let mut at = task.id;
@@ -784,8 +735,7 @@ mod tests {
         );
     }
 
-    /// The two answer different questions, so a task can wait for one result
-    /// and start from another.
+    /// The two answer different questions, so a task can wait for one result and start from another.
     #[test]
     fn naming_a_branch_wins_over_a_predecessor() {
         let mut backlog = Backlog::default();
@@ -812,8 +762,7 @@ mod tests {
         assert!(second > first);
     }
 
-    /// Section 1 says a number is never reused. Deriving the next one from the
-    /// tasks present would hand this one out again.
+    /// Section 1 says a number is never reused.
     #[test]
     fn the_number_of_a_removed_task_is_not_handed_out_again() {
         let mut backlog = Backlog::default();
@@ -836,8 +785,8 @@ mod tests {
         assert_eq!(backlog.find(third).unwrap().after(), Some(first));
     }
 
-    /// The branch the removed task would have produced is never made, so what
-    /// waited for it starts from where that one would have.
+    /// The branch the removed task would have produced is never made.
+    /// What waited for it starts from where that one would have.
     #[test]
     fn removing_the_first_leaves_what_waited_for_it_waiting_for_nothing() {
         let mut backlog = Backlog::default();
@@ -870,8 +819,8 @@ mod tests {
         assert_eq!(backlog.remove(absent), Err(RemovalRefused::NoSuchTask));
     }
 
-    /// No command produces another state yet, so the task is built here. The
-    /// rule is what is being checked, not the path that reaches it.
+    /// No command produces another state yet, so the task is built here.
+    /// The rule is what is being checked, not the path that reaches it.
     #[test]
     fn a_task_that_is_not_pending_is_not_removed() {
         let mut backlog = holding(vec![held("1", None, "Running")]).unwrap();
@@ -929,8 +878,8 @@ mod tests {
         );
     }
 
-    /// `task add` cannot build this, since a task may only name one that
-    /// already exists. A file edited by hand can, which is the only way here.
+    /// `task add` cannot build this, since a task may only name one that already exists.
+    /// A file edited by hand can, which is the only way here.
     #[test]
     fn two_tasks_waiting_for_each_other_are_refused() {
         assert!(matches!(
@@ -952,8 +901,7 @@ mod tests {
         );
     }
 
-    /// A count with the same figure in every kind, so that a sum that dropped
-    /// one of them is visible.
+    /// A count with the same figure in every kind, so that a sum that dropped one of them is visible.
     fn spent(each: u64) -> Observation {
         Observation::Spent(Consumption {
             input: each,
@@ -987,8 +935,7 @@ mod tests {
         assert_eq!(backlog.consumed_by(session), spent(30));
     }
 
-    /// A task another session assigned is that session's, however recently it
-    /// ran.
+    /// A task another session assigned is that session's, however recently it ran.
     #[test]
     fn what_another_session_consumed_is_not_counted() {
         let mut backlog = Backlog::default();
@@ -1011,8 +958,7 @@ mod tests {
         );
     }
 
-    /// What is missing from a total is not visible in the total, so one task
-    /// nobody could read leaves the whole figure unreadable rather than low.
+    /// A total that quietly dropped this task would look low, not missing.
     #[test]
     fn one_task_that_could_not_be_read_leaves_the_session_unreadable() {
         let mut backlog = Backlog::default();
@@ -1076,8 +1022,7 @@ mod tests {
         );
     }
 
-    /// Section 2.4 keeps the branch either way, so a discarded result is still
-    /// there to be applied.
+    /// Section 2.4 keeps the branch either way, so a discarded result is still there to be applied.
     #[test]
     fn a_discarded_result_can_be_applied_afterwards() {
         let mut backlog = holding(vec![held("1", None, "Completed")]).unwrap();
@@ -1109,8 +1054,7 @@ mod tests {
         );
     }
 
-    /// A disposition says nothing about the state, and section 2.4 says
-    /// `discard` leaves the task state alone.
+    /// A disposition says nothing about the state, and section 2.4 says `discard` leaves the task state alone.
     #[test]
     fn deciding_about_a_result_leaves_the_state_where_it_was() {
         let mut backlog = holding(vec![held("1", None, "Interrupted")]).unwrap();

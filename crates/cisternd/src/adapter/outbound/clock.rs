@@ -10,9 +10,9 @@ pub struct SystemClock;
 impl Clock for SystemClock {
     /// Seconds since the epoch, and zero for a machine set before it.
     ///
-    /// A clock behind the epoch would otherwise stop the daemon over something
-    /// no session cares about. Every reading is subtracted from a later one,
-    /// and two readings from such a clock are as far apart as they ever were.
+    /// A clock behind the epoch would otherwise stop the daemon over something no session cares about.
+    /// Every reading is subtracted from a later one.
+    /// Two readings from such a clock are as far apart as they ever were.
     fn now(&self) -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)

@@ -1,13 +1,8 @@
 //! What the core requires of the outside, in the core's own terms.
 //!
-//! One outside, one place. An outside that holds several conversations gets a
-//! directory of its own and an outside that holds one gets a file.
-//! `Unavailable` stands here rather than in one of them, because reaching
-//! something outside is what all of them do.
-//!
-//! Every one of these is safe to share between threads. A task runs beside the
-//! commands a user is still typing, so more than one thread reaches the same
-//! outside at once.
+//! One outside, one place.
+//! An outside that holds several conversations gets a directory of its own and an outside that holds one gets a file.
+//! `Unavailable` stands here rather than in one of them, because reaching something outside is what all of them do.
 
 mod backlog;
 mod clock;

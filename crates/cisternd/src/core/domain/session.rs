@@ -1,8 +1,7 @@
 //! A session and the budget it was declared with.
 //!
-//! Section 2.2 of `docs/cli.md` fixes the arguments and the output, and section
-//! 1 fixes the identifiers and the states. This module is private, so a value
-//! that reached here was parsed on the way in.
+//! Section 2.2 of `docs/cli.md` fixes the arguments and the output, and section 1 fixes the identifiers and the states.
+//! This module is private, so a value that reached here was parsed on the way in.
 
 use std::fmt::{self, Display};
 
@@ -10,9 +9,7 @@ use super::Spending;
 
 /// A session number.
 ///
-/// The core issues these. Sessions count on a sequence of their own, so
-/// `session:1` and `task:1` are different things and neither number follows
-/// the other.
+/// Sessions count on a sequence of their own, so `session:1` and `task:1` are different things.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SessionId(u32);
 
@@ -24,10 +21,6 @@ pub enum SessionState {
 }
 
 /// Why a session stopped.
-///
-/// Nothing stops a session yet. The whole list is declared now because the rule
-/// that only one session runs at a time cannot be written without a state that
-/// means a session no longer does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoppedReason {
     BudgetHardlock,
@@ -40,9 +33,8 @@ pub enum StoppedReason {
 
 /// What `--usage` declared.
 ///
-/// A share is measured against the configured plan and an absolute count is
-/// not, so which one was written has to survive as far as the report that says
-/// what was consumed.
+/// Which one was written survives as far as the report of what was consumed.
+/// A share is measured against the vendor's limit and a count is not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Usage {
     /// A percentage of the configured plan, 1 to 100.
@@ -64,8 +56,7 @@ pub struct Budget {
 
 /// What a session is opened with.
 ///
-/// The clock reading and the vendor's limit are taken outside and handed in,
-/// so that nothing here reaches for either.
+/// The clock reading and the vendor's limit are taken outside and handed in, so that nothing here reaches for either.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Opening {
     pub budget: Budget,
@@ -87,9 +78,8 @@ pub struct Session {
     started_at: u64,
     /// Where a share is measured from, in hundredths of a percent.
     ///
-    /// A share says what this session may add to what the vendor's limit
-    /// already held, so the reading it opened on is kept. A session declared
-    /// in tokens has none.
+    /// A share says what this session may add to what the limit already held.
+    /// A session declared in tokens has none.
     limit_at_start: Option<u64>,
     /// What it has consumed, in the unit it was declared in.
     consumed: Spending,
@@ -142,8 +132,7 @@ pub enum NotOpened {
 impl SessionId {
     /// Reads an identifier as a user writes it.
     ///
-    /// The `session:` prefix may be left off, the same way section 2.1 lets it
-    /// be left off a task.
+    /// The `session:` prefix may be left off, the same way section 2.1 lets it be left off a task.
     pub fn parse(id: &str) -> Option<Self> {
         let digits = id.strip_prefix("session:").unwrap_or(id);
         digits.parse().ok().map(SessionId)
@@ -162,8 +151,9 @@ impl Display for SessionId {
 }
 
 impl SessionState {
-    /// Reads a state name. One spelling is read and written, so what a store
-    /// holds and what is printed cannot drift apart.
+    /// Reads a state name.
+    ///
+    /// One spelling is read and written, so what a store holds and what is printed cannot drift apart.
     pub fn parse(state: &str) -> Option<Self> {
         match state {
             "running" => Some(SessionState::Running),
@@ -212,9 +202,8 @@ impl Display for StoppedReason {
 impl Usage {
     /// Reads what `--usage` was given.
     ///
-    /// A trailing `%` is a share of the plan and anything else is a count of
-    /// tokens, where `K` is a thousand and `M` a million. A share outside 1 to
-    /// 100 is refused here, since section 2.2 fixes that range.
+    /// A trailing `%` is a share and anything else is tokens, where `K` is a thousand and `M` a million.
+    /// Section 2.2 fixes a share at 1 to 100.
     pub fn parse(usage: &str) -> Option<Self> {
         if let Some(digits) = usage.strip_suffix('%') {
             let share = digits.parse().ok()?;
@@ -237,8 +226,7 @@ impl Usage {
 }
 
 impl Display for Usage {
-    /// The declaration as it was written, which is the unit section 2.2 says
-    /// consumption is reported in.
+    /// The declaration as it was written, which is the unit section 2.2 says consumption is reported in.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Usage::Share(share) => write!(f, "{share}%"),
@@ -260,8 +248,8 @@ impl Span {
 
     /// Reads what `--time` was given.
     ///
-    /// Hours, then minutes, then seconds, each at most once and at least one of
-    /// them. `8h` and `2h30m` are what section 2.2 shows.
+    /// Hours, then minutes, then seconds, each at most once and at least one of them.
+    /// `8h` and `2h30m` are what section 2.2 shows.
     pub fn parse(time: &str) -> Option<Self> {
         let mut left = time;
         let mut seconds: u64 = 0;
@@ -275,8 +263,8 @@ impl Span {
             given = true;
         }
 
-        // Anything left over sat after a unit or between two of them, which is
-        // neither of the two spellings section 2.2 shows.
+        // Anything left over sat after a unit or between two of them.
+        // Which is neither of the two spellings section 2.2 shows.
         (given && left.is_empty() && seconds > 0).then_some(Span(seconds))
     }
 }
@@ -349,8 +337,8 @@ impl Session {
 impl Sessions {
     /// Opens a session and hands back the number it was given.
     ///
-    /// One runs at a time, so this refuses while another is running rather than
-    /// leaving the caller to look first and open second.
+    /// One runs at a time.
+    /// This refuses while another is running rather than leaving the caller to look first and open second.
     pub fn open(&mut self, opening: Opening) -> Result<SessionId, NotOpened> {
         if let Some(running) = self.running() {
             return Err(NotOpened::AlreadyRunning { id: running.id });
@@ -378,8 +366,8 @@ impl Sessions {
 
     /// Stops a session and records why.
     ///
-    /// A session that already stopped keeps the reason it stopped for, since
-    /// the first one is what happened and the second is what noticed.
+    /// A session that already stopped keeps the reason it stopped for.
+    /// The first one is what happened, and the second is what noticed.
     pub fn stop(&mut self, id: SessionId, reason: StoppedReason, now: u64) {
         for session in &mut self.sessions {
             if session.id == id && session.state == SessionState::Running {
@@ -392,8 +380,8 @@ impl Sessions {
 
     /// Records what a session has consumed, and when the reading was taken.
     ///
-    /// A share cannot be worked out later, so what was read while the session
-    /// ran is what is reported for it afterwards.
+    /// A share cannot be worked out later.
+    /// What was read while the session ran is what is reported for it afterwards.
     pub fn record(&mut self, id: SessionId, consumed: Spending, now: u64) {
         for session in &mut self.sessions {
             if session.id == id {
@@ -429,8 +417,8 @@ impl Sessions {
 
     /// Takes back what a store held, and refuses a set no store should hold.
     ///
-    /// Nobody is meant to write this file, so what it holds is checked the way
-    /// a backlog is: as a whole, before anything reads one session out of it.
+    /// Nobody is meant to write this file.
+    /// What it holds is checked the way a backlog is: as a whole, before anything reads one session out of it.
     pub fn restore(next_id: u32, held: Vec<Held>) -> Result<Self, NotASessionSet> {
         let mut sessions: Vec<Session> = Vec::with_capacity(held.len());
 

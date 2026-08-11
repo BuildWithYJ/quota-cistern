@@ -1,9 +1,8 @@
 //! How many tasks may run, and whether a session has spent what it declared.
 //!
-//! Section 2.2 of `docs/cli.md` says assignment is dynamic: each time a task
-//! ends, what that task actually consumed decides whether one more fits. The
-//! arithmetic behind that decision is here, apart from the stores and the
-//! clock the decision is made against.
+//! Section 2.2 of `docs/cli.md` says assignment is dynamic.
+//! Each time a task ends, what that task actually consumed decides whether one more fits.
+//! The arithmetic behind that decision is here, apart from the stores and the clock the decision is made against.
 
 use std::fmt::{self, Display};
 
@@ -11,23 +10,20 @@ use super::{Budget, Usage};
 
 /// The most tasks that run at once, whatever the budget would allow.
 ///
-/// A guard on the machine rather than on the budget. Each task is a checkout
-/// of a repository and an agent process of its own, and a session with a large
-/// budget would otherwise start as many as the budget divides into.
+/// A guard on the machine rather than on the budget: each task is a checkout and an agent process of its own.
 const AT_ONCE: usize = 4;
 
 /// A percentage as hundredths of one.
 ///
-/// A share is declared in whole percent and measured in hundredths, because
-/// one task moves the vendor's limit by less than a point.
+/// A share is declared in whole percent and measured in hundredths.
+/// One task moves the vendor's limit by less than a point.
 pub const HUNDREDTHS: u64 = 100;
 
 /// What a session has consumed of its usage budget, in the unit it declared.
 ///
-/// A share and a count are not two spellings of one number. A share is how far
-/// the vendor's own limit has moved since the session opened, which the vendor
-/// reports and which the account's other work moves too. A count is the tokens
-/// this session's tasks reported, and nothing else adds to it.
+/// Not two spellings of one number.
+/// A share is how far the vendor's limit has moved since the session opened, which the account's other work moves too.
+/// A count is what this session's own tasks reported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Spending {
     /// Hundredths of a percent.
@@ -38,9 +34,7 @@ pub enum Spending {
 impl Display for Spending {
     /// A share as the percentage a person declared, a count as the count.
     ///
-    /// A share is held in hundredths so that a task smaller than a point can
-    /// be divided by, and shown as the percentage section 2.2 asks for. The
-    /// hundredths only appear when there is something in them.
+    /// The hundredths only appear when there is something in them.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Spending::Tokens(tokens) => write!(f, "{tokens}"),
@@ -59,16 +53,16 @@ impl Display for Spending {
 impl Budget {
     /// What is left of the usage declared, in the unit it was declared in.
     ///
-    /// Nothing is left when more was spent than declared, which is what a
-    /// session that passed its budget between two decisions looks like.
+    /// Nothing is left when more was spent than declared.
+    /// Which is what a session that passed its budget between two decisions looks like.
     pub fn left(&self, spent: Spending) -> u64 {
         match (self.usage, spent) {
             (Usage::Share(declared), Spending::Share(spent)) => {
                 (u64::from(declared) * HUNDREDTHS).saturating_sub(spent)
             }
             (Usage::Tokens(declared), Spending::Tokens(spent)) => declared.saturating_sub(spent),
-            // A session is measured in the unit it was declared in, and
-            // whoever read the spending read it for this session.
+            // A session is measured in the unit it was declared in.
+            // Whoever read the spending read it for this session.
             _ => 0,
         }
     }
@@ -76,9 +70,8 @@ impl Budget {
 
 /// What a set of tasks cost, and how many of them there were.
 ///
-/// The pair rather than the average, because the average of a share is a
-/// fraction. Two tasks that moved the vendor's limit one point cost half a
-/// point each, and half a point in whole numbers is nothing at all.
+/// The pair rather than the average.
+/// The average of a share is a fraction, and a fraction in whole numbers is nothing at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cost {
     /// What they cost together, in the unit the budget was declared in.
@@ -89,12 +82,9 @@ pub struct Cost {
 
 /// How many more tasks may be started.
 ///
-/// What is left, divided by what one of these tasks cost. The multiplication
-/// comes first so that the fraction survives it.
-///
-/// A set that cost nothing measurable says nothing about how many fit, and
-/// neither does an empty one. Both leave one task to start, which is what
-/// makes the sample the next answer is worked out from.
+/// What is left, divided by what one task cost, multiplying first so that the fraction survives.
+/// A set that cost nothing measurable leaves one task to start.
+/// Which is what makes the sample the next answer is worked out from.
 pub fn room_for(left: u64, cost: Option<Cost>, running: usize) -> usize {
     if left == 0 {
         return 0;
@@ -154,8 +144,8 @@ mod tests {
         assert_eq!(budget.left(Spending::Share(2_000)), 3_000);
     }
 
-    /// A session can pass its budget between two decisions, since a decision
-    /// is made when a task ends and not while one runs.
+    /// A session can pass its budget between two decisions.
+    /// A decision is made when a task ends and not while one runs.
     #[test]
     fn spending_more_than_was_declared_leaves_nothing() {
         let budget = declaring(Usage::Tokens(1_000));
@@ -189,10 +179,10 @@ mod tests {
         assert_eq!(room_for(300, over(300, 3), 0), 3);
     }
 
-    /// Two tasks that moved the vendor's limit one point cost half a point
-    /// each. Working out that half first and then dividing by it loses the
-    /// whole answer, so a session declared as a share would run one task at a
-    /// time forever.
+    /// Two tasks that moved the vendor's limit one point cost half a point each.
+    ///
+    /// Working out that half first and then dividing by it loses the whole answer.
+    /// A session declared as a share would run one task at a time forever.
     #[test]
     fn a_cost_smaller_than_one_still_says_how_many_fit() {
         // One point left, half a point each.

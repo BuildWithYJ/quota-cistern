@@ -1,19 +1,18 @@
 //! What the core offers over the backlog.
 //!
-//! Section 2.1 of `docs/cli.md` fixes the arguments and the output. Reading
-//! what a run wrote is not here: a trace belongs to the run rather than to the
-//! task that was registered, and `port::inbound::execution` offers it.
+//! Section 2.1 of `docs/cli.md` fixes the arguments and the output.
+//! Reading what a run wrote is not here: a trace belongs to the run rather than to the task that was registered.
+//! `port::inbound::execution` offers it.
 
 use super::Refusal;
 
 /// What `task add` was given.
 ///
-/// The arguments arrive together because they are read together, and a
-/// parameter list of this length is harder to call correctly than a value with
-/// named fields.
+/// The arguments arrive together because they are read together.
+/// A parameter list of this length is harder to call correctly than a value with named fields.
 pub struct Registration<'a> {
-    /// Where the surface was run. The core runs as a daemon, so it cannot read
-    /// this from its own process.
+    /// Where the surface was run.
+    /// The core runs as a daemon, so it cannot read this from its own process.
     pub cwd: &'a str,
     pub title: &'a str,
     pub instruction: &'a str,
@@ -43,9 +42,8 @@ pub struct Removed {
 
 /// One task in full.
 ///
-/// The fields a session fills in are here and empty. Nothing runs a task yet,
-/// so they answer as null, which is what section 2.1 says they do before a task
-/// has been assigned.
+/// The fields a session fills in are here and empty.
+/// They answer as null, which is what section 2.1 says they do before a task has been assigned.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Detail {
     pub id: String,
