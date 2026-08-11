@@ -15,6 +15,7 @@ mod core;
 mod platform;
 
 use adapter::{inbound, outbound};
+use core::port::outbound::ConfigurationStore;
 use core::{
     port::inbound::{
         Declaration, ExecutionUseCase, Page, Refusal, Report, Started, Stopped, Trail,
@@ -58,6 +59,13 @@ fn main() -> ExitCode {
     let Some(traces) = outbound::file::trace::FileTraces::in_data_home() else {
         return quit("neither XDG_DATA_HOME nor HOME is set");
     };
+    // The names this build can run. Adding a vendor is a directory beside
+    // `claude` and a line here; the core is not touched.
+    let known = [outbound::claude::NAME.to_owned()];
+    if let Err(e) = runnable(&configuration_store, &known) {
+        return quit(e);
+    }
+
     let roots = outbound::git::roots::GitRoots;
     let results = outbound::git::result::GitResults;
     let clock = outbound::clock::SystemClock;
@@ -66,7 +74,7 @@ fn main() -> ExitCode {
         Err(e) => return quit(e.reason),
     };
 
-    let configuration = ConfigurationService::new(&configuration_store);
+    let configuration = ConfigurationService::new(&configuration_store, known);
     let backlog = BacklogService::new(&backlog_store, &roots);
     let review = ReviewService::new(&backlog_store, &results);
     let execution = ExecutionService::new(
@@ -158,6 +166,23 @@ impl<U: ExecutionUseCase> ExecutionUseCase for Queueing<'_, U> {
         }
         Ok(assigned)
     }
+}
+
+/// Refuses to start on a stored vendor this build cannot run.
+///
+/// The check belongs here because only this file knows which adapters it holds.
+/// Failing once beats failing on every task a session assigns.
+fn runnable(store: &dyn ConfigurationStore, known: &[String]) -> Result<(), String> {
+    let Some(name) = store.load().map_err(|e| e.reason)?.vendor else {
+        return Ok(());
+    };
+    if known.contains(&name) {
+        return Ok(());
+    }
+    Err(format!(
+        "the configuration says vendor {name}, which this build cannot run; it runs {}",
+        known.join(", ")
+    ))
 }
 
 /// Says why the daemon is stopping, and stops.

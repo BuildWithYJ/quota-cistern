@@ -6,11 +6,21 @@
 
 use std::fmt::{self, Display};
 
-/// The agent to run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Vendor {
-    Claude,
-}
+/// The name of an agent to run.
+///
+/// The core does not know which agents exist. It only knows the name it was
+/// given is one the composition root said it can build, because [`Known::read`]
+/// is the only way to make one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VendorName(String);
+
+/// The names this build can actually run.
+///
+/// The composition root fills it from the adapters it holds. A name is valid
+/// here and nowhere else, so a build without an adapter refuses the name that
+/// adapter would have answered to.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Known(Vec<String>);
 
 /// A key, whether or not anything is stored under it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,9 +31,9 @@ pub enum Key {
 /// A key together with a value that key takes.
 ///
 /// Building one is the only way to name a value, so a value is checked once, where the string is read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Setting {
-    Vendor(Vendor),
+    Vendor(VendorName),
 }
 
 /// What is stored.
@@ -32,7 +42,7 @@ pub enum Setting {
 /// `config get` has to answer before any of it exists.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Configuration {
-    vendor: Option<Vendor>,
+    vendor: Option<VendorName>,
 }
 
 impl Key {
@@ -53,12 +63,27 @@ impl Display for Key {
     }
 }
 
+impl Known {
+    pub fn of(names: impl IntoIterator<Item = String>) -> Self {
+        Known(names.into_iter().collect())
+    }
+
+    /// The name as a value, if this build can run it.
+    ///
+    /// This is the only way to make a [`VendorName`], so holding one means the
+    /// check already happened.
+    pub fn read(&self, value: &str) -> Option<VendorName> {
+        self.0
+            .iter()
+            .any(|one| one == value)
+            .then(|| VendorName(value.to_owned()))
+    }
+}
+
 /// One spelling for what a user types, what a store holds, and what is printed, so the three cannot drift apart.
-impl Display for Vendor {
+impl Display for VendorName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Vendor::Claude => "claude",
-        })
+        f.write_str(&self.0)
     }
 }
 
@@ -67,12 +92,9 @@ impl Setting {
     ///
     /// The key has to be known first.
     /// A key nobody has heard of is told apart from a key holding a value it does not take.
-    pub fn parse(key: Key, value: &str) -> Option<Self> {
+    pub fn parse(key: Key, value: &str, known: &Known) -> Option<Self> {
         match key {
-            Key::Vendor => match value {
-                "claude" => Some(Setting::Vendor(Vendor::Claude)),
-                _ => None,
-            },
+            Key::Vendor => known.read(value).map(Setting::Vendor),
         }
     }
 }
@@ -88,7 +110,7 @@ impl Configuration {
     /// What a key holds, spelled as it is written and printed.
     pub fn value_of(&self, key: Key) -> Option<String> {
         match key {
-            Key::Vendor => self.vendor.map(|v| v.to_string()),
+            Key::Vendor => self.vendor.as_ref().map(VendorName::to_string),
         }
     }
 
@@ -105,8 +127,17 @@ impl Configuration {
 mod tests {
     use super::*;
 
+    /// A build that runs one agent, which is what ships today.
+    fn known() -> Known {
+        Known::of(["claude".to_owned()])
+    }
+
     fn setting(key: &str, value: &str) -> Option<Setting> {
-        Setting::parse(Key::parse(key)?, value)
+        Setting::parse(Key::parse(key)?, value, &known())
+    }
+
+    fn claude() -> VendorName {
+        known().read("claude").unwrap()
     }
 
     #[test]
@@ -119,11 +150,31 @@ mod tests {
         assert_eq!(setting("vendor", "codex"), None);
     }
 
+    /// The name is valid against the build, not against a list the core keeps.
+    /// A build holding that adapter takes the same name this one refuses.
+    #[test]
+    fn a_name_this_build_can_run_is_taken() {
+        let other = Known::of(["codex".to_owned()]);
+        assert_eq!(
+            Setting::parse(Key::Vendor, "codex", &other),
+            Some(Setting::Vendor(other.read("codex").unwrap()))
+        );
+        assert_eq!(Setting::parse(Key::Vendor, "claude", &other), None);
+    }
+
+    #[test]
+    fn a_build_that_runs_nothing_takes_no_name() {
+        assert_eq!(
+            Setting::parse(Key::Vendor, "claude", &Known::default()),
+            None
+        );
+    }
+
     #[test]
     fn setting_a_key_twice_keeps_the_second_value() {
         let mut config = Configuration::default();
-        config.apply(Setting::Vendor(Vendor::Claude));
-        config.apply(Setting::Vendor(Vendor::Claude));
+        config.apply(Setting::Vendor(claude()));
+        config.apply(Setting::Vendor(claude()));
         assert_eq!(config.value_of(Key::Vendor), Some("claude".to_owned()));
     }
 
@@ -135,7 +186,7 @@ mod tests {
     #[test]
     fn only_what_was_set_is_listed() {
         let mut config = Configuration::default();
-        config.apply(Setting::Vendor(Vendor::Claude));
+        config.apply(Setting::Vendor(claude()));
         assert_eq!(config.entries(), vec![(Key::Vendor, "claude".to_owned())]);
     }
 }

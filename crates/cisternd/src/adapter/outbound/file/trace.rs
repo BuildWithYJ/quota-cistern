@@ -5,13 +5,13 @@
 
 use std::{
     env, fs,
-    io::{self, Read as _, Seek, SeekFrom},
+    io::{self, Read as _, Seek, SeekFrom, Write as _},
     path::{Path, PathBuf},
 };
 
 use serde_json::Value;
 
-use crate::core::port::outbound::{Event, Read, Traces, Unavailable};
+use crate::core::port::outbound::{Event, Keeping, Read, Traces, Unavailable};
 
 /// How much of a trace one read may answer with.
 ///
@@ -71,9 +71,20 @@ impl FileTraces {
 }
 
 impl Traces for FileTraces {
-    fn at(&self, task: &str) -> Result<String, Unavailable> {
+    fn keeping(&self, task: &str) -> Result<Keeping, Unavailable> {
         fs::create_dir_all(&self.at).map_err(|e| self.failing(&self.at, e))?;
-        Ok(self.path_of(task).display().to_string())
+        let at = self.path_of(task);
+        let mut held = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&at)
+            .map_err(|e| self.failing(&at, e))?;
+
+        Ok(Box::new(move |line: &str| {
+            // A run that cannot be written down still runs.
+            // Nobody is waiting on this and there is nowhere to say it.
+            let _ = writeln!(held, "{}\t{line}", now());
+        }))
     }
 
     fn read(&self, task: &str, from: &str) -> Result<Read, Unavailable> {
@@ -126,6 +137,15 @@ impl Traces for FileTraces {
 /// A place in the file, written so that one cursor sorts beside another.
 fn cursor_at(at: u64) -> String {
     format!("{at:012}")
+}
+
+/// When a line arrived, in seconds since the epoch.
+///
+/// A clock behind the epoch reads as zero, for the reason `outbound::clock` gives.
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
 }
 
 /// One line of what was kept, as an event.
@@ -280,8 +300,8 @@ mod tests {
     }
 
     fn kept(traces: &FileTraces, task: &str, written: &str) {
-        let at = traces.at(task).unwrap();
-        fs::write(at, written).unwrap();
+        fs::create_dir_all(&traces.at).unwrap();
+        fs::write(traces.path_of(task), written).unwrap();
     }
 
     #[test]
@@ -326,8 +346,11 @@ mod tests {
 
         assert_eq!(traces.read("1", "").unwrap().events, Vec::new());
         // The line is still in the file, whatever this reading made of it.
-        let at = traces.at("1").unwrap();
-        assert!(fs::read_to_string(at).unwrap().contains("hmm"));
+        assert!(
+            fs::read_to_string(traces.path_of("1"))
+                .unwrap()
+                .contains("hmm")
+        );
     }
 
     /// Book-keeping the vendor writes between the things it did.
@@ -386,7 +409,7 @@ mod tests {
         let read = traces.read("1", "").unwrap();
         assert_eq!(read.events.len(), 1);
 
-        let at = traces.at("1").unwrap();
+        let at = traces.path_of("1");
         fs::write(&at, format!("{first}{}", line(1_700_000_002, said("two")))).unwrap();
 
         let more = traces.read("1", &read.cursor).unwrap();

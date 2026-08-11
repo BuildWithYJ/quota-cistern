@@ -1,7 +1,7 @@
 //! What `config set` and `config get` do.
 
 use crate::core::{
-    domain::{Configuration, Key, Setting},
+    domain::{Configuration, Key, Known, Setting},
     port::{
         inbound::{Applied, ConfigurationUseCase, Refusal, View},
         outbound::{ConfigurationStore, StoredConfiguration},
@@ -14,11 +14,19 @@ use crate::core::{
 /// A command over the configuration cannot reach the backlog store through it.
 pub struct ConfigurationService<'a> {
     store: &'a dyn ConfigurationStore,
+    /// Which agent names this build can run. The core does not decide them.
+    known: Known,
 }
 
 impl<'a> ConfigurationService<'a> {
-    pub fn new(store: &'a dyn ConfigurationStore) -> Self {
-        ConfigurationService { store }
+    /// The names are text because the domain is private to the core.
+    /// The composition root says which adapters it holds; reading them into a
+    /// value is this layer's work, the same as any other stored text.
+    pub fn new(store: &'a dyn ConfigurationStore, names: impl IntoIterator<Item = String>) -> Self {
+        ConfigurationService {
+            store,
+            known: Known::of(names),
+        }
     }
 }
 
@@ -31,14 +39,14 @@ impl ConfigurationUseCase for ConfigurationService<'_> {
                 key: key.to_owned(),
             });
         };
-        let Some(setting) = Setting::parse(parsed, value) else {
+        let Some(setting) = Setting::parse(parsed, value, &self.known) else {
             return Err(Refusal::BadValue {
                 key: parsed.to_string(),
                 value: value.to_owned(),
             });
         };
 
-        let mut configuration = read(self.store)?;
+        let mut configuration = read(self.store, &self.known)?;
         configuration.apply(setting);
         self.store.store(&written(&configuration))?;
 
@@ -50,7 +58,7 @@ impl ConfigurationUseCase for ConfigurationService<'_> {
 
     fn get(&self, key: Option<&str>) -> Result<View, Refusal> {
         let Some(key) = key else {
-            let entries = read(self.store)?
+            let entries = read(self.store, &self.known)?
                 .entries()
                 .into_iter()
                 .map(|(key, value)| (key.to_string(), value))
@@ -65,7 +73,7 @@ impl ConfigurationUseCase for ConfigurationService<'_> {
         };
         Ok(View::One {
             key: parsed.to_string(),
-            value: read(self.store)?.value_of(parsed),
+            value: read(self.store, &self.known)?.value_of(parsed),
         })
     }
 }
@@ -74,14 +82,14 @@ impl ConfigurationUseCase for ConfigurationService<'_> {
 ///
 /// A configuration file can be edited by hand, so what a store hands back is a claim rather than a fact.
 /// The domain is given values it can take, never the text they were kept as, so reading them is this layer's work.
-fn read(settings: &dyn ConfigurationStore) -> Result<Configuration, Refusal> {
+fn read(settings: &dyn ConfigurationStore, known: &Known) -> Result<Configuration, Refusal> {
     let stored = settings.load()?;
     let held = [(Key::Vendor, stored.vendor)];
 
     let mut configuration = Configuration::default();
     for (key, value) in held {
         let Some(value) = value else { continue };
-        let Some(setting) = Setting::parse(key, &value) else {
+        let Some(setting) = Setting::parse(key, &value, known) else {
             return Err(Refusal::BadValue {
                 key: key.to_string(),
                 value,
@@ -107,8 +115,9 @@ mod tests {
 
     use super::*;
 
+    /// A build that runs one agent, which is what ships today.
     fn over(settings: &Remembered) -> ConfigurationService<'_> {
-        ConfigurationService::new(settings)
+        ConfigurationService::new(settings, ["claude".to_owned()])
     }
 
     /// A store held in memory, so the steps can be checked without a file.

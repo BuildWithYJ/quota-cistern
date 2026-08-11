@@ -12,6 +12,12 @@ pub struct Event {
     pub said: String,
 }
 
+/// Somewhere to put what a run writes, a line at a time.
+///
+/// A value rather than a path, so that whoever writes the lines cannot open the file and
+/// learn what a line is kept as.
+pub type Keeping = Box<dyn FnMut(&str) + Send>;
+
 /// A stretch of a run's trace, and where to carry on from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Read {
@@ -25,10 +31,11 @@ pub struct Read {
 ///
 /// A run writes as it works and whoever is watching reads while it does, so both ends are here.
 pub trait Traces: Sync {
-    /// Where a task's run should write.
+    /// Somewhere to put what a run writes, a line at a time.
     ///
-    /// The core hands this to the agent and never looks at it.
-    fn at(&self, task: &str) -> Result<String, Unavailable>;
+    /// The core hands this to the agent, which knows a line when it sees one and nothing else.
+    /// How a line is kept and how it is read back stay together here.
+    fn keeping(&self, task: &str) -> Result<Keeping, Unavailable>;
 
     /// What the run wrote after `from`, and where to carry on.
     ///

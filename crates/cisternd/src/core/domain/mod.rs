@@ -9,7 +9,7 @@ mod session;
 mod supervision;
 mod task;
 
-pub use configuration::{Configuration, Key, Setting};
+pub use configuration::{Configuration, Key, Known, Setting};
 pub use consumption::{Consumption, Observation};
 pub use session::{
     Budget, Held, NotASessionSet, NotOpened, Opening, Session, SessionId, SessionState, Sessions,

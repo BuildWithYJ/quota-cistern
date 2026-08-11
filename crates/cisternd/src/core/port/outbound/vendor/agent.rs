@@ -8,9 +8,10 @@ pub struct Work<'a> {
     pub task: &'a str,
     /// The work area it runs in.
     pub at: &'a str,
-    /// Where to keep what the run writes.
-    /// The core does not read it.
-    pub trace: &'a str,
+    /// Where to put what the run writes, a line at a time.
+    ///
+    /// From `Traces`. What a line is kept as is not the agent's to know.
+    pub trace: super::super::Keeping,
     pub instruction: &'a str,
     /// The model to run, when the task or the session named one.
     pub model: Option<&'a str>,

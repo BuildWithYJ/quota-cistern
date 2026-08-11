@@ -306,11 +306,11 @@ impl ExecutionUseCase for ExecutionService<'_> {
             Ok(())
         })?;
 
-        let trace = self.traces.at(&id.to_string())?;
+        let trace = self.traces.keeping(&id.to_string())?;
         let ended = self.agent.work(Work {
             task: &id.to_string(),
             at: &at,
-            trace: &trace,
+            trace,
             instruction: &instruction,
             model: model.as_deref(),
         });
@@ -615,7 +615,8 @@ mod tests {
     use crate::core::{
         domain::SessionId,
         port::outbound::{
-            Ended, Reading, StoredBacklog, StoredSession, StoredSessions, StoredTask, Unavailable,
+            Ended, Keeping, Reading, StoredBacklog, StoredSession, StoredSessions, StoredTask,
+            Unavailable,
         },
     };
 
@@ -755,8 +756,8 @@ mod tests {
     struct Kept;
 
     impl Traces for Kept {
-        fn at(&self, task: &str) -> Result<String, Unavailable> {
-            Ok(format!("/traces/{task}.jsonl"))
+        fn keeping(&self, _task: &str) -> Result<Keeping, Unavailable> {
+            Ok(Box::new(|_line: &str| {}))
         }
 
         fn read(

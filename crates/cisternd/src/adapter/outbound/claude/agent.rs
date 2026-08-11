@@ -5,7 +5,6 @@
 
 use std::{
     collections::HashMap,
-    fs,
     os::unix::process::CommandExt,
     process::{Command, Stdio},
     sync::{Mutex, PoisonError},
@@ -20,7 +19,9 @@ use nix::{
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::core::port::outbound::{Agent, Ended, Observed, Outcome, Spent, Unavailable, Work};
+use crate::core::port::outbound::{
+    Agent, Ended, Keeping, Observed, Outcome, Spent, Unavailable, Work,
+};
 
 /// How the agent is invoked, and what it is told it is finished.
 ///
@@ -224,7 +225,7 @@ impl Agent for ClaudeAgent {
 
         // Read while the child writes, so one that outwrites a pipe carries on.
         // A watcher also sees the trace before the run has ended.
-        let stdout = keeping(child.stdout.take(), work.trace.to_owned());
+        let stdout = keeping(child.stdout.take(), work.trace);
         let stderr = reading(child.stderr.take());
 
         let status = child
@@ -315,28 +316,21 @@ fn signal(with: impl Into<Option<Signal>>, group: u32) -> bool {
 /// Hands back the last one, which is the answer.
 fn keeping<R: std::io::Read + Send + 'static>(
     held: Option<R>,
-    at: String,
+    mut into: Keeping,
 ) -> thread::JoinHandle<Vec<u8>> {
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::{BufRead, BufReader};
 
     thread::spawn(move || {
         let Some(held) = held else {
             return Vec::new();
         };
-        let mut keeping = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&at)
-            .ok();
         let mut last = String::new();
 
         for line in BufReader::new(held).lines().map_while(Result::ok) {
             if line.trim().is_empty() {
                 continue;
             }
-            if let Some(keeping) = keeping.as_mut() {
-                let _ = writeln!(keeping, "{}\t{line}", now());
-            }
+            into(&line);
             last = line;
         }
         last.into_bytes()
@@ -344,14 +338,6 @@ fn keeping<R: std::io::Read + Send + 'static>(
 }
 
 /// Seconds since the epoch, for stamping a line as it arrives.
-///
-/// The vendor stamps some of its lines and not others, and a trace is read in one order however it was written.
-fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs())
-}
-
 /// Reads one of the run's pipes on a thread of its own.
 fn reading<R: std::io::Read + Send + 'static>(held: Option<R>) -> thread::JoinHandle<Vec<u8>> {
     thread::spawn(move || {
@@ -504,14 +490,13 @@ mod tests {
             task: "1",
             at,
             // Kept beside the work area, so a test that looks at what was written knows where to look.
-            trace: TRACE.get_or_init(|| format!("{at}/trace.jsonl")),
+            trace: Box::new(|_line: &str| {}),
             instruction,
             model: None,
         }
     }
 
     /// Where the stand-in's runs keep what they wrote.
-    static TRACE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
     #[test]
     fn an_agent_that_finished_is_answered_as_done() {

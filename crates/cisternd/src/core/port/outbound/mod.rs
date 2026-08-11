@@ -19,7 +19,7 @@ pub use repository::{
     Between, Changes, Counts, Cut, NotApplied, RepositoryRoots, Results, Touched, Worktrees,
 };
 pub use session::{SessionStore, StoredSession, StoredSessions};
-pub use trace::{Event, Read, Traces};
+pub use trace::{Event, Keeping, Read, Traces};
 pub use vendor::{Agent, Ended, Limit, Observed, Outcome, Reading, Spent, Work};
 
 /// The outside could not be reached or could not be understood.
