@@ -2,9 +2,9 @@
 
 use crate::core::{
     domain::{
-        Budget, Consumption, Cost, HUNDREDTHS, NotOpened, Observation, Opening, Session, SessionId,
-        SessionState, Span, Spending, StoppedReason, Task, TaskId, TaskState, Usage, cost_of,
-        room_for,
+        Budget, Consumption, Cost, Decision, HUNDREDTHS, NotOpened, Observation, Opening, Session,
+        SessionId, SessionState, Span, Spending, Standing, StoppedReason, Task, TaskId, TaskState,
+        Usage, cost_of, decide,
     },
     port::{
         inbound::{
@@ -506,65 +506,41 @@ impl ExecutionService<'_> {
             Ok(())
         })?;
 
-        let (left, running, waiting, cost) = backlog::read(self.outside.tasks).map(|tasks| {
-            let cost = match (held.budget().usage, spent) {
-                // Tokens mean the same in every session, so what a task costs is what tasks have cost here at all.
-                (Usage::Tokens(_), _) => {
-                    Some(cost_of(tasks.counted().iter().map(Consumption::tokens)))
-                }
-                // A share is how far this session moved the vendor's limit, and only this session's tasks moved it.
-                (Usage::Share(_), Spending::Share(spent)) => Some(Cost {
-                    total: spent,
-                    over: tasks.ended_in(session) as u64,
-                }),
-                (Usage::Share(_), Spending::Tokens(_)) => None,
-            };
-            (
-                held.budget().left(spent),
-                tasks.running_in(session),
-                tasks.next_to_assign().is_some(),
-                cost,
-            )
-        })?;
-
-        if let Some(why) = self.why_it_stops(&held, left, running, waiting, cost)? {
-            return self.stop(session, why).map(|()| Vec::new());
+        match decide(&self.standing(&held, spent)?) {
+            Decision::Stop(why) => self.stop(session, why).map(|()| Vec::new()),
+            Decision::Start(room) => backlog::change(self.outside.tasks, |tasks| {
+                Ok((0..room).filter_map(|_| tasks.assign(session)).collect())
+            }),
         }
-        let room = room_for(left, cost, running, self.at_once);
-        backlog::change(self.outside.tasks, |tasks| {
-            Ok((0..room).filter_map(|_| tasks.assign(session)).collect())
-        })
     }
 
-    /// Why the session stops here, if it does.
-    fn why_it_stops(
-        &self,
-        held: &Session,
-        left: u64,
-        running: usize,
-        waiting: bool,
-        cost: Option<Cost>,
-    ) -> Result<Option<StoppedReason>, Refusal> {
-        // A count nobody could read leaves a budget that cannot be measured.
-        // A budget that cannot be measured cannot be held to.
-        if matches!(
-            backlog::read(self.outside.tasks)?.consumed_by(held.id()),
-            Observation::Unreadable { .. }
-        ) {
-            return Ok(Some(StoppedReason::ObservationUnreadable));
-        }
-        if held.out_of_time(self.outside.clock.now()) {
-            return Ok(Some(StoppedReason::BudgetHardlock));
-        }
-        // Nothing more fits, and nothing is running that would make room.
-        // Waiting for a task that will never start is not carrying on.
-        if running == 0 && room_for(left, cost, 0, self.at_once) == 0 {
-            return Ok(Some(StoppedReason::BudgetHardlock));
-        }
-        if running == 0 && !waiting {
-            return Ok(Some(StoppedReason::AllDone));
-        }
-        Ok(None)
+    /// How the session stands, read in one go.
+    ///
+    /// One read of the backlog rather than one per question, so that every figure the decision
+    /// is made from comes from the same moment.
+    fn standing(&self, held: &Session, spent: Spending) -> Result<Standing, Refusal> {
+        let session = held.id();
+        let tasks = backlog::read(self.outside.tasks)?;
+        let cost = match (held.budget().usage, spent) {
+            // Tokens mean the same in every session, so what a task costs is what tasks have cost here at all.
+            (Usage::Tokens(_), _) => Some(cost_of(tasks.counted().iter().map(Consumption::tokens))),
+            // A share is how far this session moved the vendor's limit, and only this session's tasks moved it.
+            (Usage::Share(_), Spending::Share(spent)) => Some(Cost {
+                total: spent,
+                over: tasks.ended_in(session) as u64,
+            }),
+            (Usage::Share(_), Spending::Tokens(_)) => None,
+        };
+
+        Ok(Standing {
+            left: held.budget().left(spent),
+            cost,
+            running: tasks.running_in(session),
+            waiting: tasks.next_to_assign().is_some(),
+            out_of_time: held.out_of_time(self.outside.clock.now()),
+            unreadable: matches!(tasks.consumed_by(session), Observation::Unreadable { .. }),
+            at_once: self.at_once,
+        })
     }
 
     /// Stops the session and ends whatever it still had running.

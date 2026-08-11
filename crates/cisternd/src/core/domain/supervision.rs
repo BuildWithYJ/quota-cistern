@@ -6,7 +6,7 @@
 
 use std::fmt::{self, Display};
 
-use super::{Budget, Usage};
+use super::{Budget, StoppedReason, Usage};
 
 /// A percentage as hundredths of one.
 ///
@@ -80,7 +80,7 @@ pub struct Cost {
 /// What is left, divided by what one task cost, multiplying first so that the fraction survives.
 /// A set that cost nothing measurable leaves one task to start.
 /// Which is what makes the sample the next answer is worked out from.
-pub fn room_for(left: u64, cost: Option<Cost>, running: usize, at_once: usize) -> usize {
+fn room_for(left: u64, cost: Option<Cost>, running: usize, at_once: usize) -> usize {
     if left == 0 {
         return 0;
     }
@@ -89,6 +89,64 @@ pub fn room_for(left: u64, cost: Option<Cost>, running: usize, at_once: usize) -
         None => 1,
     };
     fits.saturating_sub(running)
+}
+
+/// How a session stands at the moment something has to be decided about it.
+///
+/// Every figure is read before any of them is judged, so the decision that follows is made
+/// from one moment rather than from a store that moved while it was being asked.
+pub struct Standing {
+    /// What the budget still holds, in the unit it was declared in.
+    pub left: u64,
+    /// What one of this session's tasks has cost, over how many of them reported.
+    pub cost: Option<Cost>,
+    /// How many of its tasks are running.
+    pub running: usize,
+    /// Whether the backlog holds a task that may start.
+    pub waiting: bool,
+    /// Whether the time it declared has run out.
+    pub out_of_time: bool,
+    /// Whether what it consumed could no longer be read.
+    pub unreadable: bool,
+    /// The most tasks this machine has hands for.
+    pub at_once: usize,
+}
+
+/// What follows from how a session stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    Stop(StoppedReason),
+    /// Start this many more, which may be none.
+    Start(usize),
+}
+
+/// What to do about a session, from how it stands.
+///
+/// Nothing here reaches outside, so the whole of the rule is in one place and a test of it
+/// needs no store, no clock, and no vendor.
+pub fn decide(standing: &Standing) -> Decision {
+    // A count nobody could read leaves a budget that cannot be measured.
+    // A budget that cannot be measured cannot be held to.
+    if standing.unreadable {
+        return Decision::Stop(StoppedReason::ObservationUnreadable);
+    }
+    if standing.out_of_time {
+        return Decision::Stop(StoppedReason::BudgetHardlock);
+    }
+    // Nothing more fits and nothing is running that would make room.
+    // Waiting for a task that will never start is not carrying on.
+    if standing.running == 0 && room_for(standing.left, standing.cost, 0, standing.at_once) == 0 {
+        return Decision::Stop(StoppedReason::BudgetHardlock);
+    }
+    if standing.running == 0 && !standing.waiting {
+        return Decision::Stop(StoppedReason::AllDone);
+    }
+    Decision::Start(room_for(
+        standing.left,
+        standing.cost,
+        standing.running,
+        standing.at_once,
+    ))
 }
 
 /// What a set of tasks cost together, and how many reported a cost.
@@ -103,6 +161,96 @@ pub fn cost_of(costs: impl IntoIterator<Item = u64>) -> Cost {
 
 #[cfg(test)]
 mod tests {
+    /// A session with room, nothing wrong, and one task running.
+    fn standing() -> Standing {
+        Standing {
+            left: 1_000,
+            cost: Some(Cost {
+                total: 100,
+                over: 1,
+            }),
+            running: 1,
+            waiting: true,
+            out_of_time: false,
+            unreadable: false,
+            at_once: AT_ONCE,
+        }
+    }
+
+    #[test]
+    fn a_session_with_room_and_something_waiting_starts_more() {
+        assert_eq!(decide(&standing()), Decision::Start(3));
+    }
+
+    /// Section 1 says a budget that cannot be measured stops the session.
+    #[test]
+    fn a_consumption_nobody_could_read_stops_it() {
+        let unreadable = Standing {
+            unreadable: true,
+            ..standing()
+        };
+        assert_eq!(
+            decide(&unreadable),
+            Decision::Stop(StoppedReason::ObservationUnreadable)
+        );
+    }
+
+    /// Time is asked about before room, so a session out of time stops even with budget left.
+    #[test]
+    fn a_session_out_of_time_stops_with_budget_left() {
+        let late = Standing {
+            out_of_time: true,
+            ..standing()
+        };
+        assert_eq!(decide(&late), Decision::Stop(StoppedReason::BudgetHardlock));
+    }
+
+    #[test]
+    fn nothing_running_and_no_room_is_the_end_of_the_budget() {
+        let spent = Standing {
+            left: 0,
+            running: 0,
+            ..standing()
+        };
+        assert_eq!(
+            decide(&spent),
+            Decision::Stop(StoppedReason::BudgetHardlock)
+        );
+    }
+
+    #[test]
+    fn nothing_running_and_nothing_waiting_is_all_done() {
+        let over = Standing {
+            running: 0,
+            waiting: false,
+            ..standing()
+        };
+        assert_eq!(decide(&over), Decision::Stop(StoppedReason::AllDone));
+    }
+
+    /// A task still going may yet make room, so nothing is decided until it ends.
+    #[test]
+    fn a_session_with_nothing_waiting_carries_on_while_one_runs() {
+        let running = Standing {
+            waiting: false,
+            ..standing()
+        };
+        assert!(matches!(decide(&running), Decision::Start(_)));
+    }
+
+    #[test]
+    fn a_session_with_no_room_left_starts_none_while_one_runs() {
+        let full = Standing {
+            left: 50,
+            cost: Some(Cost {
+                total: 100,
+                over: 1,
+            }),
+            ..standing()
+        };
+        assert_eq!(decide(&full), Decision::Start(0));
+    }
+
     /// The machine limit the composition root passes in, fixed here so the
     /// arithmetic is what is being checked.
     const AT_ONCE: usize = 4;
