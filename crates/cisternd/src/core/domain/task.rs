@@ -61,6 +61,12 @@ pub struct Task {
     session: Option<SessionId>,
     /// Where it is being worked on, once a work area was made.
     worktree: Option<String>,
+    /// When its most recent run started, in seconds since the epoch.
+    ///
+    /// The most recent rather than the first, since a task the vendor turned away runs again.
+    started_at: Option<u64>,
+    /// When that run stopped, however it ended.
+    ended_at: Option<u64>,
     /// Why it ended as it did, for a task that did not simply finish.
     reason: Option<String>,
     /// What running it consumed, as far as that is known.
@@ -84,6 +90,8 @@ pub struct Restored {
     pub state: TaskState,
     pub session: Option<SessionId>,
     pub worktree: Option<String>,
+    pub started_at: Option<u64>,
+    pub ended_at: Option<u64>,
     pub reason: Option<String>,
     pub consumed: Observation,
     pub disposition: Option<Disposition>,
@@ -269,6 +277,16 @@ impl Task {
         self.worktree.as_deref()
     }
 
+    /// When its most recent run started, once one has.
+    pub fn started_at(&self) -> Option<u64> {
+        self.started_at
+    }
+
+    /// When that run stopped, once it has.
+    pub fn ended_at(&self) -> Option<u64> {
+        self.ended_at
+    }
+
     pub fn reason(&self) -> Option<&str> {
         self.reason.as_deref()
     }
@@ -340,6 +358,8 @@ impl Backlog {
             state: TaskState::Pending,
             session: None,
             worktree: None,
+            started_at: None,
+            ended_at: None,
             reason: None,
             consumed: Observation::NotYet,
             disposition: None,
@@ -372,12 +392,16 @@ impl Backlog {
     /// Hands the first task that may start to a session, and says which.
     ///
     /// Nothing is answered when none may start, which an empty backlog and a blocked one both look like from here.
-    pub fn assign(&mut self, to: SessionId) -> Option<TaskId> {
+    pub fn assign(&mut self, to: SessionId, now: u64) -> Option<TaskId> {
         let id = self.next_to_assign()?;
         for task in &mut self.tasks {
             if task.id == id {
                 task.state = TaskState::Running;
                 task.session = Some(to);
+                // A task the vendor turned away is assigned again, and the run that
+                // starts now is the one these two describe.
+                task.started_at = Some(now);
+                task.ended_at = None;
             }
         }
         Some(id)
@@ -415,11 +439,12 @@ impl Backlog {
     /// One interrupted by hand ends the moment the user asks.
     /// The thread waiting on its agent comes back afterwards to say it failed.
     /// The first answer is the true one.
-    pub fn finish(&mut self, id: TaskId, state: TaskState, reason: Option<String>) {
+    pub fn finish(&mut self, id: TaskId, state: TaskState, reason: Option<String>, now: u64) {
         for task in &mut self.tasks {
             if task.id == id && task.state == TaskState::Running {
                 task.state = state;
                 task.reason.clone_from(&reason);
+                task.ended_at = Some(now);
             }
         }
     }
@@ -486,12 +511,15 @@ impl Backlog {
     /// Puts a task back where it was before it was assigned.
     ///
     /// For a task nobody would run.
-    pub fn wait_again(&mut self, id: TaskId) {
+    pub fn wait_again(&mut self, id: TaskId, now: u64) {
         for task in &mut self.tasks {
             if task.id == id {
                 task.state = TaskState::Pending;
                 task.session = None;
                 task.reason = None;
+                // The run it had is over even though the task waits again, and it
+                // consumed whatever it consumed before the vendor refused it.
+                task.ended_at = Some(now);
             }
         }
     }
@@ -508,12 +536,13 @@ impl Backlog {
     ///
     /// Nothing is undone.
     /// Section 1 says an interrupted task keeps its partial work, which is on the branch already.
-    pub fn interrupt(&mut self, session: SessionId, reason: &str) -> Vec<TaskId> {
+    pub fn interrupt(&mut self, session: SessionId, reason: &str, now: u64) -> Vec<TaskId> {
         let mut ended = Vec::new();
         for task in &mut self.tasks {
             if task.session == Some(session) && task.state == TaskState::Running {
                 task.state = TaskState::Interrupted;
                 task.reason = Some(reason.to_owned());
+                task.ended_at = Some(now);
                 ended.push(task.id);
             }
         }
@@ -602,6 +631,8 @@ impl Backlog {
                 state: held.state,
                 session: held.session,
                 worktree: held.worktree,
+                started_at: held.started_at,
+                ended_at: held.ended_at,
                 reason: held.reason,
                 consumed: held.consumed,
                 disposition: held.disposition,
@@ -666,6 +697,8 @@ mod tests {
         Restored {
             session: None,
             worktree: None,
+            started_at: None,
+            ended_at: None,
             reason: None,
             consumed: Observation::NotYet,
             disposition: None,
@@ -912,13 +945,56 @@ mod tests {
         })
     }
 
+    /// A moment for a test that does not care which one.
+    const AT: u64 = 1_700_000_000;
+
     fn assigned(backlog: &mut Backlog, to: SessionId) -> TaskId {
         registered(backlog, None, None);
-        backlog.assign(to).unwrap()
+        backlog.assign(to, AT).unwrap()
     }
 
     fn a_session() -> SessionId {
         SessionId::parse("1").unwrap()
+    }
+
+    /// The start is stamped when the task is assigned rather than when it registered, since a
+    /// task waits in the backlog for as long as it waits and that is not part of its run.
+    #[test]
+    fn a_task_carries_when_its_run_started_and_when_it_stopped() {
+        let mut backlog = Backlog::default();
+        let id = assigned(&mut backlog, a_session());
+        assert_eq!(backlog.find(id).unwrap().started_at(), Some(AT));
+        assert_eq!(backlog.find(id).unwrap().ended_at(), None);
+
+        backlog.finish(id, TaskState::Completed, None, AT + 900);
+        assert_eq!(backlog.find(id).unwrap().ended_at(), Some(AT + 900));
+    }
+
+    /// A task the vendor turned away runs again, and the second run is the one to measure.
+    #[test]
+    fn a_task_assigned_again_is_stamped_with_the_run_it_is_starting_now() {
+        let mut backlog = Backlog::default();
+        let session = a_session();
+        let id = assigned(&mut backlog, session);
+
+        backlog.wait_again(id, AT + 60);
+        assert_eq!(backlog.find(id).unwrap().ended_at(), Some(AT + 60));
+
+        assert_eq!(backlog.assign(session, AT + 300), Some(id));
+        let held = backlog.find(id).unwrap();
+        assert_eq!(held.started_at(), Some(AT + 300));
+        assert_eq!(held.ended_at(), None);
+    }
+
+    /// A session stopped by hand ends its tasks, and they took as long as they took.
+    #[test]
+    fn a_task_interrupted_with_its_session_is_stamped_too() {
+        let mut backlog = Backlog::default();
+        let session = a_session();
+        let id = assigned(&mut backlog, session);
+
+        backlog.interrupt(session, "interrupted", AT + 120);
+        assert_eq!(backlog.find(id).unwrap().ended_at(), Some(AT + 120));
     }
 
     #[test]
@@ -926,7 +1002,7 @@ mod tests {
         let mut backlog = Backlog::default();
         let session = a_session();
         let first = assigned(&mut backlog, session);
-        backlog.finish(first, TaskState::Completed, None);
+        backlog.finish(first, TaskState::Completed, None, AT);
         let second = assigned(&mut backlog, session);
 
         backlog.record(first, spent(10));
@@ -964,7 +1040,7 @@ mod tests {
         let mut backlog = Backlog::default();
         let session = a_session();
         let first = assigned(&mut backlog, session);
-        backlog.finish(first, TaskState::Completed, None);
+        backlog.finish(first, TaskState::Completed, None, AT);
         let second = assigned(&mut backlog, session);
 
         backlog.record(first, spent(10));

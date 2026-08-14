@@ -251,7 +251,7 @@ impl ExecutionUseCase for ExecutionService<'_> {
         }
 
         let interrupted = backlog::change(self.outside.tasks, |tasks| {
-            Ok(tasks.interrupt(running, &StoppedReason::Interrupted.to_string()))
+            Ok(tasks.interrupt(running, &StoppedReason::Interrupted.to_string(), now))
         })?;
         sessions::change(self.outside.sessions, |sessions| {
             sessions.stop(running, StoppedReason::Interrupted, now);
@@ -451,10 +451,11 @@ impl ExecutionService<'_> {
             .read()
             .ok()
             .and_then(|at| at.resets_at.parse().ok());
+        let now = self.outside.clock.now();
         let session = backlog::change(self.outside.tasks, |tasks| {
             tasks.record(id, consumed.clone());
             let session = tasks.find(id).and_then(Task::session);
-            tasks.wait_again(id);
+            tasks.wait_again(id, now);
             Ok(session)
         })?;
 
@@ -480,8 +481,9 @@ impl ExecutionService<'_> {
         reason: Option<String>,
         consumed: Observation,
     ) -> Result<Vec<String>, Refusal> {
+        let now = self.outside.clock.now();
         let session = backlog::change(self.outside.tasks, |tasks| {
-            tasks.finish(id, state, reason.clone());
+            tasks.finish(id, state, reason.clone(), now);
             tasks.record(id, consumed.clone());
             Ok(tasks.find(id).and_then(Task::session))
         })?;
@@ -519,7 +521,9 @@ impl ExecutionService<'_> {
         match decide(&self.standing(&held, spent)?) {
             Decision::Stop(why) => self.stop(session, why).map(|()| Vec::new()),
             Decision::Start(room) => backlog::change(self.outside.tasks, |tasks| {
-                Ok((0..room).filter_map(|_| tasks.assign(session)).collect())
+                Ok((0..room)
+                    .filter_map(|_| tasks.assign(session, now))
+                    .collect())
             }),
         }
     }
@@ -561,7 +565,7 @@ impl ExecutionService<'_> {
             Ok(())
         })?;
         backlog::change(self.outside.tasks, |tasks| {
-            Ok(!tasks.interrupt(session, &why.to_string()).is_empty())
+            Ok(!tasks.interrupt(session, &why.to_string(), now).is_empty())
         })
         .map(|_: bool| ())
     }
@@ -744,6 +748,8 @@ mod tests {
             state: "Pending".to_owned(),
             session: None,
             worktree: None,
+            started_at: None,
+            ended_at: None,
             reason: None,
             consumed: None,
             unreadable: None,
@@ -2050,7 +2056,7 @@ mod tests {
         // Until it exists, a test stands in for it by assigning the second task itself.
         execution.run(declaring("50%", "8h")).unwrap();
         let opened = SessionId::parse("1").unwrap();
-        backlog::change(&tasks, |held| Ok(held.assign(opened))).unwrap();
+        backlog::change(&tasks, |held| Ok(held.assign(opened, 0))).unwrap();
 
         let execution = &execution;
         std::thread::scope(|threads| {

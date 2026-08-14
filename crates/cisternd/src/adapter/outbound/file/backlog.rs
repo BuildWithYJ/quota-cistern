@@ -53,6 +53,10 @@ struct Entry {
     #[serde(default, skip_serializing_if = "Value::is_null")]
     worktree: Value,
     #[serde(default, skip_serializing_if = "Value::is_null")]
+    started_at: Value,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    ended_at: Value,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
     reason: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     consumed: Option<Counted>,
@@ -123,6 +127,8 @@ impl FileBacklog {
                     state: as_text(entry.state),
                     session: as_optional(entry.session),
                     worktree: as_optional(entry.worktree),
+                    started_at: as_optional(entry.started_at),
+                    ended_at: as_optional(entry.ended_at),
                     reason: as_optional(entry.reason),
                     consumed: entry.consumed.map(|counted| StoredConsumption {
                         input: as_text(counted.input),
@@ -155,6 +161,8 @@ impl FileBacklog {
                     state: Value::String(task.state.clone()),
                     session: task.session.as_deref().map_or(Value::Null, as_number),
                     worktree: as_value(task.worktree.clone()),
+                    started_at: task.started_at.as_deref().map_or(Value::Null, as_number),
+                    ended_at: task.ended_at.as_deref().map_or(Value::Null, as_number),
                     reason: as_value(task.reason.clone()),
                     consumed: task.consumed.as_ref().map(|counted| Counted {
                         input: as_number(&counted.input),
@@ -218,6 +226,8 @@ mod tests {
             state: "Pending".to_owned(),
             session: None,
             worktree: None,
+            started_at: None,
+            ended_at: None,
             reason: None,
             consumed: None,
             unreadable: None,
@@ -266,6 +276,41 @@ mod tests {
         // A second reader over the same path is what a restarted core is.
         let restarted = FileBacklog::at(dir.path().join("backlog.json"));
         assert_eq!(restarted.load(), Ok(a_backlog()));
+    }
+
+    /// The two times are what a later reading of how long tasks take is worked out from,
+    /// so a restart that lost them would leave nothing to work it out from.
+    #[test]
+    fn when_a_run_started_and_stopped_survives_a_restart() {
+        let (dir, tasks) = in_a_temporary_directory();
+        let mut ran = a_task();
+        ran.state = "Completed".to_owned();
+        ran.session = Some("1".to_owned());
+        ran.started_at = Some("1786316972".to_owned());
+        ran.ended_at = Some("1786317418".to_owned());
+        put(
+            &tasks,
+            &StoredBacklog {
+                next_id: "2".to_owned(),
+                tasks: vec![ran.clone()],
+            },
+        );
+
+        let restarted = FileBacklog::at(dir.path().join("backlog.json"));
+        let read = restarted.load().unwrap();
+        assert_eq!(read.tasks[0].started_at.as_deref(), Some("1786316972"));
+        assert_eq!(read.tasks[0].ended_at.as_deref(), Some("1786317418"));
+    }
+
+    /// A task that has not run carries neither, and the file says so by leaving them out.
+    #[test]
+    fn a_task_that_never_ran_writes_no_times() {
+        let (dir, tasks) = in_a_temporary_directory();
+        put(&tasks, &a_backlog());
+
+        let written = fs::read_to_string(dir.path().join("backlog.json")).unwrap();
+        assert!(!written.contains("started_at"), "{written}");
+        assert!(!written.contains("ended_at"), "{written}");
     }
 
     #[test]

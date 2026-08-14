@@ -285,6 +285,16 @@ fn restored_from(held: StoredTask) -> Result<Restored, Refusal> {
             .map(|id| SessionId::parse(id).ok_or_else(|| unreadable("session", id)))
             .transpose()?,
         worktree: held.worktree,
+        started_at: held
+            .started_at
+            .as_deref()
+            .map(|at| stored_count("started_at", at))
+            .transpose()?,
+        ended_at: held
+            .ended_at
+            .as_deref()
+            .map(|at| stored_count("ended_at", at))
+            .transpose()?,
         reason: held.reason,
         consumed: observed(held.consumed, held.unreadable)?,
         disposition: held
@@ -313,6 +323,8 @@ fn written(backlog: &Backlog) -> StoredBacklog {
                 state: task.state().to_string(),
                 session: task.session().map(|id| id.to_string()),
                 worktree: task.worktree().map(str::to_owned),
+                started_at: task.started_at().map(|at| at.to_string()),
+                ended_at: task.ended_at().map(|at| at.to_string()),
                 reason: task.reason().map(str::to_owned),
                 consumed: kept(task.consumed()),
                 unreadable: match task.consumed() {
@@ -760,6 +772,8 @@ mod tests {
             crate::core::port::outbound::StoredTask {
                 session: None,
                 worktree: None,
+                started_at: None,
+                ended_at: None,
                 reason: None,
                 consumed: None,
                 unreadable: None,
@@ -776,6 +790,8 @@ mod tests {
             crate::core::port::outbound::StoredTask {
                 session: None,
                 worktree: None,
+                started_at: None,
+                ended_at: None,
                 reason: None,
                 consumed: None,
                 unreadable: None,
@@ -807,6 +823,8 @@ mod tests {
         held.tasks = vec![crate::core::port::outbound::StoredTask {
             session: None,
             worktree: None,
+            started_at: None,
+            ended_at: None,
             reason: None,
             consumed: Some(StoredConsumption {
                 input: "77".to_owned(),
@@ -841,6 +859,8 @@ mod tests {
         held.tasks = vec![crate::core::port::outbound::StoredTask {
             session: None,
             worktree: None,
+            started_at: None,
+            ended_at: None,
             reason: None,
             consumed: Some(StoredConsumption {
                 input: "a lot".to_owned(),
