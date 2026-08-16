@@ -101,6 +101,9 @@ fn no_vendor_field_name_is_written_in_rust() {
     let mut named = Vec::new();
 
     for file in rust_files(&workspace().join("crates/cisternd/src")) {
+        if is_a_test(&file) {
+            continue;
+        }
         let text = fs::read_to_string(&file).unwrap();
         let text = written_code(&text);
         for field in VENDOR_FIELDS {
@@ -133,11 +136,19 @@ fn the_socket_library_stays_in_the_contract() {
     }
 }
 
-/// A file up to where its tests begin.
+/// Whether the whole file is a module's tests.
 ///
 /// A test may write out a vendor's answer as the vendor sends it, and one that could not
 /// would be testing something other than what arrives. The clause is about the code that
-/// runs, so the tests are left out of it.
+/// runs.
+fn is_a_test(file: &Path) -> bool {
+    file.file_name().is_some_and(|name| name == "tests.rs")
+}
+
+/// A file up to where its tests begin.
+///
+/// The same reason as `is_a_test`, for the modules whose tests are still written at the
+/// foot of the file they test. This goes when the last of them has moved.
 fn written_code(text: &str) -> &str {
     match text.find("#[cfg(test)]") {
         Some(at) => &text[..at],

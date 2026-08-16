@@ -56,6 +56,7 @@ $ ./scripts/check.sh
 - API design follows the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/).
 - A doc comment states what an item does. An ordinary comment records why the code has the shape it has, which is what the next person needs in order to change it — in shell and workflow files as much as in Rust. A placeholder value says that it is one, and what would settle it.
 - `unwrap`, `expect`, `panic`, and `unsafe` are denied at the workspace level. Tests are exempt: they may panic to signal failure.
+- A module's tests go in a file of their own, declared as `#[cfg(test)] mod tests;` and written at `<module>/tests.rs`. They stay a child module, so they still reach what the module keeps private, and the code being tested stays readable on its own. Older modules still carry their tests at the foot of the file; they move as they are worked on rather than all at once.
 - Comments, documentation, and commit messages are written in English.
 - Code files hold tab, newline, and printable ASCII only. Markdown is exempt, since prose uses characters outside that set and the `*.ko.md` files are Korean translations.
 
