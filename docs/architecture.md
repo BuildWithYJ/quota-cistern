@@ -36,7 +36,7 @@ Outbound adapters are grouped by the means rather than by the outside: `program`
 
 The means for a vendor is an external program, and which program it is comes from a definition rather than from code. A definition names the program, its arguments, the goal that leads the prompt, the two ceilings a run is cut off at, the words the vendor uses when a run hits one, and where each figure sits in the answer. A second vendor is a file.
 
-`program/claude.toml` is the definition this build ships with. It travels in the binary and nothing is written to disk, so an upgrade has nothing of a user's to overwrite. A file at `$XDG_CONFIG_HOME/cistern/vendors/<name>.toml` is read instead of it, and a name with no definition behind it stops the daemon starting rather than failing on the first task.
+`program/claude.toml` is the definition this build ships with. It travels in the binary and nothing is written to disk, so an upgrade has nothing of a user's to overwrite. A file at `$XDG_CONFIG_HOME/cistern/vendors/<name>.toml` is laid over it, holding only what differs, so a definition we improve reaches someone who changed one line of it. A name nothing ships has nothing to lay over and has to be written out. A name with no definition either way stops the daemon starting rather than failing on the first task.
 
 What stays in code is the part that does not change with the vendor: starting the child, ending its process group, reading its pipes, and following a path into its answer. A path is names joined by dots, and one name may be `*`, which stands for every key of the object at that point and adds up the numbers under it. That is the only rule beyond following names, and it is there so that a vendor reporting per model what the core counts once needs no code.
 

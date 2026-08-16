@@ -141,6 +141,27 @@ pub enum Reader {
     LastJsonLine,
 }
 
+/// Puts one value over another, table by table.
+///
+/// A table is walked into so that a user naming one key of it keeps the rest. Anything else
+/// is replaced whole, an array included: laying one array over another element by element
+/// would leave a user unable to shorten a list, and no rule for it reads plainly.
+fn lay_over(base: &mut toml::Value, over: toml::Value) {
+    match (base, over) {
+        (toml::Value::Table(base), toml::Value::Table(over)) => {
+            for (key, value) in over {
+                match base.get_mut(&key) {
+                    Some(at) => lay_over(at, value),
+                    None => {
+                        base.insert(key, value);
+                    }
+                }
+            }
+        }
+        (base, over) => *base = over,
+    }
+}
+
 /// Where a user puts a definition of their own.
 ///
 /// Under the configuration home rather than beside what ships, so that an upgrade has
@@ -159,19 +180,34 @@ impl Definition {
         toml::from_str(written).map_err(|e| Unavailable::new(format!("{named}: {e}")))
     }
 
-    /// The vendor of this name, from what the user wrote or from what ships.
+    /// The vendor of this name, from what the user wrote laid over what ships.
     ///
-    /// The user's wins. A file they placed is theirs to keep, and an upgrade that replaced
-    /// it would take away the only reason to place one.
+    /// Laid over rather than in place of. A user who copied the whole of a shipped
+    /// definition to change one line would be frozen at the moment they copied: a field
+    /// added later would be missing from their copy and stop the daemon, and every value we
+    /// improved would never reach them. Writing only what differs leaves the rest ours.
+    ///
+    /// A name nothing ships is theirs alone, so it has to be whole.
     pub fn of(name: &str, written: Option<&str>) -> Result<Self, Unavailable> {
-        if let Some(written) = written {
-            return Definition::parse(name, written);
-        }
         let shipped = SHIPPED
             .iter()
             .find(|(shipped, _)| *shipped == name)
-            .ok_or_else(|| Unavailable::new(format!("no definition for vendor {name}")))?;
-        Definition::parse(name, shipped.1)
+            .map(|(_, text)| *text);
+        match (written, shipped) {
+            (Some(theirs), Some(ours)) => Definition::laid_over(name, ours, theirs),
+            (Some(theirs), None) => Definition::parse(name, theirs),
+            (None, Some(ours)) => Definition::parse(name, ours),
+            (None, None) => Err(Unavailable::new(format!("no definition for vendor {name}"))),
+        }
+    }
+
+    /// What ships, with what the user wrote over the top of it.
+    fn laid_over(name: &str, ours: &str, theirs: &str) -> Result<Self, Unavailable> {
+        let failing = |e: toml::de::Error| Unavailable::new(format!("{name}: {e}"));
+        let mut base: toml::Value = toml::from_str(ours).map_err(failing)?;
+        let over: toml::Value = toml::from_str(theirs).map_err(failing)?;
+        lay_over(&mut base, over);
+        base.try_into().map_err(failing)
     }
 
     /// The vendor of this name, taking a file the user placed over the one that ships.

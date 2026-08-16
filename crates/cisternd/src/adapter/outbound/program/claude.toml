@@ -1,8 +1,11 @@
 # Claude Code, as this build calls it.
 #
-# Everything the vendor names is here. To change one of them, copy this file to
-# $XDG_CONFIG_HOME/cistern/vendors/claude.toml and edit the copy; a file placed there
-# wins over this one and an upgrade leaves it alone.
+# Everything the vendor names is here. To change one of them, write a file at
+# $XDG_CONFIG_HOME/cistern/vendors/claude.toml holding only what differs; it is laid over
+# this one, so the rest keeps coming from here and an upgrade brings the improvements with
+# it. Copying the whole of this file instead would freeze it at the moment it was copied.
+#
+#     turns = "100"
 
 program = "claude"
 
