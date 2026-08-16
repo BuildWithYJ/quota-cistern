@@ -232,16 +232,12 @@ impl ExecutionUseCase for ExecutionService<'_> {
 
         // Before anything is ended.
         // A task the vendor was still running reports nothing, and a share is read from the vendor.
-        let spent = self.spending_of(running)?;
+        //
+        // Measuring writes what it read. Where the vendor has stopped answering it writes
+        // nothing and what was last recorded stands, since a session stopped by hand is
+        // stopped either way.
+        self.measure_in(running)?;
         let now = self.outside.clock.now();
-        // What was last recorded stands where the vendor has stopped answering.
-        // A session being stopped by hand is stopped either way.
-        if let Some(spent) = spent {
-            sessions::change(self.outside.sessions, |sessions| {
-                sessions.record(running, spent, now);
-                Ok(())
-            })?;
-        }
 
         // The runs end before the tasks do, so nothing is recorded as ended while its agent is still working.
         for task in backlog::read(self.outside.tasks)?.taken_by(running) {
@@ -505,18 +501,14 @@ impl ExecutionService<'_> {
 
         // Section 1 stops a session whose usage can no longer be read, and for a share that
         // reading is the vendor's own limit.
-        let Some(spent) = self.spending(&held)? else {
+        // Measuring writes what it read, so what is reported after the session stops is what
+        // was read while it ran.
+        let Some(spent) = self.measure(&held)? else {
             return self
                 .stop(session, StoppedReason::ObservationUnreadable)
                 .map(|()| Vec::new());
         };
-        // A share cannot be worked out again once the session has stopped.
-        // What was read here is what is reported for it afterwards.
         let now = self.outside.clock.now();
-        sessions::change(self.outside.sessions, |sessions| {
-            sessions.record(session, spent, now);
-            Ok(())
-        })?;
 
         match decide(&self.standing(&held, spent)?) {
             Decision::Stop(why) => self.stop(session, why).map(|()| Vec::new()),
@@ -571,41 +563,55 @@ impl ExecutionService<'_> {
     }
 
     /// The same, for a session named only by its number.
-    fn spending_of(&self, session: SessionId) -> Result<Option<Spending>, Refusal> {
+    fn measure_in(&self, session: SessionId) -> Result<Option<Spending>, Refusal> {
         let held = sessions::read(self.outside.sessions)?;
         let held = held
             .sessions()
             .iter()
             .find(|held| held.id() == session)
             .ok_or(Refusal::NoSessionRunning)?;
-        self.spending(held)
+        self.measure(held)
     }
 
-    /// What the session has consumed of its usage budget, or nothing when that can no longer
-    /// be read.
+    /// Takes what the session has consumed of its usage budget and writes it down, or answers
+    /// with nothing when it can no longer be read.
     ///
-    /// A share is read from the vendor, so a vendor that stops answering leaves the figure
-    /// unknown rather than zero.
-    /// Section 1 stops a session in that state, and nothing is a failure for the caller to
-    /// carry.
-    fn spending(&self, held: &Session) -> Result<Option<Spending>, Refusal> {
+    /// This writes as well as reads. A share is the vendor's limit added up look by look, so
+    /// the looking is what moves the figure, and a count is written here so that both units
+    /// leave by the same door.
+    ///
+    /// A vendor that stops answering leaves a share unknown rather than zero. Section 1 stops a
+    /// session in that state, and nothing is a failure for the caller to carry.
+    fn measure(&self, held: &Session) -> Result<Option<Spending>, Refusal> {
+        let session = held.id();
+        let now = self.outside.clock.now();
         match (held.budget().usage, held.limit_at_start()) {
-            (Usage::Share(_), Some(at_start)) => Ok(self
-                .limit_now()
-                .ok()
-                .map(|now| Spending::Share(now.saturating_sub(at_start)))),
+            (Usage::Share(_), Some(_)) => {
+                let Ok(used) = self.limit_now() else {
+                    return Ok(None);
+                };
+                sessions::change(self.outside.sessions, |sessions| {
+                    Ok(sessions.measured(session, used, now))
+                })
+            }
             // A share with nothing to measure from is a store this core cannot use.
             // Nothing else can be said about how much of it is spent.
             (Usage::Share(_), None) => Err(Refusal::Unavailable {
                 reason: format!(
                     "{} declared a share and does not say what the limit was at",
-                    held.id().labelled()
+                    session.labelled()
                 ),
             }),
-            (Usage::Tokens(_), _) => Ok(Some(Spending::Tokens(
-                Consumption::total(backlog::read(self.outside.tasks)?.counted_in(held.id()))
-                    .tokens(),
-            ))),
+            (Usage::Tokens(_), _) => {
+                let spent = Spending::Tokens(
+                    Consumption::total(backlog::read(self.outside.tasks)?.counted_in(session))
+                        .tokens(),
+                );
+                sessions::change(self.outside.sessions, |sessions| {
+                    sessions.record(session, spent, now);
+                    Ok(Some(spent))
+                })
+            }
         }
     }
 
@@ -869,6 +875,38 @@ mod tests {
         }
     }
 
+    /// A vendor limit that reads off a list, so a test says what each look finds.
+    ///
+    /// This is how a window that begins again is put in front of the core: a reading lower than
+    /// the one before it. The last entry stands once the list runs out, so a test writes only
+    /// the looks it cares about.
+    struct Turning {
+        left: Mutex<Vec<u64>>,
+    }
+
+    impl Turning {
+        fn over(readings: &[u64]) -> Self {
+            Turning {
+                left: Mutex::new(readings.to_vec()),
+            }
+        }
+    }
+
+    impl Limit for Turning {
+        fn read(&self) -> Result<Reading, Unavailable> {
+            let mut left = self.left.lock().unwrap_or_else(PoisonError::into_inner);
+            let used = match left.len() {
+                0 => 0,
+                1 => left[0],
+                _ => left.remove(0),
+            };
+            Ok(Reading {
+                used: used.to_string(),
+                resets_at: "1786285800".to_owned(),
+            })
+        }
+    }
+
     /// A limit nothing asks for, since the session was declared in tokens.
     static UNTOUCHED: AtPercent = AtPercent {
         used: Mutex::new(0),
@@ -1123,6 +1161,7 @@ mod tests {
             sessions: vec![StoredSession {
                 started_at: "1000".to_owned(),
                 limit_at_start: None,
+                limit_last_seen: None,
                 consumed: "0".to_owned(),
                 updated_at: "1000".to_owned(),
                 resets_at: None,
@@ -1632,6 +1671,80 @@ mod tests {
         assert_eq!(session.state, "stopped");
         assert_eq!(session.stopped_reason.as_deref(), Some("budget hardlock"));
         assert_eq!(tasks.load().unwrap().tasks[1].state, "Pending");
+    }
+
+    /// A session declared as a share outlives the window its limit is kept in.
+    ///
+    /// What it spent in the window it opened in is counted towards what it declared, and it
+    /// stops on that as it would have without the window turning over.
+    #[test]
+    fn a_share_that_crosses_a_window_counts_both_of_them() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+        let areas = Areas::default();
+        let agent = Standing::finishing();
+        // Opens at 30%, climbs to 34%, and then the window begins again at 2%.
+        let turning = Turning::over(&[3_000, 3_400, 200]);
+        let execution = ExecutionService::new(
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &turning,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
+        );
+
+        execution.run(declaring("10%", "8h")).unwrap();
+        let assigned = execution.carry_on("task:1").unwrap();
+
+        // 4 points in the first window and 2 in the second, against the 10 it declared.
+        let session = sessions.load().sessions[0].clone();
+        assert_eq!(session.consumed, "600");
+        assert!(assigned.is_empty());
+        assert_eq!(session.stopped_reason.as_deref(), Some("budget hardlock"));
+    }
+
+    /// The other half of what a window turning over used to do.
+    ///
+    /// A session that read as having spent nothing had no cost to divide by either, which is
+    /// the state a session is in before its first task reports and which starts one at a time.
+    #[test]
+    fn a_share_that_crosses_a_window_does_not_fall_back_to_one_at_a_time() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![
+            a_pending_task(),
+            a_second_task(),
+            a_task_numbered("3"),
+            a_task_numbered("4"),
+            a_task_numbered("5"),
+        ]);
+        let areas = Areas::default();
+        let agent = Standing::finishing();
+        let turning = Turning::over(&[3_000, 3_100, 100]);
+        let execution = ExecutionService::new(
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &turning,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
+        );
+
+        // Nothing has reported yet, so one starts alone.
+        let started = execution.run(declaring("50%", "8h")).unwrap();
+        assert_eq!(started.assigned.len(), 1);
+
+        // The window turned over between the two, and two points still divide into what is left.
+        let assigned = execution.carry_on("task:1").unwrap();
+        assert_eq!(assigned.len(), 4);
     }
 
     /// Section 2.2 lists them newest first, which is the order the numbers were handed out in.

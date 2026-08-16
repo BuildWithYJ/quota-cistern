@@ -81,6 +81,12 @@ pub struct Session {
     /// A share says what this session may add to what the limit already held.
     /// A session declared in tokens has none.
     limit_at_start: Option<u64>,
+    /// What the limit read the last time this session looked, in hundredths of a percent.
+    ///
+    /// A share is added up look by look rather than taken as the distance from where it started.
+    /// The limit is a window that begins again every few hours, and a session that outlives one
+    /// reads a figure lower than the one it opened from.
+    limit_last_seen: Option<u64>,
     /// What it has consumed, in the unit it was declared in.
     consumed: Spending,
     /// When it last changed.
@@ -99,6 +105,7 @@ pub struct Held {
     pub model: Option<String>,
     pub started_at: u64,
     pub limit_at_start: Option<u64>,
+    pub limit_last_seen: Option<u64>,
     pub consumed: Spending,
     pub updated_at: u64,
     pub resets_at: Option<u64>,
@@ -315,6 +322,10 @@ impl Session {
         self.limit_at_start
     }
 
+    pub fn limit_last_seen(&self) -> Option<u64> {
+        self.limit_last_seen
+    }
+
     /// What it has consumed, in the unit it was declared in.
     pub fn consumed(&self) -> Spending {
         self.consumed
@@ -354,6 +365,8 @@ impl Sessions {
             model: opening.model,
             started_at: opening.started_at,
             limit_at_start: opening.limit_at_start,
+            // The first look is the one taken to open with.
+            limit_last_seen: opening.limit_at_start,
             consumed: match opening.budget.usage {
                 Usage::Share(_) => Spending::Share(0),
                 Usage::Tokens(_) => Spending::Tokens(0),
@@ -389,6 +402,38 @@ impl Sessions {
                 session.updated_at = now;
             }
         }
+    }
+
+    /// Adds what the vendor's limit has moved since this session last looked at it, and says
+    /// what the session has consumed once it has.
+    ///
+    /// A limit only climbs while one window lasts, so a reading lower than the last one is a
+    /// window that has begun again, and the whole of it was spent since it did. Taking the
+    /// distance from where the session opened instead would read such a session as having spent
+    /// nothing.
+    ///
+    /// Two amounts go uncounted, both of them short rather than long. Whatever was spent between
+    /// the last look and the window turning over is in no reading at all. And a window that has
+    /// already climbed past the last reading before anyone looks is taken for the same window,
+    /// which needs the account spending more than that reading between two tasks ending.
+    pub fn measured(&mut self, id: SessionId, used: u64, now: u64) -> Option<Spending> {
+        let session = self.sessions.iter_mut().find(|session| session.id == id)?;
+        let Spending::Share(consumed) = session.consumed else {
+            return Some(session.consumed);
+        };
+        let since = match session.limit_last_seen {
+            Some(seen) if used >= seen => used - seen,
+            Some(_) => used,
+            // Nothing to measure from: a share opened without a first look, or one a store
+            // held before this was written down. Adding what it has already counted a second
+            // time would be worse than adding nothing, and this look becomes the one the next
+            // is measured from.
+            None => 0,
+        };
+        session.consumed = Spending::Share(consumed.saturating_add(since));
+        session.limit_last_seen = Some(used);
+        session.updated_at = now;
+        Some(session.consumed)
     }
 
     /// Records when the vendor's limit starts over.
@@ -449,6 +494,7 @@ impl Sessions {
                 model: one.model,
                 started_at: one.started_at,
                 limit_at_start: one.limit_at_start,
+                limit_last_seen: one.limit_last_seen,
                 consumed: one.consumed,
                 updated_at: one.updated_at,
                 resets_at: one.resets_at,
@@ -562,6 +608,7 @@ mod tests {
             model: None,
             started_at: 1_000,
             limit_at_start: Some(1_100),
+            limit_last_seen: Some(1_100),
             consumed: Spending::Share(0),
             updated_at: 1_000,
             resets_at: None,
@@ -586,6 +633,7 @@ mod tests {
             model: None,
             started_at: 1_000,
             limit_at_start: Some(1_100),
+            limit_last_seen: Some(1_100),
             consumed: Spending::Share(0),
             updated_at: 1_000,
             resets_at: None,
@@ -642,5 +690,79 @@ mod tests {
             stopped.stopped_reason(),
             Some(StoppedReason::ObservationUnreadable)
         );
+    }
+
+    #[test]
+    fn a_share_is_what_the_limit_moved_between_one_look_and_the_next() {
+        let mut sessions = Sessions::default();
+        let id = sessions.open(opening()).unwrap();
+
+        assert_eq!(
+            sessions.measured(id, 1_400, 2_000),
+            Some(Spending::Share(300))
+        );
+        assert_eq!(
+            sessions.measured(id, 1_900, 3_000),
+            Some(Spending::Share(800))
+        );
+    }
+
+    /// A limit only climbs while one window lasts.
+    #[test]
+    fn a_reading_below_the_last_is_a_window_that_has_begun_again() {
+        let mut sessions = Sessions::default();
+        let id = sessions.open(opening()).unwrap();
+        sessions.measured(id, 1_900, 2_000);
+
+        // The whole of the new window was spent since it began.
+        assert_eq!(
+            sessions.measured(id, 200, 3_000),
+            Some(Spending::Share(1_000))
+        );
+        // And the one after it is measured from there, not from where the session opened.
+        assert_eq!(
+            sessions.measured(id, 500, 4_000),
+            Some(Spending::Share(1_300))
+        );
+    }
+
+    /// The defect this rule was written for.
+    #[test]
+    fn a_session_that_crosses_a_reset_still_runs_out_of_what_it_declared() {
+        let mut sessions = Sessions::default();
+        let id = sessions.open(opening()).unwrap();
+        // Declared 50%, so 5000 hundredths.
+        sessions.measured(id, 5_100, 2_000);
+        let spent = sessions.measured(id, 1_000, 3_000).unwrap();
+
+        assert_eq!(spent, Spending::Share(5_000));
+        assert_eq!(a_budget().left(spent), 0);
+    }
+
+    #[test]
+    fn a_session_declared_in_tokens_is_not_measured_against_the_limit() {
+        let mut sessions = Sessions::default();
+        let id = sessions
+            .open(Opening {
+                budget: Budget {
+                    usage: Usage::Tokens(2_000_000),
+                    time: Span(8 * 3_600),
+                },
+                limit_at_start: None,
+                ..opening()
+            })
+            .unwrap();
+
+        assert_eq!(
+            sessions.measured(id, 1_400, 2_000),
+            Some(Spending::Tokens(0))
+        );
+    }
+
+    #[test]
+    fn nothing_is_measured_for_a_session_that_is_not_there() {
+        let mut sessions = Sessions::default();
+
+        assert_eq!(sessions.measured(SessionId(7), 1_400, 2_000), None);
     }
 }
