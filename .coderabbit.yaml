@@ -1,0 +1,57 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+#
+# An automatic review on every pull request, for the maintainer to decide where
+# to look. It does not decide what passes; a person decides the merge, and a
+# contributor is under no obligation to act on what it says.
+#
+# Answering a remark in the thread it was made in is the other way this is
+# steered: what it takes from an answer is carried into later reviews.
+
+language: en-US
+tone_instructions: >-
+  Be terse and say why. Do not raise what CI already fails on: rustfmt
+  formatting, clippy warnings, a failing test, or a non-ASCII character in a
+  code file.
+
+reviews:
+  profile: chill
+  high_level_summary: true
+  collapse_walkthrough: true
+  assess_linked_issues: true
+  abort_on_close: true
+  sequence_diagrams: false
+  suggested_labels: false
+  # One person merges here.
+  suggested_reviewers: false
+  poem: false
+
+  path_filters:
+    - "!Cargo.lock"
+
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
+
+  path_instructions:
+    - path: "**"
+      instructions: |
+        Review this as you would anyway, and raise as well where it conflicts
+        with the rest of the repository: a rule or document it contradicts, a
+        counterpart it leaves behind, or other work in flight it collides with.
+
+knowledge_base:
+  # This repository is public, so what is said here should not reach a review
+  # under another of the account's repositories.
+  learnings:
+    scope: local
+  issues:
+    scope: local
+  pull_requests:
+    scope: local
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "CONTRIBUTING.md"
+      - "docs/architecture.md"
+      - "docs/cli.md"

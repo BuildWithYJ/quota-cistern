@@ -37,6 +37,10 @@ A pull request title follows [Conventional Commits](https://www.conventionalcomm
 
 Pull requests are squashed on merge, so the title becomes the commit message on `main`. The commit messages on your branch are not checked; write them for whoever reads the branch.
 
+### Automatic review
+
+CodeRabbit leaves a review on every pull request. It is there so that whoever reads the pull request knows where to look, and nothing in it obliges you: act on a remark, answer it, or leave it, as you judge. A person decides the merge, and CI decides what has to pass.
+
 ## Development environment
 
 The project is written in Rust, edition 2024. `rust-toolchain.toml` pins the toolchain, so `rustup` installs the right version and components on first build.
