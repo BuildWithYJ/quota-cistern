@@ -67,3 +67,22 @@ fn the_vendor_says_where_its_limit_stands() {
         reading.resets_at
     );
 }
+
+/// What the vendor is handed to load has to be what it was before the definition held it,
+/// since nothing about the session it opens has changed.
+#[test]
+fn the_settings_written_are_what_the_vendor_read_before() {
+    let held = TempDir::new().unwrap();
+    let laid = ProgramLimit::at(claude(), held.path().to_path_buf())
+        .laid_out()
+        .unwrap();
+    let written = std::fs::read_to_string(&laid.settings).unwrap();
+
+    assert_eq!(
+        written,
+        format!(
+            r#"{{"statusLine":{{"type":"command","command":"{}"}}}}"#,
+            laid.script.display()
+        )
+    );
+}

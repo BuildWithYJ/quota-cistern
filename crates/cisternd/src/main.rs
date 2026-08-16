@@ -59,10 +59,7 @@ fn main() -> ExitCode {
     // The names there is a definition for, whether it ships or the user placed it.
     // Adding a vendor is a file; nothing here and nothing in the core is touched.
     let known = outbound::program::Definition::known();
-    if let Err(e) = runnable(&configuration_store, &known) {
-        return quit(e);
-    }
-    let named = match chosen(&configuration_store) {
+    let named = match chosen(&configuration_store, &known) {
         Ok(named) => named,
         Err(e) => return quit(e),
     };
@@ -84,7 +81,7 @@ fn main() -> ExitCode {
     let clock = outbound::clock::SystemClock;
     let agent = outbound::program::agent::ProgramAgent::new(definition);
 
-    let configuration = ConfigurationService::new(&configuration_store, known.clone());
+    let configuration = ConfigurationService::new(&configuration_store, known);
     let backlog = BacklogService::new(&backlog_store, &roots, &results);
     let review = ReviewService::new(&backlog_store, &results);
     let execution = ExecutionService::new(
@@ -182,25 +179,16 @@ impl<U: Carrying> Carrying for Queueing<'_, U> {
     }
 }
 
-/// Which vendor the configuration names, or the one to fall back to.
-fn chosen(store: &dyn ConfigurationStore) -> Result<String, String> {
-    let held = store.load().map_err(|e| e.reason)?;
-    Ok(held
-        .iter()
-        .find(|(key, _)| key == "vendor")
-        .map_or_else(|| BY_DEFAULT.to_owned(), |(_, name)| name.clone()))
-}
-
-/// Refuses to start on a stored vendor nothing defines.
+/// Which vendor to run, refusing a name nothing defines.
 ///
 /// Failing once here beats failing on every task a session assigns.
-fn runnable(store: &dyn ConfigurationStore, known: &[String]) -> Result<(), String> {
+fn chosen(store: &dyn ConfigurationStore, known: &[String]) -> Result<String, String> {
     let held = store.load().map_err(|e| e.reason)?;
     let Some((_, name)) = held.iter().find(|(key, _)| key == "vendor") else {
-        return Ok(());
+        return Ok(BY_DEFAULT.to_owned());
     };
     if known.contains(name) {
-        return Ok(());
+        return Ok(name.clone());
     }
     Err(format!(
         "the configuration says vendor {name}, which nothing defines; there is {}",
