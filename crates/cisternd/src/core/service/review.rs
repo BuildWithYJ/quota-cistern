@@ -285,6 +285,8 @@ mod tests {
             state: state.to_owned(),
             session: Some("1".to_owned()),
             worktree: None,
+            started_at: None,
+            ended_at: None,
             reason: None,
             consumed: None,
             unreadable: None,
