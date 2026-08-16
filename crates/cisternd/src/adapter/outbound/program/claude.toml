@@ -1,0 +1,59 @@
+# Claude Code, as this build calls it.
+#
+# Everything the vendor names is here. To change one of them, copy this file to
+# $XDG_CONFIG_HOME/cistern/vendors/claude.toml and edit the copy; a file placed there
+# wins over this one and an upgrade leaves it alone.
+
+program = "claude"
+
+# The goal leads the prompt. After the instruction the command is read as ordinary text
+# and gates nothing, which is why the order is fixed in `args` rather than left to
+# whoever composes the two.
+goal = "/goal The task described below is finished, its result is committed on the current branch, and git status reports a clean tree."
+
+# How far one run may go before it is cut off. A guard against a run that goes nowhere,
+# not the ceiling a session declares; that one is measured in what a task consumed and is
+# the supervisor's.
+turns = "200"
+spend = "20"
+
+# Arguments are grouped so that a group holding a place nobody filled is dropped whole.
+# A task that named no model has to lose --model with it.
+args = [
+  ["--permission-mode", "bypassPermissions"],
+  ["--max-turns", "{turns}"],
+  ["--max-budget-usd", "{spend}"],
+  ["--model", "{model}"],
+  ["-p", "{goal}\n\n{instruction}"],
+  ["--output-format", "stream-json", "--verbose"],
+]
+
+[answer]
+# One object per line, the last of which is the answer and the rest the trace.
+reader = "last-json-line"
+
+# The name the vendor gives for stopping is what tells a ceiling from a failure.
+outcome = "subtype"
+
+# What a run that failed said about itself, when it said anything.
+said = "result"
+
+# The price, and what to multiply it by to reach millionths of the currency.
+cost = "total_cost_usd"
+cost_scale = 1000000.0
+
+# The per-model breakdown rather than the run's own `usage`. That one counts only the
+# calls that left a message, while the price covers all of them; the same answer shows
+# 3182 against 3377. The star adds up every model, since one run may reach for more
+# than one.
+input = "modelUsage.*.inputTokens"
+output = "modelUsage.*.outputTokens"
+cache_written = "modelUsage.*.cacheCreationInputTokens"
+cache_read = "modelUsage.*.cacheReadInputTokens"
+
+# A run cut off at a ceiling answers with no text of its own. The word it gives instead
+# is all there is to report, so each word carries the sentence to report for it. The
+# same places are filled here as in `args`.
+[answer.at_ceiling]
+error_max_turns = "the agent was cut off after {turns} turns"
+error_max_budget = "the agent was cut off at {spend} dollars"

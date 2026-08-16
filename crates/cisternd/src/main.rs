@@ -73,8 +73,8 @@ fn main() -> ExitCode {
     let roots = outbound::git::roots::GitRoots;
     let results = outbound::git::result::GitResults;
     let clock = outbound::clock::SystemClock;
-    let agent = match outbound::claude::agent::ClaudeAgent::new() {
-        Ok(agent) => agent,
+    let agent = match outbound::program::Definition::of(outbound::claude::NAME, None) {
+        Ok(definition) => outbound::program::agent::ProgramAgent::new(definition),
         Err(e) => return quit(e.reason),
     };
 
