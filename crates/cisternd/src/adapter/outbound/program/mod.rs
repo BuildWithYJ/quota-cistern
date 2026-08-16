@@ -8,6 +8,7 @@
 
 pub mod agent;
 pub mod definition;
+pub mod limit;
 pub mod path;
 
 pub use definition::Definition;

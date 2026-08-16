@@ -19,28 +19,47 @@ use crate::core::port::outbound::{Event, Keeping, Read, Traces, Unavailable};
 /// Section 2.3 says the reader is not made to hold all of it.
 const AT_MOST: usize = 64 * 1024;
 
+/// What one line of a run's output is shaped like.
+///
+/// The names a vendor uses rather than the code that walks them. A file adapter has no
+/// business knowing a vendor's words, so the composition root fills these from whatever
+/// vendor is in use and this module only follows them.
+#[derive(Debug, Clone)]
+pub struct Shapes {
+    pub said: String,
+    pub came_back: String,
+    pub blocks: String,
+    pub text: String,
+    pub reached_for: String,
+    pub result: String,
+    pub errored: String,
+    pub subject: Vec<String>,
+    pub subject_path: Vec<String>,
+}
+
 /// Traces kept as one file per task.
 pub struct FileTraces {
     at: PathBuf,
+    shapes: Shapes,
 }
 
 impl FileTraces {
     /// Takes the directory it is given.
     ///
     /// This is how a test reaches a temporary one.
-    pub fn at(at: PathBuf) -> Self {
-        FileTraces { at }
+    pub fn at(at: PathBuf, shapes: Shapes) -> Self {
+        FileTraces { at, shapes }
     }
 
     /// Beside the sessions, under the directory `docs/cli.md` names.
-    pub fn in_data_home() -> Option<Self> {
+    pub fn in_data_home(shapes: Shapes) -> Option<Self> {
         let base = match env::var_os("XDG_DATA_HOME") {
             Some(dir) => PathBuf::from(dir),
             None => PathBuf::from(env::var_os("HOME")?)
                 .join(".local")
                 .join("share"),
         };
-        Some(FileTraces::at(base.join("cistern").join("traces")))
+        Some(FileTraces::at(base.join("cistern").join("traces"), shapes))
     }
 
     /// Where the line running past `from` ends, or the end of what is there.
@@ -124,7 +143,7 @@ impl Traces for FileTraces {
 
         let events = String::from_utf8_lossy(&written[..whole])
             .lines()
-            .filter_map(event_in)
+            .filter_map(|line| event_in(line, &self.shapes))
             .collect();
 
         Ok(Read {
@@ -152,11 +171,11 @@ fn now() -> u64 {
 ///
 /// A line is the time it arrived, a tab, and what the vendor wrote.
 /// What the vendor wrote is left as it was, so a reading written later can make more of it than this one does.
-fn event_in(line: &str) -> Option<Event> {
+fn event_in(line: &str, shapes: &Shapes) -> Option<Event> {
     let (at, said) = line.split_once('\t')?;
     Some(Event {
         at: at.to_owned(),
-        said: sentence_in(said)?,
+        said: sentence_in(said, shapes)?,
     })
 }
 
@@ -164,27 +183,30 @@ fn event_in(line: &str) -> Option<Event> {
 ///
 /// What the agent said and what it reached for, one sentence each.
 /// Its thinking is left out, being long and addressed to nobody.
-fn sentence_in(written: &str) -> Option<String> {
+fn sentence_in(written: &str, shapes: &Shapes) -> Option<String> {
     let held: Value = serde_json::from_str(written).ok()?;
-    match held.get("type").and_then(Value::as_str)? {
-        "assistant" => said_in(&held),
-        "user" => failed_in(&held),
-        // The last line repeats the last thing the agent said, which is already an event of its own.
-        _ => None,
+    let kind = held.get("type").and_then(Value::as_str)?;
+    if kind == shapes.said {
+        return said_in(&held, shapes);
     }
+    if kind == shapes.came_back {
+        return failed_in(&held, shapes);
+    }
+    // The last line repeats the last thing the agent said, which is already an event of its own.
+    None
 }
 
 /// What came back from something the run reached for, when it did not work.
 ///
 /// What did work is what a file holds or a command printed, which is not something a person reads a trace for.
 /// What did not is where a run turned, and it is the first thing looked for.
-fn failed_in(held: &Value) -> Option<String> {
-    let blocks = held.get("message")?.get("content")?.as_array()?;
+fn failed_in(held: &Value, shapes: &Shapes) -> Option<String> {
+    let blocks = blocks_in(held, shapes)?;
     for block in blocks {
-        if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+        if block.get("type").and_then(Value::as_str) != Some(shapes.result.as_str()) {
             continue;
         }
-        if block.get("is_error").and_then(Value::as_bool) != Some(true) {
+        if block.get(&shapes.errored).and_then(Value::as_bool) != Some(true) {
             continue;
         }
         let said = match block.get("content") {
@@ -198,22 +220,19 @@ fn failed_in(held: &Value) -> Option<String> {
 }
 
 /// What an assistant line amounts to.
-fn said_in(held: &Value) -> Option<String> {
-    let blocks = held.get("message")?.get("content")?.as_array()?;
+fn said_in(held: &Value, shapes: &Shapes) -> Option<String> {
+    let blocks = blocks_in(held, shapes)?;
     let mut said = Vec::new();
 
     for block in blocks {
-        match block.get("type").and_then(Value::as_str) {
-            Some("text") => {
-                if let Some(text) = block.get("text").and_then(Value::as_str) {
-                    said.push(shortened(text));
-                }
+        let kind = block.get("type").and_then(Value::as_str);
+        if kind == Some(shapes.text.as_str()) {
+            if let Some(text) = block.get(&shapes.text).and_then(Value::as_str) {
+                said.push(shortened(text));
             }
-            Some("tool_use") => {
-                let name = block.get("name").and_then(Value::as_str).unwrap_or("?");
-                said.push(format!("{name} {}", shortened(&asked_for(block))));
-            }
-            _ => (),
+        } else if kind == Some(shapes.reached_for.as_str()) {
+            let name = block.get("name").and_then(Value::as_str).unwrap_or("?");
+            said.push(format!("{name} {}", shortened(&asked_for(block, shapes))));
         }
     }
 
@@ -225,21 +244,30 @@ fn said_in(held: &Value) -> Option<String> {
 ///
 /// A tool takes an object of arguments and one of them is what a person would say it acted on.
 /// The rest is left in the file.
-fn asked_for(block: &Value) -> String {
+fn asked_for(block: &Value, shapes: &Shapes) -> String {
     let Some(given) = block.get("input").and_then(Value::as_object) else {
         return String::new();
     };
-    for name in ["command", "pattern", "url", "description"] {
+    for name in &shapes.subject {
         if let Some(said) = given.get(name).and_then(Value::as_str) {
             return said.to_owned();
         }
     }
-    for name in ["file_path", "path", "notebook_path"] {
+    for name in &shapes.subject_path {
         if let Some(said) = given.get(name).and_then(Value::as_str) {
             return within_the_work_area(said);
         }
     }
     String::new()
+}
+
+/// The blocks a line holds, at the place the vendor puts them.
+fn blocks_in<'a>(held: &'a Value, shapes: &Shapes) -> Option<&'a Vec<Value>> {
+    let mut at = held;
+    for name in shapes.blocks.split('.') {
+        at = at.get(name)?;
+    }
+    at.as_array()
 }
 
 /// A path as it reads beside the work area it is in.
@@ -274,9 +302,31 @@ mod tests {
 
     use super::*;
 
+    /// The shapes the vendor this build ships for writes.
+    ///
+    /// Written out here rather than read from a definition, so that a test of how a line is
+    /// read does not turn into a test of how a definition is parsed.
+    fn as_claude_writes() -> Shapes {
+        Shapes {
+            said: "assistant".to_owned(),
+            came_back: "user".to_owned(),
+            blocks: "message.content".to_owned(),
+            text: "text".to_owned(),
+            reached_for: "tool_use".to_owned(),
+            result: "tool_result".to_owned(),
+            errored: "is_error".to_owned(),
+            subject: ["command", "pattern", "url", "description"]
+                .map(str::to_owned)
+                .to_vec(),
+            subject_path: ["file_path", "path", "notebook_path"]
+                .map(str::to_owned)
+                .to_vec(),
+        }
+    }
+
     fn in_a_temporary_directory() -> (TempDir, FileTraces) {
         let dir = TempDir::new().unwrap();
-        let traces = FileTraces::at(dir.path().join("traces"));
+        let traces = FileTraces::at(dir.path().join("traces"), as_claude_writes());
         (dir, traces)
     }
 

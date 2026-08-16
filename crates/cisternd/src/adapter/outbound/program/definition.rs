@@ -8,7 +8,7 @@
 //! same whoever the vendor is, and `reader` picks between the few shapes an answer arrives
 //! in by name.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, env, ffi::OsString, fs, path::PathBuf};
 
 use serde::Deserialize;
 
@@ -38,6 +38,71 @@ pub struct Definition {
     pub turns: String,
     pub spend: String,
     pub answer: Answer,
+    pub limit: Limit,
+    pub trace: Trace,
+}
+
+/// How much of the vendor's allowance is left, and how to find out.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Limit {
+    /// Which of the ways of asking this vendor answers to.
+    pub reader: LimitReader,
+    pub program: String,
+    /// The arguments, with `{settings}` standing for the file the reader writes.
+    pub args: Vec<Vec<String>>,
+    /// What the reader writes for the vendor to load, with `{script}` standing for the
+    /// program it should call.
+    pub settings: String,
+    /// What to type once the session is waiting, since the figure is empty until an answer
+    /// has come back.
+    pub prompt: String,
+    /// What the screen says at the two moments something has to be typed.
+    pub trusts: String,
+    pub ready: String,
+    /// Where the figure and the moment it starts over are, and what to multiply the figure
+    /// by to reach hundredths of a percent.
+    pub used: String,
+    pub used_scale: f64,
+    pub resets_at: String,
+    /// How long to wait altogether, how long to leave the session alone before typing, and
+    /// how long to wait for the screen to say more, in seconds and milliseconds.
+    pub give_up_after: u64,
+    pub settles_in: u64,
+    pub between_looks_ms: u64,
+    /// A screen wide enough that the vendor lays it out as usual.
+    pub rows: u16,
+    pub cols: u16,
+}
+
+/// The ways of asking a vendor where its allowance stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum LimitReader {
+    /// Run it with a terminal attached and read the figure off its status line.
+    #[serde(rename = "status-line")]
+    StatusLine,
+}
+
+/// What one line of what a run wrote amounts to.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Trace {
+    /// The kind of line carrying what the agent said, and the kind carrying what came back
+    /// from something it reached for.
+    pub said: String,
+    pub came_back: String,
+    /// Where the blocks are inside a line.
+    pub blocks: String,
+    /// The kinds of block: what it said, what it reached for, and what came back.
+    pub text: String,
+    pub reached_for: String,
+    pub result: String,
+    /// The flag on a result that did not work.
+    pub errored: String,
+    /// Which argument of a tool call names what it acted on, most telling first.
+    pub subject: Vec<String>,
+    /// The same, for arguments holding a path, which is shown from the work area down.
+    pub subject_path: Vec<String>,
 }
 
 /// Where each figure is found in what the program answered.
@@ -76,6 +141,18 @@ pub enum Reader {
     LastJsonLine,
 }
 
+/// Where a user puts a definition of their own.
+///
+/// Under the configuration home rather than beside what ships, so that an upgrade has
+/// nothing of theirs to overwrite and they have nothing of ours to keep in step.
+fn placed_in(config_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+    let base = match config_home {
+        Some(dir) => PathBuf::from(dir),
+        None => PathBuf::from(home?).join(".config"),
+    };
+    Some(base.join("cistern").join("vendors"))
+}
+
 impl Definition {
     /// Reads one, and says which file it could not read rather than only what was wrong.
     pub fn parse(named: &str, written: &str) -> Result<Self, Unavailable> {
@@ -95,6 +172,55 @@ impl Definition {
             .find(|(shipped, _)| *shipped == name)
             .ok_or_else(|| Unavailable::new(format!("no definition for vendor {name}")))?;
         Definition::parse(name, shipped.1)
+    }
+
+    /// The vendor of this name, taking a file the user placed over the one that ships.
+    pub fn found(name: &str) -> Result<Self, Unavailable> {
+        Definition::of(name, placed(name)?.as_deref())
+    }
+
+    /// Every name there is a definition for, the user's and the ones that ship.
+    ///
+    /// What the configuration may be set to. A name with no definition behind it would be
+    /// accepted and then fail on the next task, which is later than it needs to be.
+    pub fn known() -> Vec<String> {
+        let mut names: Vec<String> = SHIPPED.iter().map(|(name, _)| (*name).to_owned()).collect();
+        let Some(at) = placed_in(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME")) else {
+            return names;
+        };
+        let Ok(held) = fs::read_dir(at) else {
+            return names;
+        };
+        for one in held.flatten() {
+            let path = one.path();
+            if path.extension().is_none_or(|end| end != "toml") {
+                continue;
+            }
+            if let Some(name) = path.file_stem().and_then(|name| name.to_str())
+                && !names.iter().any(|known| known == name)
+            {
+                names.push(name.to_owned());
+            }
+        }
+        names.sort();
+        names
+    }
+}
+
+/// What the user wrote for this vendor, if they wrote anything.
+///
+/// A directory that is not there is nobody having written one. A file that is there and
+/// cannot be read is not, since carrying on with the shipped default would quietly ignore
+/// what they asked for.
+fn placed(name: &str) -> Result<Option<String>, Unavailable> {
+    let Some(at) = placed_in(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME")) else {
+        return Ok(None);
+    };
+    let at = at.join(format!("{name}.toml"));
+    match fs::read_to_string(&at) {
+        Ok(written) => Ok(Some(written)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(Unavailable::new(format!("{}: {e}", at.display()))),
     }
 }
 
@@ -124,25 +250,10 @@ mod tests {
 
     #[test]
     fn a_file_the_user_placed_is_read_instead_of_the_one_that_ships() {
-        let theirs = r#"
-            program = "elsewhere"
-            args = [["-p", "{instruction}"]]
-            goal = "/goal done"
-            turns = "10"
-            spend = "1"
-            [answer]
-            reader = "last-json-line"
-            outcome = "subtype"
-            said = "result"
-            cost = "cost"
-            cost_scale = 1.0
-            input = "in"
-            output = "out"
-            cache_written = "cw"
-            cache_read = "cr"
-            [answer.at_ceiling]
-        "#;
-        let read = Definition::of("claude", Some(theirs)).unwrap();
+        let theirs = SHIPPED[0]
+            .1
+            .replace(r#"program = "claude""#, r#"program = "elsewhere""#);
+        let read = Definition::of("claude", Some(&theirs)).unwrap();
         assert_eq!(read.program, "elsewhere");
     }
 
@@ -152,28 +263,27 @@ mod tests {
         assert!(refused.reason.contains("codex"), "{}", refused.reason);
     }
 
+    fn some(s: &str) -> Option<OsString> {
+        Some(OsString::from(s))
+    }
+
+    #[test]
+    fn the_configuration_home_is_where_a_user_puts_one() {
+        assert_eq!(
+            placed_in(some("/x/.config"), some("/home/a")),
+            Some(PathBuf::from("/x/.config/cistern/vendors"))
+        );
+        assert_eq!(
+            placed_in(None, some("/home/a")),
+            Some(PathBuf::from("/home/a/.config/cistern/vendors"))
+        );
+        assert_eq!(placed_in(None, None), None);
+    }
+
     /// A file naming a field this does not have is a file written against another version.
     #[test]
     fn a_field_the_format_does_not_have_fails() {
-        let odd = r#"
-            program = "x"
-            colour = "red"
-            args = []
-            goal = ""
-            turns = "1"
-            spend = "1"
-            [answer]
-            reader = "last-json-line"
-            outcome = "s"
-            said = "r"
-            cost = "c"
-            cost_scale = 1.0
-            input = "i"
-            output = "o"
-            cache_written = "cw"
-            cache_read = "cr"
-            [answer.at_ceiling]
-        "#;
-        assert!(Definition::parse("theirs.toml", odd).is_err());
+        let odd = format!("colour = \"red\"\n{}", SHIPPED[0].1);
+        assert!(Definition::parse("theirs.toml", &odd).is_err());
     }
 }

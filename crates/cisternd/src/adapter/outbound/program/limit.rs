@@ -1,0 +1,331 @@
+//! Where the vendor's allowance stands, read off its own status line.
+//!
+//! The only place that knows there is a terminal and a screen to read words off. Which
+//! words, and where the figure sits once it arrives, come from the definition; the core is
+//! handed a percentage and a time.
+
+use std::{
+    fs,
+    io::Read,
+    path::{Path, PathBuf},
+    sync::mpsc::{self, Receiver, RecvTimeoutError},
+    thread,
+    time::{Duration, Instant},
+};
+
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use serde_json::Value;
+
+use crate::core::port::outbound::{Limit, Reading, Unavailable};
+
+use super::{Definition, definition::LimitReader, path};
+
+/// Reads the vendor's allowance the way its definition says to.
+pub struct ProgramLimit {
+    definition: Definition,
+    /// Where the session is run, and where what it writes is kept.
+    ///
+    /// One place rather than a new one each time.
+    /// The vendor asks whether a directory is trusted the first time it sees one.
+    at: PathBuf,
+}
+
+impl ProgramLimit {
+    /// Takes the place it is given.
+    /// This is how a test reaches a temporary one.
+    pub fn at(definition: Definition, at: PathBuf) -> Self {
+        ProgramLimit { definition, at }
+    }
+
+    /// Beside the sessions, under the same directory `docs/cli.md` names.
+    pub fn in_data_home(definition: Definition) -> Option<Self> {
+        let base = match std::env::var_os("XDG_DATA_HOME") {
+            Some(dir) => PathBuf::from(dir),
+            None => PathBuf::from(std::env::var_os("HOME")?)
+                .join(".local")
+                .join("share"),
+        };
+        Some(ProgramLimit::at(
+            definition,
+            base.join("cistern").join("limit"),
+        ))
+    }
+
+    /// Lays out the place the session runs in and what it writes to.
+    ///
+    /// The status line is a program the vendor hands a JSON object on standard input. This
+    /// writes one that keeps every object, which is the only way the figure leaves the
+    /// session.
+    fn laid_out(&self) -> Result<Held, Unavailable> {
+        let held = Held {
+            work: self.at.join("work"),
+            script: self.at.join("status-line.sh"),
+            settings: self.at.join("settings.json"),
+            written: self.at.join("status-lines.jsonl"),
+            screen: self.at.join("screen.txt"),
+        };
+        let failing = |e: std::io::Error| Unavailable::new(format!("{}: {e}", self.at.display()));
+
+        fs::create_dir_all(&held.work).map_err(failing)?;
+        let _ = fs::remove_file(&held.written);
+        let _ = fs::remove_file(&held.screen);
+        write_runnable(
+            &held.script,
+            &format!(
+                "#!/bin/sh\ncat >> '{}'\nprintf '\\n' >> '{}'\nprintf ' '\n",
+                held.written.display(),
+                held.written.display()
+            ),
+        )
+        .map_err(failing)?;
+        fs::write(
+            &held.settings,
+            self.definition
+                .limit
+                .settings
+                .replace("{script}", &held.script.display().to_string()),
+        )
+        .map_err(failing)?;
+        Ok(held)
+    }
+}
+
+/// The places one reading uses.
+struct Held {
+    work: PathBuf,
+    script: PathBuf,
+    settings: PathBuf,
+    written: PathBuf,
+    /// Where the screen is kept when nothing was read off it.
+    screen: PathBuf,
+}
+
+fn write_runnable(at: &Path, content: &str) -> Result<(), std::io::Error> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::write(at, content)?;
+    fs::set_permissions(at, fs::Permissions::from_mode(0o755))
+}
+
+impl Limit for ProgramLimit {
+    fn read(&self) -> Result<Reading, Unavailable> {
+        let asking = &self.definition.limit;
+        match asking.reader {
+            LimitReader::StatusLine => (),
+        }
+        let held = self.laid_out()?;
+        let failing = |e: &dyn std::fmt::Display| {
+            Unavailable::new(format!("{}: {e}", self.definition.limit.program))
+        };
+
+        let screen_size = PtySize {
+            rows: asking.rows,
+            cols: asking.cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+        let pty = native_pty_system()
+            .openpty(screen_size)
+            .map_err(|e| failing(&e))?;
+        let mut command = CommandBuilder::new(&asking.program);
+        for group in &asking.args {
+            for token in group {
+                command.arg(token.replace("{settings}", &held.settings.display().to_string()));
+            }
+        }
+        command.cwd(&held.work);
+        command.env("TERM", "xterm-256color");
+
+        let mut running = pty.slave.spawn_command(command).map_err(|e| failing(&e))?;
+        // The slave end is the child's.
+        // Holding it open here would keep the read below waiting after the child is gone.
+        drop(pty.slave);
+        let mut screen = pty.master.try_clone_reader().map_err(|e| failing(&e))?;
+        let mut typing = pty.master.take_writer().map_err(|e| failing(&e))?;
+
+        // A terminal waiting to be typed at says nothing, and reading one blocks.
+        // So the reading happens beside the watching.
+        let (said, arriving) = mpsc::channel();
+        thread::spawn(move || {
+            let mut chunk = [0u8; 8192];
+            while let Ok(read) = screen.read(&mut chunk) {
+                if read == 0 || said.send(chunk[..read].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let found = self.watch(&arriving, &mut typing, &held);
+
+        let _ = running.kill();
+        let _ = running.wait();
+        found
+    }
+}
+
+impl ProgramLimit {
+    /// Reads the screen until the status line has carried the figure.
+    ///
+    /// Two moments need something typed: the vendor asks whether the directory is trusted,
+    /// and then it waits for a prompt. The figure is empty until an answer has come back,
+    /// so the prompt is what fills it.
+    fn watch(
+        &self,
+        arriving: &Receiver<Vec<u8>>,
+        typing: &mut Box<dyn std::io::Write + Send>,
+        held: &Held,
+    ) -> Result<Reading, Unavailable> {
+        let asking = &self.definition.limit;
+        let started = Instant::now();
+        let give_up_after = Duration::from_secs(asking.give_up_after);
+        let settles_in = Duration::from_secs(asking.settles_in);
+        let between_looks = Duration::from_millis(asking.between_looks_ms);
+
+        let mut seen = Vec::new();
+        let mut trusted = false;
+        let mut asked = false;
+
+        while started.elapsed() < give_up_after {
+            match arriving.recv_timeout(between_looks) {
+                Ok(chunk) => seen.extend_from_slice(&chunk),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+
+            let said = plainly(&seen);
+            if !trusted && said.contains(&asking.trusts) {
+                let _ = typing.write_all(b"\r");
+                let _ = typing.flush();
+                trusted = true;
+                continue;
+            }
+            if !asked && said.contains(&asking.ready) && started.elapsed() > settles_in {
+                let _ = typing.write_all(format!("{}\r", asking.prompt).as_bytes());
+                let _ = typing.flush();
+                asked = true;
+            }
+            if asked && let Some(reading) = self.kept(&held.written) {
+                return Ok(reading);
+            }
+        }
+
+        // What the session put on the screen, for when nothing came back.
+        let _ = fs::write(&held.screen, &seen);
+        self.kept(&held.written).ok_or_else(|| {
+            Unavailable::new(format!(
+                "the vendor's status line said nothing about its limit; the screen is at {}",
+                held.screen.display()
+            ))
+        })
+    }
+
+    /// The last status line that carried the figure, if one has.
+    fn kept(&self, written: &Path) -> Option<Reading> {
+        let held = fs::read_to_string(written).ok()?;
+        held.lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter_map(|one| self.reading_in(&one))
+            .next_back()
+    }
+
+    /// What one status line says about the allowance, by the paths the definition names.
+    fn reading_in(&self, one: &Value) -> Option<Reading> {
+        let asking = &self.definition.limit;
+        let used = path::total(one, &asking.used)?;
+        let resets_at = path::total(one, &asking.resets_at)?;
+        Some(Reading {
+            used: ((used * asking.used_scale).round().max(0.0) as u64).to_string(),
+            resets_at: (resets_at.round().max(0.0) as u64).to_string(),
+        })
+    }
+}
+
+/// What the screen says, with the control characters and the spacing between the letters taken out.
+/// A terminal writes a word one letter at a time.
+fn plainly(seen: &[u8]) -> String {
+    let mut said = String::new();
+    let mut left = String::from_utf8_lossy(seen).into_owned();
+    while let Some(at) = left.find('\u{1b}') {
+        said.push_str(&left[..at]);
+        let rest = &left[at + 1..];
+        let ends = rest
+            .find(|c: char| c.is_ascii_alphabetic() || c == '\u{7}')
+            .map_or(rest.len(), |end| end + 1);
+        left = rest[ends..].to_owned();
+    }
+    said.push_str(&left);
+    said.retain(|c| !c.is_whitespace());
+    said.to_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+
+    use super::*;
+
+    fn claude() -> Definition {
+        Definition::of("claude", None).unwrap()
+    }
+
+    #[test]
+    fn the_definition_that_ships_says_how_to_ask() {
+        let held = TempDir::new().unwrap();
+        let asking = ProgramLimit::at(claude(), held.path().to_path_buf());
+        assert_eq!(asking.definition.limit.reader, LimitReader::StatusLine);
+        assert!(asking.definition.limit.settings.contains("{script}"));
+    }
+
+    #[test]
+    fn the_control_characters_a_terminal_writes_are_not_part_of_what_it_said() {
+        let written = b"\x1b[1mYes, I \x1b[32mtrust\x1b[0m this folder\x1b[0m";
+        assert_eq!(plainly(written), "yes,itrustthisfolder");
+    }
+
+    #[test]
+    fn the_figure_is_read_by_the_paths_the_definition_names() {
+        let held = TempDir::new().unwrap();
+        let asking = ProgramLimit::at(claude(), held.path().to_path_buf());
+        let line = serde_json::json!({
+            "rate_limits": {
+                "five_hour": { "used_percentage": 7.000000000000001, "resets_at": 1786285800u64 },
+                "seven_day": { "used_percentage": 44, "resets_at": 1786316400u64 }
+            }
+        });
+        assert_eq!(
+            asking.reading_in(&line),
+            Some(Reading {
+                used: "700".to_owned(),
+                resets_at: "1786285800".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn a_status_line_that_says_nothing_about_the_limit_is_not_a_reading() {
+        let held = TempDir::new().unwrap();
+        let asking = ProgramLimit::at(claude(), held.path().to_path_buf());
+        assert_eq!(asking.reading_in(&serde_json::json!({ "cost": {} })), None);
+    }
+
+    /// Runs the vendor.
+    /// Not part of `cargo test`, since it costs a turn.
+    #[test]
+    #[ignore = "reaches the vendor"]
+    fn the_vendor_says_where_its_limit_stands() {
+        let held = TempDir::new().unwrap();
+        let reading = ProgramLimit::at(claude(), held.path().to_path_buf())
+            .read()
+            .unwrap();
+
+        // Hundredths of a percent, so a full limit reads as ten thousand.
+        let used: u64 = reading.used.parse().unwrap();
+        assert!(used <= 10_000, "{used}");
+        assert!(reading.resets_at.parse::<u64>().unwrap() > 0);
+        println!(
+            "used {}.{:02}%, resets at {}",
+            used / 100,
+            used % 100,
+            reading.resets_at
+        );
+    }
+}
