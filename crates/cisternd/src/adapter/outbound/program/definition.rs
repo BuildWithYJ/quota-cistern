@@ -167,11 +167,20 @@ fn lay_over(base: &mut toml::Value, over: toml::Value) {
 /// Under the configuration home rather than beside what ships, so that an upgrade has
 /// nothing of theirs to overwrite and they have nothing of ours to keep in step.
 fn placed_in(config_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
-    let base = match config_home {
-        Some(dir) => PathBuf::from(dir),
-        None => PathBuf::from(home?).join(".config"),
+    let base = match absolute(config_home) {
+        Some(dir) => dir,
+        None => absolute(home)?.join(".config"),
     };
     Some(base.join("cistern").join("vendors"))
+}
+
+/// A variable that names an absolute path, and nothing for one that does not.
+///
+/// The XDG base directory specification holds that a path in one of these has to be absolute
+/// and that anything else is to be ignored. An empty variable taken at its word would have the
+/// daemon read definitions from whatever directory it was started in.
+fn absolute(dir: Option<OsString>) -> Option<PathBuf> {
+    dir.map(PathBuf::from).filter(|dir| dir.is_absolute())
 }
 
 impl Definition {

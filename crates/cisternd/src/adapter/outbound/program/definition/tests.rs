@@ -52,6 +52,22 @@ fn the_configuration_home_is_where_a_user_puts_one() {
     assert_eq!(placed_in(None, None), None);
 }
 
+/// The specification holds that a path in one of these has to be absolute and that anything
+/// else is to be ignored. A variable taken at its word would have the daemon read definitions
+/// from whatever directory it was started in.
+#[test]
+fn a_variable_that_is_not_an_absolute_path_is_passed_over() {
+    assert_eq!(
+        placed_in(some(""), some("/home/a")),
+        Some(PathBuf::from("/home/a/.config/cistern/vendors"))
+    );
+    assert_eq!(
+        placed_in(some(".config"), some("/home/a")),
+        Some(PathBuf::from("/home/a/.config/cistern/vendors"))
+    );
+    assert_eq!(placed_in(some(""), some("")), None);
+}
+
 /// A file naming a field this does not have is a file written against another version.
 #[test]
 fn a_field_the_format_does_not_have_fails() {

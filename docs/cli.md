@@ -659,7 +659,7 @@ cistern config get [<key>]
 
 | Key | Value | Description |
 | --- | --- | --- |
-| `vendor` | a name a definition exists for | The agent to run. `claude` ships with the daemon; another is a file at `$XDG_CONFIG_HOME/cistern/vendors/<name>.toml` |
+| `vendor` | a name a definition exists for | The agent to run. `claude` ships with the daemon, and a file at `$XDG_CONFIG_HOME/cistern/vendors/<name>.toml` adds a name or lays over one that ships, `claude` included |
 
 Configuration is stored at `$XDG_CONFIG_HOME/cistern/config.toml`, or `~/.config/cistern/config.toml` when that variable is unset.
 

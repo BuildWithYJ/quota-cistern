@@ -737,7 +737,7 @@ cistern config get [<key>]
 
 | 키             | 값                                       | 설명                                  |
 | ------------- | --------------------------------------- | ----------------------------------- |
-| `vendor`      | 정의가 있는 이름                        | 실행 에이전트. `claude`는 데몬과 함께 나가고, 다른 벤더는 `$XDG_CONFIG_HOME/cistern/vendors/<이름>.toml` 파일이다 |
+| `vendor`      | 정의가 있는 이름                        | 실행 에이전트. `claude`는 데몬과 함께 배포되며, `$XDG_CONFIG_HOME/cistern/vendors/<이름>.toml` 파일은 새 이름을 더하거나 함께 배포된 정의 위에 겹친다. `claude`도 겹칠 수 있다 |
 
 
 설정은 `$XDG_CONFIG_HOME/cistern/config.toml`에 저장한다. 그 변수가 없으면 `~/.config/cistern/config.toml`이다.
