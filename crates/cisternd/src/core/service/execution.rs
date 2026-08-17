@@ -503,28 +503,36 @@ impl ExecutionService<'_> {
             return Ok(Vec::new());
         };
 
-        // Section 1 stops a session whose usage can no longer be read, and for a share that
-        // reading is the vendor's own limit.
-        let Some(spent) = self.spending(&held)? else {
-            return self
-                .stop(session, StoppedReason::ObservationUnreadable)
-                .map(|()| Vec::new());
+        // A share is read from the vendor, which is outside and slow, so it is read before the
+        // hold below. Section 1 stops a session whose usage can no longer be read.
+        let read = match held.budget().usage {
+            Usage::Share(_) => match self.spending(&held)? {
+                Some(spent) => Some(spent),
+                None => {
+                    return self
+                        .stop(session, StoppedReason::ObservationUnreadable)
+                        .map(|()| Vec::new());
+                }
+            },
+            // A count is the backlog's own sum, so it is taken under the hold rather than
+            // before it. Another task ending in between would leave this one deciding from a
+            // budget that has since gone down.
+            Usage::Tokens(_) => None,
         };
-        // A share cannot be worked out again once the session has stopped.
-        // What was read here is what is reported for it afterwards.
-        let now = self.outside.clock.now();
-        sessions::change(self.outside.sessions, |sessions| {
-            sessions.record(session, spent, now);
-            Ok(())
-        })?;
 
+        let now = self.outside.clock.now();
         let settled = backlog::change(self.outside.tasks, |tasks| {
+            let spent = match read {
+                Some(spent) => spent,
+                None => Spending::Tokens(Consumption::total(tasks.counted_in(session)).tokens()),
+            };
             Ok(
                 match decide(&standing(tasks, &held, spent, self.at_once, now)) {
                     // Stopping takes this store again and the sessions store with it, so it happens
                     // once this hold is given up rather than under it.
-                    Decision::Stop(why) => Settled::Stop(why),
+                    Decision::Stop(why) => Settled::Stop(spent, why),
                     Decision::Start(room) => Settled::Started(
+                        spent,
                         (0..room)
                             .filter_map(|_| tasks.assign(session, now))
                             .collect(),
@@ -533,17 +541,34 @@ impl ExecutionService<'_> {
             )
         })?;
 
+        // A share cannot be worked out again once the session has stopped.
+        // What was read here is what is reported for it afterwards.
+        let spent = settled.spent();
+        sessions::change(self.outside.sessions, |sessions| {
+            sessions.record(session, spent, now);
+            Ok(())
+        })?;
+
         match settled {
-            Settled::Stop(why) => self.stop(session, why).map(|()| Vec::new()),
-            Settled::Started(assigned) => Ok(assigned),
+            Settled::Stop(_, why) => self.stop(session, why).map(|()| Vec::new()),
+            Settled::Started(_, assigned) => Ok(assigned),
         }
     }
 }
 
 /// What one decision came to, carried out of the hold it was made under.
 enum Settled {
-    Stop(StoppedReason),
-    Started(Vec<TaskId>),
+    Stop(Spending, StoppedReason),
+    Started(Spending, Vec<TaskId>),
+}
+
+impl Settled {
+    /// What the session had consumed when the decision was made.
+    fn spent(&self) -> Spending {
+        match self {
+            Settled::Stop(spent, _) | Settled::Started(spent, _) => *spent,
+        }
+    }
 }
 
 /// How the session stands, from the backlog as it is held.
@@ -1701,6 +1726,59 @@ mod tests {
                 running_in(&tasks) <= AT_ONCE,
                 "{} running where the machine takes {AT_ONCE}",
                 running_in(&tasks)
+            );
+        }
+    }
+
+    /// The budget binds before the ceiling on the machine does.
+    ///
+    /// What a session declared in tokens has spent is the backlog's own sum, and a task ending
+    /// records into that same backlog. A count read before the hold is a count from before the
+    /// other thread recorded, and the budget left over then reads higher than it is.
+    ///
+    /// One task here consumes 295,816 tokens, so three fit in a million and four do not.
+    #[test]
+    fn two_tasks_ending_at_once_do_not_assign_past_what_is_left() {
+        for _ in 0..64 {
+            let sessions = Remembered::empty();
+            let tasks = Tasks::holding((1..=10).map(|n| a_task_numbered(&n.to_string())).collect());
+            let areas = Areas::default();
+            let agent = Standing::finishing();
+            let execution = ExecutionService::new(
+                Outside {
+                    sessions: &sessions,
+                    tasks: &tasks,
+                    worktrees: &areas,
+                    agent: &agent,
+                    clock: &STILL,
+                    limit: &UNTOUCHED,
+                    traces: &NOTHING_KEPT,
+                },
+                // Room enough that what is left is what decides, not the machine.
+                8,
+            );
+
+            // One alone, then two once there is a cost to divide by.
+            execution.run(declaring("1M", "8h")).unwrap();
+            execution.carry_on("task:1").unwrap();
+            assert_eq!(running_in(&tasks), 2);
+
+            // Both of those end together, and a fourth would put the session past its million.
+            std::thread::scope(|threads| {
+                threads.spawn(|| execution.carry_on("task:2"));
+                threads.spawn(|| execution.carry_on("task:3"));
+            });
+
+            let started = tasks
+                .load()
+                .unwrap()
+                .tasks
+                .iter()
+                .filter(|task| task.state != "Pending")
+                .count();
+            assert!(
+                started <= 3,
+                "{started} tasks started against a budget for 3"
             );
         }
     }
