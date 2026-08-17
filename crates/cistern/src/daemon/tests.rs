@@ -28,6 +28,23 @@ fn nowhere_to_write_is_nothing_rather_than_a_guess() {
     assert_eq!(state_home(None, None), None);
 }
 
+/// The specification holds that a path in one of these has to be absolute and that anything
+/// else is to be ignored. A variable taken at its word would put the file under whatever
+/// directory the command was run from.
+#[test]
+fn a_variable_that_is_not_an_absolute_path_is_passed_over() {
+    assert_eq!(
+        state_home(set(""), set("/home/someone")),
+        Some(PathBuf::from("/home/someone/.local/state"))
+    );
+    assert_eq!(
+        state_home(set("state"), set("/home/someone")),
+        Some(PathBuf::from("/home/someone/.local/state"))
+    );
+    assert_eq!(state_home(set(""), set("")), None);
+    assert_eq!(state_home(None, set("home/someone")), None);
+}
+
 /// Section 1 gives a socket with no core behind it these two.
 #[test]
 fn nothing_listening_is_told_apart_from_something_going_wrong() {

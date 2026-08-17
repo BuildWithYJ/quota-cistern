@@ -16,7 +16,7 @@ These apply to every command.
 
 ### The core
 
-Every command but `--version` reaches the core, which owns what is stored. A command that finds no core running starts one and carries on, and the core it started keeps running afterwards. `--version` is the exception: it reports whether the two sides match, so a core that is not running is what it has to say.
+Every command reaches the core, which owns what is stored. A command that finds no core running starts one and carries on, and the core it started keeps running afterwards. `--version` is the exception: it reports whether the two sides match, so it starts none.
 
 The core is looked for beside the command line and then on the `PATH`. A command that cannot start one, or that starts one which stops before answering, says so and exits with code 5.
 

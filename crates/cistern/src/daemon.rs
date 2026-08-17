@@ -134,21 +134,30 @@ fn beside_this_one() -> Option<PathBuf> {
 /// writes down between runs without it being data anyone asked for.
 fn kept() -> io::Result<PathBuf> {
     let at = state_home(env::var_os("XDG_STATE_HOME"), env::var_os("HOME"))
-        .ok_or_else(|| gave_up("neither XDG_STATE_HOME nor HOME is set"))?
+        .ok_or_else(|| gave_up("neither XDG_STATE_HOME nor HOME says where to write"))?
         .join("cistern");
     fs::create_dir_all(&at)?;
     Ok(at.join(LOG))
 }
 
-/// `$XDG_STATE_HOME`, or `~/.local/state` where that is unset.
+/// `$XDG_STATE_HOME`, or `~/.local/state` where that says nothing usable.
 ///
 /// The two are arguments rather than reads, so the choice between them can be tested without
 /// setting a variable the whole process sees.
 fn state_home(state: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
-    match state {
-        Some(dir) => Some(PathBuf::from(dir)),
-        None => Some(PathBuf::from(home?).join(".local").join("state")),
+    match absolute(state) {
+        Some(dir) => Some(dir),
+        None => Some(absolute(home)?.join(".local").join("state")),
     }
+}
+
+/// A variable that names an absolute path, and nothing for one that does not.
+///
+/// The XDG base directory specification holds that a path in one of these has to be absolute
+/// and that anything else is to be ignored. An empty variable taken at its word would put the
+/// file under whatever directory the command was run from, which is a different file each time.
+fn absolute(dir: Option<OsString>) -> Option<PathBuf> {
+    dir.map(PathBuf::from).filter(|dir| dir.is_absolute())
 }
 
 /// A failure to start reads as a failure to reach, since that is what the caller was doing.
