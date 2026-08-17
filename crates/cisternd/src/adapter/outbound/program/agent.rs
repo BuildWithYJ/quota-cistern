@@ -93,11 +93,31 @@ impl ProgramAgent {
 }
 
 /// One argument with `{name}` replaced by what was given for it.
+///
+/// One pass, so that what is written stands. Filling each name in turn over the whole string
+/// would leave a value written for one name open to the names that follow, and a task's
+/// instruction goes in among them: an instruction holding the text `{model}` would come out
+/// carrying the model.
 fn fill(token: &str, filling: &[(&str, &str)]) -> String {
-    let mut written = token.to_owned();
-    for (name, value) in filling {
-        written = written.replace(&format!("{{{name}}}"), value);
+    let mut written = String::with_capacity(token.len());
+    let mut left = token;
+
+    while let Some(at) = left.find('{') {
+        written.push_str(&left[..at]);
+        let rest = &left[at..];
+        let Some(end) = rest.find('}') else {
+            break;
+        };
+        let name = &rest[1..end];
+        match filling.iter().find(|(known, _)| *known == name) {
+            Some((_, value)) => written.push_str(value),
+            // A name nothing fills is not a place, so it stays as it was written.
+            None => written.push_str(&rest[..=end]),
+        }
+        left = &rest[end + 1..];
     }
+
+    written.push_str(left);
     written
 }
 

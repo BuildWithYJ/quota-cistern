@@ -407,3 +407,33 @@ fn a_program_that_is_not_installed_fails_rather_than_answering() {
         refused.reason
     );
 }
+
+/// A task's instruction is a person's own words, not a template.
+///
+/// Filling each name in turn over the whole string would leave the instruction open to every
+/// name filled after it, and the model is one of those.
+#[test]
+fn a_place_written_by_one_name_is_not_filled_again_by_the_next() {
+    let filling = [("instruction", "rename {model} to X"), ("model", "haiku")];
+
+    assert_eq!(fill("{instruction}", &filling), "rename {model} to X");
+    assert_eq!(fill("{model}", &filling), "haiku");
+}
+
+#[test]
+fn a_name_nothing_fills_stays_as_it_was_written() {
+    let filling = [("model", "haiku")];
+
+    assert_eq!(fill("--{whatever}", &filling), "--{whatever}");
+    assert_eq!(fill("{model", &filling), "{model");
+    assert_eq!(fill("plain", &filling), "plain");
+}
+
+/// A name with nothing behind it empties the argument, and `arguments` drops the group it was
+/// in. That is how a task naming no model loses `--model` along with the value.
+#[test]
+fn a_name_filled_with_nothing_leaves_the_argument_empty() {
+    let filling = [("model", "")];
+
+    assert_eq!(fill("{model}", &filling), "");
+}
