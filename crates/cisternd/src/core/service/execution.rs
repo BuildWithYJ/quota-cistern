@@ -2,9 +2,9 @@
 
 use crate::core::{
     domain::{
-        Budget, Consumption, Cost, Decision, HUNDREDTHS, NotOpened, Observation, Opening, Session,
-        SessionId, SessionState, Span, Spending, Standing, StoppedReason, Task, TaskId, TaskState,
-        Usage, cost_of, decide,
+        Backlog, Budget, Consumption, Cost, Decision, HUNDREDTHS, NotOpened, Observation, Opening,
+        Session, SessionId, SessionState, Span, Spending, Standing, StoppedReason, Task, TaskId,
+        TaskState, Usage, cost_of, decide,
     },
     port::{
         inbound::{
@@ -518,45 +518,69 @@ impl ExecutionService<'_> {
             Ok(())
         })?;
 
-        match decide(&self.standing(&held, spent)?) {
-            Decision::Stop(why) => self.stop(session, why).map(|()| Vec::new()),
-            Decision::Start(room) => backlog::change(self.outside.tasks, |tasks| {
-                Ok((0..room)
-                    .filter_map(|_| tasks.assign(session, now))
-                    .collect())
-            }),
+        let settled = backlog::change(self.outside.tasks, |tasks| {
+            Ok(
+                match decide(&standing(tasks, &held, spent, self.at_once, now)) {
+                    // Stopping takes this store again and the sessions store with it, so it happens
+                    // once this hold is given up rather than under it.
+                    Decision::Stop(why) => Settled::Stop(why),
+                    Decision::Start(room) => Settled::Started(
+                        (0..room)
+                            .filter_map(|_| tasks.assign(session, now))
+                            .collect(),
+                    ),
+                },
+            )
+        })?;
+
+        match settled {
+            Settled::Stop(why) => self.stop(session, why).map(|()| Vec::new()),
+            Settled::Started(assigned) => Ok(assigned),
         }
     }
+}
 
-    /// How the session stands, read in one go.
-    ///
-    /// One read of the backlog rather than one per question, so that every figure the decision
-    /// is made from comes from the same moment.
-    fn standing(&self, held: &Session, spent: Spending) -> Result<Standing, Refusal> {
-        let session = held.id();
-        let tasks = backlog::read(self.outside.tasks)?;
-        let cost = match (held.budget().usage, spent) {
-            // Tokens mean the same in every session, so what a task costs is what tasks have cost here at all.
-            (Usage::Tokens(_), _) => Some(cost_of(tasks.counted().iter().map(Consumption::tokens))),
-            // A share is how far this session moved the vendor's limit, and only this session's tasks moved it.
-            (Usage::Share(_), Spending::Share(spent)) => Some(Cost {
-                total: spent,
-                over: tasks.ended_in(session) as u64,
-            }),
-            (Usage::Share(_), Spending::Tokens(_)) => None,
-        };
+/// What one decision came to, carried out of the hold it was made under.
+enum Settled {
+    Stop(StoppedReason),
+    Started(Vec<TaskId>),
+}
 
-        Ok(Standing {
-            left: held.budget().left(spent),
-            cost,
-            running: tasks.running_in(session),
-            waiting: tasks.next_to_assign().is_some(),
-            out_of_time: held.out_of_time(self.outside.clock.now()),
-            unreadable: matches!(tasks.consumed_by(session), Observation::Unreadable { .. }),
-            at_once: self.at_once,
-        })
+/// How the session stands, from the backlog as it is held.
+///
+/// Every figure comes from the one backlog the assignment is made against, so none of them can
+/// be from before another thread assigned.
+fn standing(
+    tasks: &Backlog,
+    held: &Session,
+    spent: Spending,
+    at_once: usize,
+    now: u64,
+) -> Standing {
+    let session = held.id();
+    let cost = match (held.budget().usage, spent) {
+        // Tokens mean the same in every session, so what a task costs is what tasks have cost here at all.
+        (Usage::Tokens(_), _) => Some(cost_of(tasks.counted().iter().map(Consumption::tokens))),
+        // A share is how far this session moved the vendor's limit, and only this session's tasks moved it.
+        (Usage::Share(_), Spending::Share(spent)) => Some(Cost {
+            total: spent,
+            over: tasks.ended_in(session) as u64,
+        }),
+        (Usage::Share(_), Spending::Tokens(_)) => None,
+    };
+
+    Standing {
+        left: held.budget().left(spent),
+        cost,
+        running: tasks.running_in(session),
+        waiting: tasks.next_to_assign().is_some(),
+        out_of_time: held.out_of_time(now),
+        unreadable: matches!(tasks.consumed_by(session), Observation::Unreadable { .. }),
+        at_once,
     }
+}
 
+impl ExecutionService<'_> {
     /// Stops the session and ends whatever it still had running.
     fn stop(&self, session: SessionId, why: StoppedReason) -> Result<(), Refusal> {
         let now = self.outside.clock.now();
@@ -1632,6 +1656,64 @@ mod tests {
         assert_eq!(session.state, "stopped");
         assert_eq!(session.stopped_reason.as_deref(), Some("budget hardlock"));
         assert_eq!(tasks.load().unwrap().tasks[1].state, "Pending");
+    }
+
+    /// Two of a session's tasks ending at once each decide how many more fit.
+    ///
+    /// A count of what is running that was read before the backlog was held is a count from
+    /// before the other thread assigned, and both threads then assign against it. What follows
+    /// is more running than the machine was told to run.
+    ///
+    /// The interleaving is the machine's to choose, so this runs the scene many times rather
+    /// than once.
+    #[test]
+    fn two_tasks_ending_at_once_do_not_start_more_than_the_machine_takes() {
+        for _ in 0..64 {
+            let sessions = Remembered::empty();
+            let tasks = Tasks::holding((1..=10).map(|n| a_task_numbered(&n.to_string())).collect());
+            let areas = Areas::default();
+            let agent = Standing::finishing();
+            let execution = ExecutionService::new(
+                Outside {
+                    sessions: &sessions,
+                    tasks: &tasks,
+                    worktrees: &areas,
+                    agent: &agent,
+                    clock: &STILL,
+                    limit: &UNTOUCHED,
+                    traces: &NOTHING_KEPT,
+                },
+                AT_ONCE,
+            );
+
+            // One starts alone, and the one after it fills the machine.
+            execution.run(declaring("2M", "8h")).unwrap();
+            execution.carry_on("task:1").unwrap();
+            assert_eq!(running_in(&tasks), AT_ONCE);
+
+            // Two of those four end together.
+            std::thread::scope(|threads| {
+                threads.spawn(|| execution.carry_on("task:2"));
+                threads.spawn(|| execution.carry_on("task:3"));
+            });
+
+            assert!(
+                running_in(&tasks) <= AT_ONCE,
+                "{} running where the machine takes {AT_ONCE}",
+                running_in(&tasks)
+            );
+        }
+    }
+
+    /// How many of a store's tasks are running.
+    fn running_in(tasks: &Tasks) -> usize {
+        tasks
+            .load()
+            .unwrap()
+            .tasks
+            .iter()
+            .filter(|task| task.state == "Running")
+            .count()
     }
 
     /// Section 2.2 lists them newest first, which is the order the numbers were handed out in.
