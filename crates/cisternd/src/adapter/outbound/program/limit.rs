@@ -14,6 +14,7 @@ use std::{
 };
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::core::port::outbound::{Limit, Reading, Unavailable};
@@ -69,25 +70,48 @@ impl ProgramLimit {
         fs::create_dir_all(&held.work).map_err(failing)?;
         let _ = fs::remove_file(&held.written);
         let _ = fs::remove_file(&held.screen);
+        let writes_to = quoted(&held.written);
         write_runnable(
             &held.script,
-            &format!(
-                "#!/bin/sh\ncat >> '{}'\nprintf '\\n' >> '{}'\nprintf ' '\n",
-                held.written.display(),
-                held.written.display()
-            ),
+            &format!("#!/bin/sh\ncat >> {writes_to}\nprintf '\\n' >> {writes_to}\nprintf ' '\n"),
         )
         .map_err(failing)?;
-        fs::write(
-            &held.settings,
-            self.definition
-                .limit
-                .settings
-                .replace("{script}", &held.script.display().to_string()),
-        )
-        .map_err(failing)?;
+        fs::write(&held.settings, self.settings(&held.script)?).map_err(failing)?;
         Ok(held)
     }
+
+    /// What the vendor is given to load, as JSON.
+    ///
+    /// The definition holds a table and a serializer writes it out, so a path with a quote or
+    /// a backslash in it is the serializer's to escape rather than this file's to get right.
+    fn settings(&self, script: &Path) -> Result<String, Unavailable> {
+        let mut held = self.definition.limit.settings.clone();
+        fill(&mut held, script);
+        let as_json: Value = Deserialize::deserialize(held)
+            .map_err(|e: toml::de::Error| Unavailable::new(format!("limit.settings: {e}")))?;
+        serde_json::to_string(&as_json)
+            .map_err(|e| Unavailable::new(format!("limit.settings: {e}")))
+    }
+}
+
+/// Puts the reader's own script where the definition left a place for it.
+fn fill(held: &mut toml::Value, script: &Path) {
+    match held {
+        toml::Value::String(written) => {
+            *written = written.replace("{script}", &script.display().to_string());
+        }
+        toml::Value::Table(held) => held.iter_mut().for_each(|(_, one)| fill(one, script)),
+        toml::Value::Array(held) => held.iter_mut().for_each(|one| fill(one, script)),
+        _ => {}
+    }
+}
+
+/// A path as one single-quoted word of a shell script.
+///
+/// A quote in the path would end the quoting and leave the rest of it to the shell. The path
+/// comes from `XDG_DATA_HOME` or `HOME`, so what is in it is nobody's to promise here.
+fn quoted(path: &Path) -> String {
+    format!("'{}'", path.display().to_string().replace('\'', r"'\''"))
 }
 
 /// The places one reading uses.

@@ -53,7 +53,11 @@ pub struct Limit {
     pub args: Vec<Vec<String>>,
     /// What the reader writes for the vendor to load, with `{script}` standing for the
     /// program it should call.
-    pub settings: String,
+    ///
+    /// A table rather than the text of one. It is written out as JSON, and letting a
+    /// serializer make that means no path has to be quoted by hand and nothing here has to
+    /// hold to JSON's syntax to be read.
+    pub settings: toml::Value,
     /// What to type once the session is waiting, since the figure is empty until an answer
     /// has come back.
     pub prompt: String,

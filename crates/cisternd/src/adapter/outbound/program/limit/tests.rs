@@ -11,7 +11,14 @@ fn the_definition_that_ships_says_how_to_ask() {
     let held = TempDir::new().unwrap();
     let asking = ProgramLimit::at(claude(), held.path().to_path_buf());
     assert_eq!(asking.definition.limit.reader, LimitReader::StatusLine);
-    assert!(asking.definition.limit.settings.contains("{script}"));
+    assert!(
+        asking
+            .definition
+            .limit
+            .settings
+            .to_string()
+            .contains("{script}")
+    );
 }
 
 #[test]
@@ -78,11 +85,37 @@ fn the_settings_written_are_what_the_vendor_read_before() {
         .unwrap();
     let written = std::fs::read_to_string(&laid.settings).unwrap();
 
+    // As a document rather than as bytes. What the vendor reads is JSON, which says nothing
+    // about the order the keys were written in.
     assert_eq!(
-        written,
-        format!(
-            r#"{{"statusLine":{{"type":"command","command":"{}"}}}}"#,
-            laid.script.display()
-        )
+        serde_json::from_str::<Value>(&written).unwrap(),
+        serde_json::json!({
+            "statusLine": { "type": "command", "command": laid.script.display().to_string() }
+        })
     );
+}
+
+/// The place the reader writes in comes from `XDG_DATA_HOME` or `HOME`, so what is in that
+/// path is nobody's to promise here.
+#[test]
+fn a_path_with_a_quote_in_it_leaves_both_files_readable() {
+    let held = TempDir::new().unwrap();
+    let awkward = held.path().join(r#"it's "quoted" and \ backslashed"#);
+    let laid = ProgramLimit::at(claude(), awkward).laid_out().unwrap();
+
+    // The settings are still a document the vendor can read.
+    let written = std::fs::read_to_string(&laid.settings).unwrap();
+    let read: Value = serde_json::from_str(&written).unwrap();
+    assert_eq!(
+        read["statusLine"]["command"].as_str(),
+        Some(laid.script.display().to_string().as_str())
+    );
+
+    // And the script still names the one file, whatever the shell makes of the rest.
+    let script = std::fs::read_to_string(&laid.script).unwrap();
+    let quoted = format!(
+        "'{}'",
+        laid.written.display().to_string().replace('\'', r"'\''")
+    );
+    assert!(script.contains(&quoted), "{script}");
 }

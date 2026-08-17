@@ -76,9 +76,9 @@ args = [
   ["--model", "haiku"],
 ]
 
-# What the vendor is given to load. `{script}` is the program the reader wrote, which is
-# the only way the figure leaves the session.
-settings = '{"statusLine":{"type":"command","command":"{script}"}}'
+# What the vendor is given to load, written out as JSON. `{script}` is the program the reader
+# wrote, which is the only way the figure leaves the session.
+settings = { statusLine = { type = "command", command = "{script}" } }
 
 # Sent once, because the figure is empty until an answer has come back.
 prompt = "say ok and nothing else"
