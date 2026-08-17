@@ -9,15 +9,25 @@ mod platform {
 
     use interprocess::local_socket::{GenericFilePath, Name, prelude::*};
 
-    /// `$XDG_RUNTIME_DIR`, or `~/.local/state` where that is unset.
+    /// `$XDG_RUNTIME_DIR`, or `~/.local/state` where that says nothing usable.
     ///
     /// The two are arguments rather than reads.
     /// The choice between them can be tested without setting a variable the whole process sees.
     pub(super) fn base_of(runtime: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
-        if let Some(runtime) = runtime {
-            return Some(PathBuf::from(runtime));
+        if let Some(runtime) = absolute(runtime) {
+            return Some(runtime);
         }
-        Some(PathBuf::from(home?).join(".local").join("state"))
+        Some(absolute(home)?.join(".local").join("state"))
+    }
+
+    /// A variable that names an absolute path, and nothing for one that does not.
+    ///
+    /// The XDG base directory specification holds that a path in one of these has to be
+    /// absolute and that anything else is to be ignored. An empty variable taken at its word
+    /// would put the socket under whatever directory a command was run from, and a command
+    /// run somewhere else would find none and start a second core.
+    fn absolute(dir: Option<OsString>) -> Option<PathBuf> {
+        dir.map(PathBuf::from).filter(|dir| dir.is_absolute())
     }
 
     fn base() -> Option<PathBuf> {
@@ -138,5 +148,22 @@ mod tests {
     #[test]
     fn neither_leaves_nowhere_to_put_it() {
         assert_eq!(base_of(None, None), None);
+    }
+
+    /// The specification holds that a path in one of these has to be absolute and that
+    /// anything else is to be ignored. A variable taken at its word would put the socket under
+    /// whatever directory a command was run from, and a command run somewhere else would find
+    /// none and start a second core.
+    #[test]
+    fn a_variable_that_is_not_an_absolute_path_is_passed_over() {
+        assert_eq!(
+            base_of(some(""), some("/home/a")),
+            Some(PathBuf::from("/home/a/.local/state"))
+        );
+        assert_eq!(
+            base_of(some("run/user/1000"), some("/home/a")),
+            Some(PathBuf::from("/home/a/.local/state"))
+        );
+        assert_eq!(base_of(some(""), some("")), None);
     }
 }
