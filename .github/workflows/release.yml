@@ -1,0 +1,91 @@
+name: release
+
+# The tag is the release. The changelog is written and the milestone closed before it is
+# pushed, so there is nothing left for anyone to approve afterwards.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  # Made once and before the builds, so that two runners do not each make one and leave two
+  # releases for the tag. It is a draft until the files are on it.
+  open:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: A release for this tag, if there is not one already
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --draft --title "$TAG" --notes ""
+
+  attach:
+    needs: open
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      # rust-toolchain.toml pins the version, so this installs that one.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
+          target: ${{ matrix.target }}
+
+      # Named rather than left to the host, so that the target in the file name is the target
+      # that was built and a row added later cannot quietly say one thing and build another.
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+
+      # A tag naming a version the workspace does not carry would ship binaries that answer
+      # with another one, and `--version` is how a reader tells the two sides apart.
+      - name: The version built is the version tagged
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # `--version` ends with 5 where no core is running, which is the case here, and it
+          # says what this side is on the first line either way.
+          said=$(./target/${{ matrix.target }}/release/cistern --version 2>&1 || true)
+          built=$(printf '%s\n' "$said" | head -1 | cut -d' ' -f2)
+          [ "v$built" = "$TAG" ] || {
+            echo "the tag is $TAG and the build answers ${built:-nothing}"
+            exit 1
+          }
+
+      # The two together, since the command line looks for the daemon beside itself, and
+      # nothing else, so that unpacking into a directory on the PATH puts only them there.
+      # The name carries no version: `releases/latest/download/<name>` needs a fixed one for
+      # the README to give a command anyone can paste.
+      - name: Gather them
+        run: tar -czf "cistern-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" cistern cisternd
+
+      - name: Attach it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "$TAG" "cistern-${{ matrix.target }}.tar.gz" --clobber
+
+  # Once both archives are on it. A release is never public without them, and nobody has to
+  # press anything for it to become public with them.
+  publish:
+    needs: attach
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Let it out
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "$TAG" --draft=false

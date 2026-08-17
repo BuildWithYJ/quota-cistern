@@ -18,11 +18,14 @@ quota-cistern은 그 제약을 없앱니다. 위임할 작업을 등록하고 �
 
 ## 시작하기
 
-설치하면 `cisternd`와 `cistern` 두 명령이 생깁니다.
+설치하면 `cisternd`와 `cistern` 두 명령이 생깁니다. 기계에 맞는 압축 파일을 받아 `PATH`에 있는 디렉터리에 풉니다. 명령줄이 데몬을 자기 옆에서 찾으므로 둘이 같은 디렉터리에 있어야 합니다.
 
 ```console
-$ cargo install --git https://github.com/BuildWithYJ/quota-cistern cistern cisternd
+$ mkdir -p ~/.local/bin
+$ curl -L https://github.com/BuildWithYJ/quota-cistern/releases/latest/download/cistern-aarch64-apple-darwin.tar.gz | tar -xz -C ~/.local/bin
 ```
+
+리눅스에서는 `cistern-x86_64-unknown-linux-gnu.tar.gz`를 받습니다. 이후 `cistern`을 찾지 못하면 그 디렉터리가 `PATH`에 없는 것이므로 `PATH`에 있는 디렉터리에 풉니다. macOS에서는 브라우저 대신 `curl`로 받는 것이 중요합니다. 브라우저로 받은 파일에는 표시가 붙고 macOS가 서명 없는 그런 파일의 실행을 거부합니다.
 
 `cisternd`는 작업을 실행하고 상태를 보관하는 데몬입니다. 실행한 채로 두고 작업하며, 대기 중에는 아무것도 출력하지 않습니다.
 
