@@ -4,6 +4,7 @@ use std::process::ExitCode;
 
 mod cli;
 mod config;
+mod daemon;
 mod review;
 mod session;
 mod task;

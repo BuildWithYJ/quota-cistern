@@ -5,10 +5,10 @@
 
 use std::process::ExitCode;
 
-use cistern_contract::{Response, code::CORE_ERROR, exchange};
+use cistern_contract::{Response, code::CORE_ERROR};
 use serde_json::Value;
 
-use crate::cli::SessionCommand;
+use crate::{cli::SessionCommand, daemon};
 
 pub fn run(usage: &str, time: &str, model: Option<String>) -> ExitCode {
     send(
@@ -43,7 +43,7 @@ pub fn query(command: SessionCommand) -> ExitCode {
 
 /// Asks the core and prints what came back.
 fn send(command: &str, params: Value, print: fn(&Value)) -> ExitCode {
-    match exchange::ask(command, params) {
+    match daemon::ask(command, params) {
         Ok(Response::Data(answer)) => {
             print(&answer.data);
             ExitCode::SUCCESS

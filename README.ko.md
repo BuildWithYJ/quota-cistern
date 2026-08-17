@@ -24,13 +24,9 @@ quota-cistern은 그 제약을 없앱니다. 위임할 작업을 등록하고 �
 $ cargo install --git https://github.com/BuildWithYJ/quota-cistern cistern cisternd
 ```
 
-`cisternd`는 작업을 실행하고 상태를 보관하는 데몬입니다. 실행한 채로 두고 작업하며, 대기 중에는 아무것도 출력하지 않습니다.
+`cisternd`는 작업을 실행하고 상태를 보관하는 데몬입니다. 첫 `cistern` 명령이 데몬을 실행하고 그 데몬은 이후에도 계속 실행되므로 직접 띄울 것은 없습니다. 데몬이 출력하는 내용은 `~/.local/state/cistern/daemon.log`에 기록합니다.
 
-```console
-$ cisternd
-```
-
-이후에는 어느 디렉터리에서든 `cistern`으로 지시합니다. 양쪽이 연결되었는지는 `--version`으로 확인합니다.
+`cistern`은 어느 디렉터리에서든 동작합니다. 양쪽이 연결되었는지는 `--version`으로 확인하며, 이 명령만은 데몬을 실행하지 않습니다. 코어가 실행 중이 아니라는 사실이 곧 이 명령의 답이기 때문입니다.
 
 ```console
 $ cistern --version

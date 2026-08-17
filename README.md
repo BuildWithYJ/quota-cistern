@@ -26,13 +26,9 @@ Installing gives you two commands, `cisternd` and `cistern`.
 $ cargo install --git https://github.com/BuildWithYJ/quota-cistern cistern cisternd
 ```
 
-`cisternd` is the daemon that runs the tasks and holds the state. Leave it running while you work; it says nothing while it is idle.
+`cisternd` is the daemon that runs the tasks and holds the state. The first `cistern` command starts one and it keeps running afterwards, so there is nothing to start by hand. What it writes goes to `~/.local/state/cistern/daemon.log`.
 
-```console
-$ cisternd
-```
-
-After that, `cistern` works from any directory. `--version` says whether the two sides are talking.
+`cistern` works from any directory. `--version` says whether the two sides are talking, and it is the one command that does not start a daemon, since a core that is not running is what it has to report.
 
 ```console
 $ cistern --version

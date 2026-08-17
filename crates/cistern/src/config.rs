@@ -5,10 +5,10 @@
 
 use std::process::ExitCode;
 
-use cistern_contract::{Response, code::CORE_ERROR, exchange};
+use cistern_contract::{Response, code::CORE_ERROR};
 use serde_json::Value;
 
-use crate::cli::ConfigCommand;
+use crate::{cli::ConfigCommand, daemon};
 
 pub fn run(command: ConfigCommand) -> ExitCode {
     match command {
@@ -26,7 +26,7 @@ pub fn run(command: ConfigCommand) -> ExitCode {
 /// A refusal carries the code `docs/cli.md` gives it.
 /// The surface exits with the core's answer rather than deciding one of its own.
 fn send(command: &str, params: Value, print: fn(&Value)) -> ExitCode {
-    match exchange::ask(command, params) {
+    match daemon::ask(command, params) {
         Ok(Response::Data(answer)) => {
             print(&answer.data);
             ExitCode::SUCCESS
