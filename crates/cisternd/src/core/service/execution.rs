@@ -49,15 +49,20 @@ impl<'a> ExecutionService<'a> {
         ExecutionService { outside, at_once }
     }
 
-    /// How far the vendor's limit is spent, as a whole number of percent.
+    /// How far the vendor's limit is spent, and when the window it counts in begins again.
     ///
-    /// Only a session declared as a share asks, since only a share is measured against it and asking costs something.
-    fn limit_now(&self) -> Result<u64, Refusal> {
+    /// Only a session declared as a share asks, since only a share is measured against it and
+    /// asking costs something.
+    ///
+    /// A window that cannot be read is nothing rather than a failure. It tells one window from
+    /// the next and the figure is still worth having without it.
+    fn limit_now(&self) -> Result<(u64, Option<u64>), Refusal> {
         let reading = self.outside.limit.read()?;
-        reading
+        let used = reading
             .used
             .parse()
-            .map_err(|_| sessions::unreadable("used", &reading.used))
+            .map_err(|_| sessions::unreadable("used", &reading.used))?;
+        Ok((used, reading.resets_at.parse().ok()))
     }
 }
 
@@ -88,7 +93,7 @@ impl ExecutionUseCase for ExecutionService<'_> {
         // A share is measured from where the vendor's limit stood when this session had spent nothing.
         let started_at = self.outside.clock.now();
         let limit_at_start = match usage {
-            Usage::Share(_) => Some(self.limit_now()?),
+            Usage::Share(_) => Some(self.limit_now()?.0),
             Usage::Tokens(_) => None,
         };
 
@@ -189,7 +194,12 @@ impl ExecutionUseCase for ExecutionService<'_> {
                 time: self.elapsed(session).to_string(),
             },
             stopped_reason: session.stopped_reason().map(|why| why.to_string()),
-            resets_at: session.resets_at().map(|at| at.to_string()),
+            // Section 2.2 gives this to a session the vendor turned away. Every share reads it
+            // now, so the reason it stopped is what decides, not whether it was ever read.
+            resets_at: match session.stopped_reason() {
+                Some(StoppedReason::VendorLimit) => session.resets_at().map(|at| at.to_string()),
+                _ => None,
+            },
             updated_at: session.updated_at().to_string(),
             tasks: ran,
         })
@@ -432,7 +442,7 @@ impl ExecutionService<'_> {
     /// The run failed either way.
     /// Calling it the vendor's doing on a question nobody could answer would stop a session that had room left.
     fn at_its_limit(&self) -> bool {
-        self.limit_now().is_ok_and(|used| used >= FULL)
+        self.limit_now().is_ok_and(|(used, _)| used >= FULL)
     }
 
     /// A task the vendor would not run, and the session it belonged to.
@@ -587,11 +597,11 @@ impl ExecutionService<'_> {
         let now = self.outside.clock.now();
         match (held.budget().usage, held.limit_at_start()) {
             (Usage::Share(_), Some(_)) => {
-                let Ok(used) = self.limit_now() else {
+                let Ok((used, resets_at)) = self.limit_now() else {
                     return Ok(None);
                 };
                 sessions::change(self.outside.sessions, |sessions| {
-                    Ok(sessions.measured(session, used, now))
+                    Ok(sessions.measured(session, used, resets_at, now))
                 })
             }
             // A share with nothing to measure from is a store this core cannot use.
@@ -1915,6 +1925,47 @@ mod tests {
         let report = execution.session("1").unwrap();
         assert_eq!(report.state, "running");
         assert_eq!(report.stopped_reason, None);
+        assert_eq!(report.resets_at, None);
+    }
+
+    /// Section 2.2 gives this to a session the vendor turned away, and a share reads the window
+    /// at every look, so a share that stopped for any other reason has one to report and must
+    /// not.
+    #[test]
+    fn a_share_that_stopped_for_another_reason_says_nothing_about_the_limit_starting_over() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task()]);
+        let areas = Areas::default();
+        let agent = Standing::finishing();
+        // One point every time it is asked, against a budget of one point.
+        let moving = Advancing {
+            used: Mutex::new(0),
+            step: 100,
+        };
+        let execution = ExecutionService::new(
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &moving,
+                traces: &NOTHING_KEPT,
+            },
+            AT_ONCE,
+        );
+
+        execution.run(declaring("1%", "8h")).unwrap();
+        execution.carry_on("task:1").unwrap();
+
+        // The store holds the window every look recorded.
+        assert_eq!(
+            sessions.load().sessions[0].resets_at.as_deref(),
+            Some("1786285800")
+        );
+
+        let report = execution.session("1").unwrap();
+        assert_eq!(report.stopped_reason.as_deref(), Some("budget hardlock"));
         assert_eq!(report.resets_at, None);
     }
 
