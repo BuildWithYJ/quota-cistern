@@ -59,6 +59,9 @@ cache_read = "modelUsage.*.cacheReadInputTokens"
 # same places are filled here as in `args`.
 [answer.at_ceiling]
 error_max_turns = "the agent was cut off after {turns} turns"
+# What 2.1.227 answers with for `--max-budget-usd`, checked against it. `error_max_budget` is
+# what an earlier one said, and both are kept so that either answers the same way.
+error_max_budget_usd = "the agent was cut off at {spend} dollars"
 error_max_budget = "the agent was cut off at {spend} dollars"
 
 # How much of the five-hour allowance is left.

@@ -204,6 +204,31 @@ fn an_answer_that_says_nothing_about_a_count_is_not_a_count_of_nothing() {
     assert!(matches!(ended.observed, Observed::Unreadable { .. }));
 }
 
+/// What the vendor answers with when the spend ceiling cut the run off.
+///
+/// Checked against Claude Code 2.1.227: `--max-budget-usd` ends the run with
+/// `error_max_budget_usd`. A word the definition does not carry would have this reported as a
+/// failure rather than as a run that reached a ceiling we set.
+#[test]
+fn a_run_cut_off_at_the_spend_ceiling_says_so_rather_than_failing() {
+    let held = TempDir::new().unwrap();
+    let cut_off = answer_with(|answer| {
+        answer["subtype"] = json!("error_max_budget_usd");
+        answer["result"] = Value::Null;
+    });
+    let ended = standing_in(&held)
+        .work(working(
+            &held.path().display().to_string(),
+            &format!("{}; exit 1", answering(&held, &cut_off)),
+        ))
+        .unwrap();
+
+    assert_eq!(
+        ended.reason.as_deref(),
+        Some("the agent was cut off at 20 dollars")
+    );
+}
+
 /// A run that was cut off still consumed what it consumed.
 #[test]
 fn a_run_that_failed_still_reports_what_it_consumed() {
