@@ -5,7 +5,10 @@
 //! The rule that one line carries one message is written here once.
 //! Whether the two versions match is settled here too, from the envelope alone.
 
-use std::io::{self, BufRead, BufReader, Write};
+use std::{
+    io::{self, BufRead, BufReader, Write},
+    time::Duration,
+};
 
 use interprocess::local_socket::{Listener, ListenerOptions, Name, Stream, prelude::*};
 
@@ -53,6 +56,14 @@ pub struct Server(Listener);
 /// One connection that has arrived and not yet been answered.
 pub struct Exchange(Stream);
 
+/// How long a connection has to send its request.
+///
+/// Apache's figure for reading a request header, which is the closest thing anyone has
+/// settled on. It is far longer than this needs, since a surface writes as soon as it has
+/// connected and the two are on one machine; what it is here for is a connection that never
+/// writes at all.
+const WITHIN: Duration = Duration::from_secs(20);
+
 /// Opens the socket.
 ///
 /// Fails with [`io::ErrorKind::AddrInUse`] when a core is already listening.
@@ -85,6 +96,24 @@ impl Exchange {
     /// Neither does a request from a surface of another version.
     /// What arrived is the framing's business, and the framing is here.
     pub fn answer(self, respond: impl FnOnce(Request) -> Response) -> io::Result<()> {
+        self.answer_within(WITHIN, respond)
+    }
+
+    /// The same, waiting only as long as it is told to.
+    ///
+    /// [`answer`](Self::answer) is this with the figure above. A test reaches a shorter wait
+    /// through here, the way it reaches a temporary socket through [`ask_at`].
+    pub(crate) fn answer_within(
+        self,
+        within: Duration,
+        respond: impl FnOnce(Request) -> Response,
+    ) -> io::Result<()> {
+        // A surface writes its request as soon as it has connected, so anything that has not
+        // arrived by now is not going to. Without this the read waits for as long as whoever
+        // connected leaves it waiting, and the core answers that connection for that whole
+        // time.
+        self.0.set_recv_timeout(Some(within))?;
+
         let mut line = String::new();
         // Connecting and leaving is how a surface finds out whether anyone is listening.
         // There is nothing to answer and nothing went wrong.
@@ -216,6 +245,7 @@ mod round_trip {
             atomic::{AtomicBool, Ordering},
         },
         thread,
+        time::Duration,
     };
 
     use interprocess::local_socket::GenericFilePath;
@@ -275,6 +305,38 @@ mod round_trip {
             }
             Response::Error(failure) => panic!("expected an answer, got {failure:?}"),
         }
+    }
+
+    /// A connection that holds without writing would otherwise be answered for as long as it
+    /// is held, and the core has a thread on it the whole time.
+    #[test]
+    fn a_connection_that_writes_nothing_is_given_up_on() {
+        let (_dir, path) = a_socket();
+        let server = listen_at(address(&path)).unwrap();
+        let reached = Arc::new(AtomicBool::new(false));
+        let asked = Arc::clone(&reached);
+
+        let serving = thread::spawn(move || {
+            let exchange = server.accept().unwrap();
+            exchange.answer_within(Duration::from_millis(50), |request| {
+                asked.store(true, Ordering::SeqCst);
+                Response::Data(Answer {
+                    command: request.command,
+                    data: serde_json::Value::Null,
+                })
+            })
+        });
+
+        // Connected and held open, with nothing written.
+        let held = Stream::connect(address(&path)).unwrap();
+        let answered = serving.join().unwrap();
+        drop(held);
+
+        assert!(
+            answered.is_err(),
+            "the read waited for a write that never came"
+        );
+        assert!(!reached.load(Ordering::SeqCst));
     }
 
     #[test]
