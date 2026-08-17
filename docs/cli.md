@@ -31,7 +31,7 @@ What the core writes goes to `$XDG_STATE_HOME/cistern/daemon.log`, or `~/.local/
 | 2 | Usage error | Bad argument or flag |
 | 3 | Not found | No such session or task id |
 | 4 | State conflict | Operation not possible in the current state |
-| 5 | Core error | The core is not running, its version does not match the surface's, or it failed while handling the request |
+| 5 | Core error | No core could be started, the one that was started stopped before answering, its version does not match the surface's, or it failed while handling the request |
 
 ### Output
 
