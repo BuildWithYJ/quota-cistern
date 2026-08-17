@@ -28,7 +28,7 @@ An adapter has a port on one side and something outside on the other. Code that 
 
 An inbound adapter turns an envelope into a use case call and the answer back into an envelope. Which exit code a refusal becomes is decided here; the core never names one.
 
-An outbound adapter is where a file format and a git invocation belong. A vendor's own words do not belong in code at all: they sit in a definition the daemon reads, and `cisternd/tests/architecture.rs` fails on a vendor's field name written anywhere in Rust.
+An outbound adapter is where a file format and a git invocation belong. A vendor's own words do not belong in code at all: they sit in a definition the daemon reads, and `cisternd/tests/architecture.rs` fails on a vendor's field name written in the daemon's own code. Tests are the exception, since a vendor's answer has to be written out somewhere for the code that reads one to be tested against it.
 
 Outbound adapters are grouped by the means rather than by the outside: `program`, `git`, `file`, and the clock. Whatever a means needs in order to work — a stand-in used in tests, the part every file store shares — sits in that directory too.
 
