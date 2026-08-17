@@ -108,7 +108,8 @@ fn main() -> ExitCode {
     };
 
     // Each group owns the names its commands arrive under, so this offers the request to one and then the next.
-    // Made before the threads, since each of them answers with it and they may outlive nothing here.
+    // Made outside the threads below, since each of them answers with it and one made inside
+    // would go before they do.
     let answer = |request| {
         inbound::configuration::respond(&configuration, request)
             .or_else(|request| inbound::backlog::respond(&backlog, request))
