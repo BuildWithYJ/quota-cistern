@@ -7,7 +7,7 @@
 
 use std::{
     io::{self, BufRead, BufReader, Write},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use interprocess::local_socket::{Listener, ListenerOptions, Name, Stream, prelude::*};
@@ -108,24 +108,52 @@ impl Exchange {
         within: Duration,
         respond: impl FnOnce(Request) -> Response,
     ) -> io::Result<()> {
-        // A surface writes its request as soon as it has connected, so anything that has not
-        // arrived by now is not going to. Without this the read waits for as long as whoever
-        // connected leaves it waiting, and the core answers that connection for that whole
-        // time.
-        self.0.set_recv_timeout(Some(within))?;
-
-        let mut line = String::new();
-        // Connecting and leaving is how a surface finds out whether anyone is listening.
-        // There is nothing to answer and nothing went wrong.
-        if BufReader::new(&self.0).read_line(&mut line)? == 0 {
+        let Some(line) = self.request_within(within)? else {
+            // Connecting and leaving is how a surface finds out whether anyone is listening.
+            // There is nothing to answer and nothing went wrong.
             return Ok(());
-        }
+        };
 
         let response = match serde_json::from_str::<Request>(&line) {
             Ok(request) => settle(request, respond),
             Err(e) => Response::Error(Failure::new(USAGE_ERROR, e.to_string())),
         };
         write_line(&self.0, &serde_json::to_string(&response)?)
+    }
+
+    /// The line a surface sent, or nothing where it closed without sending one.
+    ///
+    /// The whole line has to arrive within the time given, not each piece of it. A timeout set
+    /// on the socket bounds one read, so a surface sending a byte at a time just under that
+    /// would hold this open for as long as it kept going. The time left is worked out again
+    /// before each read and the socket is set to that, so the total is what is bounded.
+    fn request_within(&self, within: Duration) -> io::Result<Option<String>> {
+        let since = Instant::now();
+        let mut reading = BufReader::new(&self.0);
+        let mut line = String::new();
+
+        loop {
+            let left = within.checked_sub(since.elapsed()).unwrap_or_default();
+            if left.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "the whole request did not arrive in time",
+                ));
+            }
+            self.0.set_recv_timeout(Some(left))?;
+
+            let mut piece = Vec::new();
+            match reading.read_until(b'\n', &mut piece)? {
+                0 if line.is_empty() => return Ok(None),
+                // Closed part way through a line, which is not a request either.
+                0 => return Ok(None),
+                _ => {}
+            }
+            line.push_str(&String::from_utf8_lossy(&piece));
+            if line.ends_with('\n') {
+                return Ok(Some(line));
+            }
+        }
     }
 }
 
@@ -335,6 +363,50 @@ mod round_trip {
         assert!(
             answered.is_err(),
             "the read waited for a write that never came"
+        );
+        assert!(!reached.load(Ordering::SeqCst));
+    }
+
+    /// A surface sending a piece at a time, each within the wait, would otherwise hold the
+    /// core on it for as long as it kept going. What is bounded is the whole request.
+    #[test]
+    fn a_request_that_arrives_a_piece_at_a_time_is_given_up_on() {
+        let (_dir, path) = a_socket();
+        let server = listen_at(address(&path)).unwrap();
+        let reached = Arc::new(AtomicBool::new(false));
+        let asked = Arc::clone(&reached);
+
+        let serving = thread::spawn(move || {
+            let exchange = server.accept().unwrap();
+            exchange.answer_within(Duration::from_millis(150), |request| {
+                asked.store(true, Ordering::SeqCst);
+                Response::Data(Answer {
+                    command: request.command,
+                    data: serde_json::Value::Null,
+                })
+            })
+        });
+
+        // A piece every 40ms with no newline to end the line, kept up for far longer than the
+        // wait, and the connection stays open throughout.
+        let mut trickling = Stream::connect(address(&path)).unwrap();
+        let sending = thread::spawn(move || {
+            for _ in 0..30 {
+                if trickling.write_all(b"x").is_err() {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(40));
+            }
+        });
+
+        let answered = serving.join().unwrap();
+        sending.join().unwrap();
+
+        // Given up on for running out of time, rather than for the socket closing under it.
+        assert_eq!(
+            answered.map_err(|e| e.kind()),
+            Err(io::ErrorKind::TimedOut),
+            "the whole request was not what the wait bounded"
         );
         assert!(!reached.load(Ordering::SeqCst));
     }
