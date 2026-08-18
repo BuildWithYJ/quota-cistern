@@ -73,6 +73,7 @@ fn main() -> ExitCode {
     let roots = outbound::git::roots::GitRoots;
     let results = outbound::git::result::GitResults;
     let surroundings = outbound::git::surroundings::GitSurroundings;
+    let drafter = outbound::claude::drafter::ClaudeDrafter;
     let clock = outbound::clock::SystemClock;
     let agent = match outbound::claude::agent::ClaudeAgent::new() {
         Ok(agent) => agent,
@@ -80,7 +81,7 @@ fn main() -> ExitCode {
     };
 
     let configuration = ConfigurationService::new(&configuration_store, known);
-    let backlog = BacklogService::new(&backlog_store, &roots, &results, &surroundings);
+    let backlog = BacklogService::new(&backlog_store, &roots, &results, &surroundings, &drafter);
     let review = ReviewService::new(&backlog_store, &results);
     let execution = ExecutionService::new(
         Outside {

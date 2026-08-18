@@ -10,8 +10,8 @@ use crate::core::{
             Added, BacklogUseCase, Detail, Listing, Made, Refusal, Registration, Removed, Waiting,
         },
         outbound::{
-            BacklogStore, Between, RepositoryRoots, Results, StoredBacklog, StoredConsumption,
-            StoredTask, Surroundings,
+            BacklogStore, Between, Draft, Drafted, Drafter, RepositoryRoots, Results,
+            StoredBacklog, StoredConsumption, StoredTask, Surroundings,
         },
     },
 };
@@ -25,6 +25,7 @@ pub struct BacklogService<'a> {
     roots: &'a dyn RepositoryRoots,
     results: &'a dyn Results,
     surroundings: &'a dyn Surroundings,
+    drafter: &'a dyn Drafter,
 }
 
 impl<'a> BacklogService<'a> {
@@ -33,12 +34,14 @@ impl<'a> BacklogService<'a> {
         roots: &'a dyn RepositoryRoots,
         results: &'a dyn Results,
         surroundings: &'a dyn Surroundings,
+        drafter: &'a dyn Drafter,
     ) -> Self {
         BacklogService {
             store,
             roots,
             results,
             surroundings,
+            drafter,
         }
     }
 
@@ -51,12 +54,16 @@ impl<'a> BacklogService<'a> {
         if force || readiness.ready() {
             return Ok(instruction.to_owned());
         }
-        match filled(instruction, &readiness, self.surroundings, root) {
-            Some(filled) => Ok(filled),
-            None => Err(Refusal::NotReady {
-                missing: readiness.missing(),
-            }),
+        // Fill from the surroundings by rule first; ask a model only for what a rule could not.
+        if let Some(filled) = filled(instruction, &readiness, self.surroundings, root) {
+            return Ok(filled);
         }
+        if let Some(drafted) = drafted(instruction, self.drafter, self.surroundings, root) {
+            return Ok(drafted);
+        }
+        Err(Refusal::NotReady {
+            missing: readiness.missing(),
+        })
     }
 
     /// What a task left on its branch, for a task whose run has ended.
@@ -476,6 +483,33 @@ fn salient(instruction: &str) -> Option<&str> {
         .max_by_key(|word| word.len())
 }
 
+/// An instruction filled in with what a model proposed it is missing, when that makes it ready.
+///
+/// The model only proposes; a rule decides. What it gives back is written in and checked, so a
+/// wrong guess is a task turned back rather than a run misspent.
+fn drafted(
+    instruction: &str,
+    drafter: &dyn Drafter,
+    surroundings: &dyn Surroundings,
+    repository: &str,
+) -> Option<String> {
+    let changed = surroundings.changed(repository);
+    let proposed: Drafted = drafter.draft(Draft {
+        instruction,
+        changed: &changed,
+        repository,
+    })?;
+
+    let mut filled = instruction.to_owned();
+    if let Some(place) = proposed.place {
+        filled.push_str(&format!(" (in {place})"));
+    }
+    if let Some(check) = proposed.check {
+        filled.push_str(&format!(" (verify: {check})"));
+    }
+    Readiness::read(&filled).ready().then_some(filled)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{
@@ -601,17 +635,49 @@ mod tests {
         holds: Vec::new(),
     };
 
+    /// A model that proposes what it was built with.
+    struct Proposing {
+        place: Option<String>,
+        check: Option<String>,
+    }
+
+    impl Drafter for Proposing {
+        fn draft(&self, _ask: Draft<'_>) -> Option<Drafted> {
+            Some(Drafted {
+                place: self.place.clone(),
+                check: self.check.clone(),
+            })
+        }
+    }
+
+    /// A model that proposes nothing, standing in for one not asked.
+    struct NoModel;
+
+    impl Drafter for NoModel {
+        fn draft(&self, _ask: Draft<'_>) -> Option<Drafted> {
+            None
+        }
+    }
+
+    static NO_MODEL: NoModel = NoModel;
+
     static IN_A_REPOSITORY: Somewhere = Somewhere {
         root: Some("/work/api"),
     };
     static NOWHERE: Somewhere = Somewhere { root: None };
 
     fn in_a_repository(tasks: &Remembered) -> BacklogService<'_> {
-        BacklogService::new(tasks, &IN_A_REPOSITORY, &NO_BRANCH, &NOTHING_AROUND)
+        BacklogService::new(
+            tasks,
+            &IN_A_REPOSITORY,
+            &NO_BRANCH,
+            &NOTHING_AROUND,
+            &NO_MODEL,
+        )
     }
 
     fn outside_one(tasks: &Remembered) -> BacklogService<'_> {
-        BacklogService::new(tasks, &NOWHERE, &NO_BRANCH, &NOTHING_AROUND)
+        BacklogService::new(tasks, &NOWHERE, &NO_BRANCH, &NOTHING_AROUND, &NO_MODEL)
     }
 
     fn registering(title: &str) -> Registration<'_> {
@@ -705,7 +771,8 @@ mod tests {
             changed: vec!["src/search.rs".to_owned()],
             holds: Vec::new(),
         };
-        let service = BacklogService::new(&tasks, &IN_A_REPOSITORY, &NO_BRANCH, &editing);
+        let service =
+            BacklogService::new(&tasks, &IN_A_REPOSITORY, &NO_BRANCH, &editing, &NO_MODEL);
 
         let mut given = registering("first");
         // A way to check is given, but no place; a file is open.
@@ -730,7 +797,7 @@ mod tests {
             changed: Vec::new(),
             holds: vec!["src/search.rs".to_owned()],
         };
-        let service = BacklogService::new(&tasks, &IN_A_REPOSITORY, &NO_BRANCH, &around);
+        let service = BacklogService::new(&tasks, &IN_A_REPOSITORY, &NO_BRANCH, &around, &NO_MODEL);
 
         let mut given = registering("first");
         // No place and nothing open, but a word to search by and a way to check.
@@ -741,6 +808,36 @@ mod tests {
         let held = tasks.stored.lock().unwrap();
         assert!(
             held.tasks[0].instruction.contains("src/search.rs"),
+            "{}",
+            held.tasks[0].instruction
+        );
+    }
+
+    /// When a rule cannot fill a loose instruction, a model's proposal does, and it registers.
+    #[test]
+    fn a_loose_instruction_is_filled_in_from_what_a_model_proposes() {
+        let tasks = Remembered::default();
+        let model = Proposing {
+            place: Some("src/login.rs".to_owned()),
+            check: Some("cargo test login".to_owned()),
+        };
+        let service = BacklogService::new(
+            &tasks,
+            &IN_A_REPOSITORY,
+            &NO_BRANCH,
+            &NOTHING_AROUND,
+            &model,
+        );
+
+        let mut given = registering("first");
+        // Nothing a rule can seize: no place, no check, nothing open, no word that finds a file.
+        given.instruction = "it feels off";
+
+        let added = service.add(given).unwrap();
+        assert_eq!(added.state, "Pending");
+        let held = tasks.stored.lock().unwrap();
+        assert!(
+            held.tasks[0].instruction.contains("src/login.rs"),
             "{}",
             held.tasks[0].instruction
         );
