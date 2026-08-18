@@ -81,7 +81,10 @@ fn message_for(refusal: &Refusal) -> String {
     match refusal {
         Refusal::UnknownKey { key } => format!("no such key {key}"),
         Refusal::BadValue { key, value } => format!("{key} does not take {value}"),
-        Refusal::NotReady { missing } => format!("the instruction does not say {missing}"),
+        Refusal::NotReady { missing } => format!(
+            "the instruction does not say {missing}. add it, for example: \
+             fix search() in src/search.rs; cargo test search"
+        ),
         Refusal::NoSuchTask { id } | Refusal::NoSuchSession { id } => {
             format!("{id} does not exist")
         }
@@ -190,5 +193,14 @@ mod tests {
         for (refusal, code) in codes {
             assert_eq!(code_for(&refusal), code, "{refusal:?}");
         }
+    }
+
+    #[test]
+    fn the_not_ready_message_names_what_is_missing_and_shows_an_example() {
+        let message = message_for(&Refusal::NotReady {
+            missing: "where to work".to_owned(),
+        });
+        assert!(message.contains("where to work"), "{message}");
+        assert!(message.contains("for example"), "{message}");
     }
 }
