@@ -10,4 +10,10 @@ pub trait Surroundings: Sync {
     /// Empty when nothing is uncommitted, and empty again when the repository cannot be read:
     /// neither is a place to send a run, so both come back the same.
     fn changed(&self, repository: &str) -> Vec<String>;
+
+    /// The files the repository holds that mention the word, by a line of code or by name.
+    ///
+    /// What an instruction points at without editing: the word it used, found where the code uses
+    /// it. Empty when nothing matches, or when the repository cannot be read.
+    fn holding(&self, repository: &str, word: &str) -> Vec<String>;
 }

@@ -51,7 +51,7 @@ impl<'a> BacklogService<'a> {
         if force || readiness.ready() {
             return Ok(instruction.to_owned());
         }
-        match filled(instruction, &readiness, self.surroundings.changed(root)) {
+        match filled(instruction, &readiness, self.surroundings, root) {
             Some(filled) => Ok(filled),
             None => Err(Refusal::NotReady {
                 missing: readiness.missing(),
@@ -434,17 +434,46 @@ fn unusable(e: &NotABacklog) -> String {
     }
 }
 
-/// An instruction filled in with where the author is working, when a place is what it is missing.
+/// An instruction filled in with a place, when a place is what it is missing.
 ///
-/// Only the place is filled: what surrounds a task says where the work is, not how to tell it is
-/// done. The filled-in instruction is returned only when it now carries enough to run.
-fn filled(instruction: &str, readiness: &Readiness, changed: Vec<String>) -> Option<String> {
+/// Only the place is filled: the surroundings say where the work is, not how to tell it is done.
+/// The filled-in instruction is returned only when it now carries enough to run.
+fn filled(
+    instruction: &str,
+    readiness: &Readiness,
+    surroundings: &dyn Surroundings,
+    repository: &str,
+) -> Option<String> {
     if readiness.place {
         return None;
     }
-    let place = changed.into_iter().next()?;
+    let place = a_place(surroundings, repository, instruction)?;
     let filled = format!("{instruction} (in {place})");
     Readiness::read(&filled).ready().then_some(filled)
+}
+
+/// A place to work: what the author is editing, or failing that what the repository holds by the
+/// instruction's most distinctive word.
+///
+/// What is open comes first: a file already changed is likelier what "this" means than one found
+/// by a word that could appear in many.
+fn a_place(surroundings: &dyn Surroundings, repository: &str, instruction: &str) -> Option<String> {
+    if let Some(edited) = surroundings.changed(repository).into_iter().next() {
+        return Some(edited);
+    }
+    let word = salient(instruction)?;
+    surroundings.holding(repository, word).into_iter().next()
+}
+
+/// The most distinctive word to search a repository by, if the instruction has one.
+///
+/// The longest run of identifier characters: a longer word is likelier to name something in the
+/// code than a shorter, commoner one.
+fn salient(instruction: &str) -> Option<&str> {
+    instruction
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|word| word.len() >= 4)
+        .max_by_key(|word| word.len())
 }
 
 #[cfg(test)]
@@ -551,18 +580,26 @@ mod tests {
 
     static NO_BRANCH: NoBranch = NoBranch;
 
-    /// A working tree with the given files changed and not committed.
-    struct Editing {
-        files: Vec<String>,
+    /// A repository with the given files changed, and the given files held by any word.
+    struct Around {
+        changed: Vec<String>,
+        holds: Vec<String>,
     }
 
-    impl Surroundings for Editing {
+    impl Surroundings for Around {
         fn changed(&self, _repository: &str) -> Vec<String> {
-            self.files.clone()
+            self.changed.clone()
+        }
+
+        fn holding(&self, _repository: &str, _word: &str) -> Vec<String> {
+            self.holds.clone()
         }
     }
 
-    static NOTHING_EDITED: Editing = Editing { files: Vec::new() };
+    static NOTHING_AROUND: Around = Around {
+        changed: Vec::new(),
+        holds: Vec::new(),
+    };
 
     static IN_A_REPOSITORY: Somewhere = Somewhere {
         root: Some("/work/api"),
@@ -570,11 +607,11 @@ mod tests {
     static NOWHERE: Somewhere = Somewhere { root: None };
 
     fn in_a_repository(tasks: &Remembered) -> BacklogService<'_> {
-        BacklogService::new(tasks, &IN_A_REPOSITORY, &NO_BRANCH, &NOTHING_EDITED)
+        BacklogService::new(tasks, &IN_A_REPOSITORY, &NO_BRANCH, &NOTHING_AROUND)
     }
 
     fn outside_one(tasks: &Remembered) -> BacklogService<'_> {
-        BacklogService::new(tasks, &NOWHERE, &NO_BRANCH, &NOTHING_EDITED)
+        BacklogService::new(tasks, &NOWHERE, &NO_BRANCH, &NOTHING_AROUND)
     }
 
     fn registering(title: &str) -> Registration<'_> {
@@ -664,14 +701,40 @@ mod tests {
     #[test]
     fn a_loose_instruction_is_filled_in_from_what_is_being_edited() {
         let tasks = Remembered::default();
-        let editing = Editing {
-            files: vec!["src/search.rs".to_owned()],
+        let editing = Around {
+            changed: vec!["src/search.rs".to_owned()],
+            holds: Vec::new(),
         };
         let service = BacklogService::new(&tasks, &IN_A_REPOSITORY, &NO_BRANCH, &editing);
 
         let mut given = registering("first");
         // A way to check is given, but no place; a file is open.
         given.instruction = "make it stop double-counting; cargo test search passes";
+
+        let added = service.add(given).unwrap();
+        assert_eq!(added.state, "Pending");
+        let held = tasks.stored.lock().unwrap();
+        assert!(
+            held.tasks[0].instruction.contains("src/search.rs"),
+            "{}",
+            held.tasks[0].instruction
+        );
+    }
+
+    /// When nothing is being edited, a loose instruction is filled in with a file the repository
+    /// holds by the word it used.
+    #[test]
+    fn a_loose_instruction_is_filled_in_from_what_the_repository_holds() {
+        let tasks = Remembered::default();
+        let around = Around {
+            changed: Vec::new(),
+            holds: vec!["src/search.rs".to_owned()],
+        };
+        let service = BacklogService::new(&tasks, &IN_A_REPOSITORY, &NO_BRANCH, &around);
+
+        let mut given = registering("first");
+        // No place and nothing open, but a word to search by and a way to check.
+        given.instruction = "the search results come back doubled; cargo test search passes";
 
         let added = service.add(given).unwrap();
         assert_eq!(added.state, "Pending");
