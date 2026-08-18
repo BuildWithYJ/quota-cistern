@@ -23,7 +23,8 @@ pub fn run(command: TaskCommand) -> ExitCode {
             branch,
             after,
             model,
-        } => add(&title, &instruction, branch, after, model),
+            force,
+        } => add(&title, &instruction, branch, after, model, force),
         TaskCommand::Rm { task } => send("task_rm", serde_json::json!({ "task": task }), removed),
         TaskCommand::Show { task } => {
             send("task_show", serde_json::json!({ "task": task }), detailed)
@@ -41,6 +42,7 @@ fn add(
     branch: Option<String>,
     after: Option<String>,
     model: Option<String>,
+    force: bool,
 ) -> ExitCode {
     // The core runs as a daemon, so where it was started is not where this command was.
     // It cannot learn that from anywhere but here.
@@ -65,6 +67,7 @@ fn add(
             "branch": branch,
             "after": after,
             "model": model,
+            "force": force,
         }),
         added,
     )

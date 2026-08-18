@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::core::port::inbound::{Added, BacklogUseCase, Detail, Listing, Registration, Removed};
 
-use super::{answer, missing, text};
+use super::{answer, flag, missing, text};
 
 /// Answers the commands this group owns.
 ///
@@ -36,6 +36,7 @@ fn add(backlog: &impl BacklogUseCase, request: Request) -> Response {
             branch: text(&request, "branch"),
             after: text(&request, "after"),
             model: text(&request, "model"),
+            force: flag(&request, "force"),
         },
         _ => return missing("task_add takes cwd, title, and instruction, all strings"),
     };

@@ -29,6 +29,15 @@ pub(super) fn text<'a>(request: &'a Request, field: &str) -> Option<&'a str> {
     request.params.get(field)?.as_str()
 }
 
+/// One field of the envelope, when it holds a boolean. Absent reads as false.
+pub(super) fn flag(request: &Request, field: &str) -> bool {
+    request
+        .params
+        .get(field)
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 /// A request whose envelope does not carry what the command needs.
 ///
 /// It never reaches the core, because what arrived is the envelope's business and the envelope is read here.

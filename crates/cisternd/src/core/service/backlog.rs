@@ -89,7 +89,7 @@ impl BacklogUseCase for BacklogService<'_> {
         // turned back whatever the backlog holds, so nothing is written for a run that could not
         // have gone anywhere.
         let readiness = Readiness::read(given.instruction);
-        if !readiness.ready() {
+        if !given.force && !readiness.ready() {
             return Err(Refusal::NotReady {
                 missing: readiness.missing(),
             });
@@ -543,6 +543,7 @@ mod tests {
             branch: None,
             after: None,
             model: None,
+            force: false,
         }
     }
 
@@ -602,6 +603,18 @@ mod tests {
 
         assert!(matches!(outcome, Err(Refusal::NotReady { .. })));
         assert_eq!(tasks.reads.load(Ordering::Relaxed), 0);
+    }
+
+    /// Force registers a task as written, even one the gate would otherwise turn back.
+    #[test]
+    fn force_registers_what_the_gate_would_turn_back() {
+        let tasks = Remembered::default();
+        let mut given = registering("first");
+        given.instruction = "make search a bit better";
+        given.force = true;
+
+        let added = in_a_repository(&tasks).add(given).unwrap();
+        assert_eq!(added.state, "Pending");
     }
 
     #[test]
