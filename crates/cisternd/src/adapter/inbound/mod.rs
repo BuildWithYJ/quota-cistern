@@ -51,7 +51,8 @@ fn code_for(refusal: &Refusal) -> u8 {
     match refusal {
         Refusal::UnknownKey { .. } | Refusal::BadValue { .. } => USAGE_ERROR,
         Refusal::NoSuchTask { .. } | Refusal::NoSuchSession { .. } => NOT_FOUND,
-        Refusal::NothingToAssign
+        Refusal::NotReady { .. }
+        | Refusal::NothingToAssign
         | Refusal::NoChange { .. }
         | Refusal::AlreadyApplied { .. }
         | Refusal::Conflicts { .. }
@@ -71,6 +72,7 @@ fn message_for(refusal: &Refusal) -> String {
     match refusal {
         Refusal::UnknownKey { key } => format!("no such key {key}"),
         Refusal::BadValue { key, value } => format!("{key} does not take {value}"),
+        Refusal::NotReady { missing } => format!("the instruction does not say {missing}"),
         Refusal::NoSuchTask { id } | Refusal::NoSuchSession { id } => {
             format!("{id} does not exist")
         }
@@ -143,6 +145,12 @@ mod tests {
                     value: "max-40x".to_owned(),
                 },
                 USAGE_ERROR,
+            ),
+            (
+                Refusal::NotReady {
+                    missing: "where to work".to_owned(),
+                },
+                GENERAL_FAILURE,
             ),
             (
                 Refusal::NoSuchTask {

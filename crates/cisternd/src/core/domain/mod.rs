@@ -5,12 +5,14 @@
 
 mod configuration;
 mod consumption;
+mod readiness;
 mod session;
 mod supervision;
 mod task;
 
 pub use configuration::{Configuration, Key, Known, Setting};
 pub use consumption::{Consumption, Observation};
+pub use readiness::Readiness;
 pub use session::{
     Budget, Held, NotASessionSet, NotOpened, Opening, Session, SessionId, SessionState, Sessions,
     Span, StoppedReason, Usage,
