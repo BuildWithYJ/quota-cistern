@@ -73,7 +73,7 @@ fn main() -> ExitCode {
     let roots = outbound::git::roots::GitRoots;
     let results = outbound::git::result::GitResults;
     let surroundings = outbound::git::surroundings::GitSurroundings;
-    let drafter = outbound::claude::drafter::ClaudeDrafter;
+    let drafter = outbound::claude::drafter::ClaudeDrafter::default();
     let clock = outbound::clock::SystemClock;
     let agent = match outbound::claude::agent::ClaudeAgent::new() {
         Ok(agent) => agent,
