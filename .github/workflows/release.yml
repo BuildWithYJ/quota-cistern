@@ -34,7 +34,12 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Nothing here reaches the repository over git: the build takes what `Cargo.lock` names
+      # and `gh` takes its token from the environment. Left on, the token this job is given
+      # would sit in the checkout's git configuration while dependencies' build scripts run.
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       # rust-toolchain.toml pins the version, so this installs that one.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
