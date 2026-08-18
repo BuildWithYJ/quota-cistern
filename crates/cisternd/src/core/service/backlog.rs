@@ -11,7 +11,7 @@ use crate::core::{
         },
         outbound::{
             BacklogStore, Between, RepositoryRoots, Results, StoredBacklog, StoredConsumption,
-            StoredTask,
+            StoredTask, Surroundings,
         },
     },
 };
@@ -24,6 +24,7 @@ pub struct BacklogService<'a> {
     store: &'a dyn BacklogStore,
     roots: &'a dyn RepositoryRoots,
     results: &'a dyn Results,
+    surroundings: &'a dyn Surroundings,
 }
 
 impl<'a> BacklogService<'a> {
@@ -31,11 +32,30 @@ impl<'a> BacklogService<'a> {
         store: &'a dyn BacklogStore,
         roots: &'a dyn RepositoryRoots,
         results: &'a dyn Results,
+        surroundings: &'a dyn Surroundings,
     ) -> Self {
         BacklogService {
             store,
             roots,
             results,
+            surroundings,
+        }
+    }
+
+    /// The instruction a run is given, filled in from the surroundings when it needs to be.
+    ///
+    /// A ready instruction, or a forced one, is taken as written. One that is not ready is filled
+    /// in with the place the author is working on, and taken only when that makes it ready.
+    fn readied(&self, instruction: &str, force: bool, root: &str) -> Result<String, Refusal> {
+        let readiness = Readiness::read(instruction);
+        if force || readiness.ready() {
+            return Ok(instruction.to_owned());
+        }
+        match filled(instruction, &readiness, self.surroundings.changed(root)) {
+            Some(filled) => Ok(filled),
+            None => Err(Refusal::NotReady {
+                missing: readiness.missing(),
+            }),
         }
     }
 
@@ -85,16 +105,6 @@ impl BacklogUseCase for BacklogService<'_> {
             });
         }
 
-        // Read before the backlog is: an instruction that carries too little to run unattended is
-        // turned back whatever the backlog holds, so nothing is written for a run that could not
-        // have gone anywhere.
-        let readiness = Readiness::read(given.instruction);
-        if !given.force && !readiness.ready() {
-            return Err(Refusal::NotReady {
-                missing: readiness.missing(),
-            });
-        }
-
         let after = given.after.map(identifier).transpose()?;
 
         // Asked before the backlog is read.
@@ -104,6 +114,12 @@ impl BacklogUseCase for BacklogService<'_> {
                 at: given.cwd.to_owned(),
             });
         };
+
+        // What the run is given to work from. An instruction that carries too little to run
+        // unattended is filled in from what the author is in the middle of, and turned back only
+        // when the repository cannot settle it. Nothing is written for a run that could not have
+        // gone anywhere.
+        let instruction = self.readied(given.instruction, given.force, &root)?;
 
         change(self.store, |backlog| {
             if let Some(after) = after
@@ -116,7 +132,7 @@ impl BacklogUseCase for BacklogService<'_> {
 
             let registered = backlog.add(
                 given.title.to_owned(),
-                given.instruction.to_owned(),
+                instruction,
                 given.branch.map(str::to_owned),
                 after,
                 given.model.map(str::to_owned),
@@ -418,6 +434,19 @@ fn unusable(e: &NotABacklog) -> String {
     }
 }
 
+/// An instruction filled in with where the author is working, when a place is what it is missing.
+///
+/// Only the place is filled: what surrounds a task says where the work is, not how to tell it is
+/// done. The filled-in instruction is returned only when it now carries enough to run.
+fn filled(instruction: &str, readiness: &Readiness, changed: Vec<String>) -> Option<String> {
+    if readiness.place {
+        return None;
+    }
+    let place = changed.into_iter().next()?;
+    let filled = format!("{instruction} (in {place})");
+    Readiness::read(&filled).ready().then_some(filled)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{
@@ -522,17 +551,30 @@ mod tests {
 
     static NO_BRANCH: NoBranch = NoBranch;
 
+    /// A working tree with the given files changed and not committed.
+    struct Editing {
+        files: Vec<String>,
+    }
+
+    impl Surroundings for Editing {
+        fn changed(&self, _repository: &str) -> Vec<String> {
+            self.files.clone()
+        }
+    }
+
+    static NOTHING_EDITED: Editing = Editing { files: Vec::new() };
+
     static IN_A_REPOSITORY: Somewhere = Somewhere {
         root: Some("/work/api"),
     };
     static NOWHERE: Somewhere = Somewhere { root: None };
 
     fn in_a_repository(tasks: &Remembered) -> BacklogService<'_> {
-        BacklogService::new(tasks, &IN_A_REPOSITORY, &NO_BRANCH)
+        BacklogService::new(tasks, &IN_A_REPOSITORY, &NO_BRANCH, &NOTHING_EDITED)
     }
 
     fn outside_one(tasks: &Remembered) -> BacklogService<'_> {
-        BacklogService::new(tasks, &NOWHERE, &NO_BRANCH)
+        BacklogService::new(tasks, &NOWHERE, &NO_BRANCH, &NOTHING_EDITED)
     }
 
     fn registering(title: &str) -> Registration<'_> {
@@ -615,6 +657,30 @@ mod tests {
 
         let added = in_a_repository(&tasks).add(given).unwrap();
         assert_eq!(added.state, "Pending");
+    }
+
+    /// A loose instruction that names no place is filled in with the file the author is editing,
+    /// so it registers instead of being turned back.
+    #[test]
+    fn a_loose_instruction_is_filled_in_from_what_is_being_edited() {
+        let tasks = Remembered::default();
+        let editing = Editing {
+            files: vec!["src/search.rs".to_owned()],
+        };
+        let service = BacklogService::new(&tasks, &IN_A_REPOSITORY, &NO_BRANCH, &editing);
+
+        let mut given = registering("first");
+        // A way to check is given, but no place; a file is open.
+        given.instruction = "make it stop double-counting; cargo test search passes";
+
+        let added = service.add(given).unwrap();
+        assert_eq!(added.state, "Pending");
+        let held = tasks.stored.lock().unwrap();
+        assert!(
+            held.tasks[0].instruction.contains("src/search.rs"),
+            "{}",
+            held.tasks[0].instruction
+        );
     }
 
     #[test]

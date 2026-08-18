@@ -8,6 +8,7 @@ use std::process::Output;
 
 pub mod result;
 pub mod roots;
+pub mod surroundings;
 pub mod worktree;
 
 /// What git said about a command that failed.
