@@ -11,8 +11,15 @@ use cistern_contract::{Request, Response, exchange::Server};
 /// behind it. The stores are already shared with the threads that run tasks, and each holds a
 /// lock from a read to the write that follows it.
 ///
-/// Nothing counts the threads. A connection is a local command that lives for one exchange,
-/// and a cap would be a guess at a number nobody has needed.
+/// Nothing counts the threads, and this does not stand against a peer that means harm. Anyone
+/// who can reach the socket can already run programs on this machine as this user, and the
+/// core runs the agent with those same permissions, so holding threads open is the least of
+/// what such a peer could do. What the wait on a request is for is a surface that wedged or
+/// went away without saying so, which is a thing that happens without anyone meaning it.
+///
+/// A cap on the threads would be a guess at a number nobody has needed. It is worth having the
+/// day a peer that means harm is worth standing against, and that day starts with putting the
+/// agent somewhere it cannot reach this machine.
 ///
 /// A connection that panics ends its own thread and nothing else. `file::kept` takes a lock
 /// back from a thread that panicked holding it, and the write is the last thing that happens

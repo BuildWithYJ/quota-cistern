@@ -125,12 +125,24 @@ impl Exchange {
     ///
     /// The whole line has to arrive within the time given, not each piece of it. A timeout set
     /// on the socket bounds one read, so a surface sending a byte at a time just under that
-    /// would hold this open for as long as it kept going. The time left is worked out again
-    /// before each read and the socket is set to that, so the total is what is bounded.
+    /// would hold this open for as long as it kept going.
+    ///
+    /// This is against a surface that wedged, not one that means harm. A peer that reaches the
+    /// socket can already run programs as this user, which is what the core does with the
+    /// agent, so what it could hold here is not what it would take.
+    ///
+    /// One read at a time is what makes the total the bound. Reading up to the newline in a
+    /// single call loops over reads inside that call and never comes back here, so the time
+    /// left is worked out once and every piece after it arrives against a bound that was set
+    /// before any of them. Taking what one read brought and returning here is what lets the
+    /// time left be worked out again.
+    ///
+    /// The pieces are put together before they are read as text. A character wider than a byte
+    /// can be split across two reads, and each half read on its own is not a character.
     fn request_within(&self, within: Duration) -> io::Result<Option<String>> {
         let since = Instant::now();
         let mut reading = BufReader::new(&self.0);
-        let mut line = String::new();
+        let mut line: Vec<u8> = Vec::new();
 
         loop {
             let left = within.checked_sub(since.elapsed()).unwrap_or_default();
@@ -142,19 +154,42 @@ impl Exchange {
             }
             self.0.set_recv_timeout(Some(left))?;
 
-            let mut piece = Vec::new();
-            match reading.read_until(b'\n', &mut piece)? {
-                0 if line.is_empty() => return Ok(None),
-                // Closed part way through a line, which is not a request either.
-                0 => return Ok(None),
-                _ => {}
+            let held = match reading.fill_buf() {
+                Ok(held) => held,
+                // The socket was set to the time that was left, so a read that expired says
+                // the time is up. The check above is what says so, and it also covers a read
+                // that expired with a little time still on it.
+                Err(e) if expired(&e) => continue,
+                Err(e) => return Err(e),
+            };
+            if held.is_empty() {
+                // Closed without sending anything, or part way through a line.
+                // Neither is a request.
+                return Ok(None);
             }
-            line.push_str(&String::from_utf8_lossy(&piece));
-            if line.ends_with('\n') {
-                return Ok(Some(line));
+            let taken = match held.iter().position(|byte| *byte == b'\n') {
+                Some(at) => at + 1,
+                None => held.len(),
+            };
+            line.extend_from_slice(&held[..taken]);
+            reading.consume(taken);
+
+            if line.ends_with(b"\n") {
+                return Ok(Some(String::from_utf8_lossy(&line).into_owned()));
             }
         }
     }
+}
+
+/// A read that brought nothing rather than one that went wrong.
+///
+/// A socket with a time on it reports an expired read as either of these, and a signal that
+/// arrived mid-read as the third. None of them says anything about the request.
+fn expired(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted
+    )
 }
 
 /// Answers what the envelope alone decides, and passes on the rest.
@@ -369,6 +404,11 @@ mod round_trip {
 
     /// A surface sending a piece at a time, each within the wait, would otherwise hold the
     /// core on it for as long as it kept going. What is bounded is the whole request.
+    ///
+    /// The sender is not what ends this. It keeps the connection open and keeps sending, and
+    /// stops only long after the wait, so that the wait is what the core gives up on. A core
+    /// that only gave up when the sender stopped would hold a thread for as long as a sender
+    /// chose to keep one.
     #[test]
     fn a_request_that_arrives_a_piece_at_a_time_is_given_up_on() {
         let (_dir, path) = a_socket();
@@ -378,28 +418,34 @@ mod round_trip {
 
         let serving = thread::spawn(move || {
             let exchange = server.accept().unwrap();
-            exchange.answer_within(Duration::from_millis(150), |request| {
+            let since = Instant::now();
+            let answered = exchange.answer_within(WAITING, |request| {
                 asked.store(true, Ordering::SeqCst);
                 Response::Data(Answer {
                     command: request.command,
                     data: serde_json::Value::Null,
                 })
-            })
+            });
+            (answered, since.elapsed())
         });
 
-        // A piece every 40ms with no newline to end the line, kept up for far longer than the
-        // wait, and the connection stays open throughout.
+        // A piece every 40ms with no newline to end the line, and the connection is never
+        // closed until this is told to stop. The count is only so that a core that never
+        // gives up fails here rather than holding the test forever.
+        let stop = Arc::new(AtomicBool::new(false));
+        let told = Arc::clone(&stop);
         let mut trickling = Stream::connect(address(&path)).unwrap();
         let sending = thread::spawn(move || {
-            for _ in 0..30 {
-                if trickling.write_all(b"x").is_err() {
+            for _ in 0..(GIVES_UP_BY.as_millis() / 40) {
+                if told.load(Ordering::SeqCst) || trickling.write_all(b"x").is_err() {
                     return;
                 }
                 thread::sleep(Duration::from_millis(40));
             }
         });
 
-        let answered = serving.join().unwrap();
+        let (answered, took) = serving.join().unwrap();
+        stop.store(true, Ordering::SeqCst);
         sending.join().unwrap();
 
         // Given up on for running out of time, rather than for the socket closing under it.
@@ -408,8 +454,18 @@ mod round_trip {
             Err(io::ErrorKind::TimedOut),
             "the whole request was not what the wait bounded"
         );
+        assert!(
+            took < GIVES_UP_BY,
+            "the core waited {took:?}, which is the sender giving up rather than the wait"
+        );
         assert!(!reached.load(Ordering::SeqCst));
     }
+
+    /// Long enough to tell a piece from the next, short enough to keep the test quick.
+    const WAITING: Duration = Duration::from_millis(150);
+
+    /// Far longer than `WAITING`. A core that holds a thread this long is not bounding anything.
+    const GIVES_UP_BY: Duration = Duration::from_secs(2);
 
     #[test]
     fn a_line_that_is_not_a_request_never_reaches_the_core() {
