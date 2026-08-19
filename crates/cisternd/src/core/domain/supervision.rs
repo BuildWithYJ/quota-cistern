@@ -132,7 +132,7 @@ fn allow(standing: &Standing) -> Vec<Allowance> {
         {
             break;
         }
-        let want = sizing.estimate.max(1);
+        let want = sizing.allowing().max(1);
         let ceiling = if free >= want {
             want
         } else if standing.running == 0 && given.is_empty() && free >= sizing.median.max(1) {
@@ -196,6 +196,27 @@ pub struct Sizing {
     /// Runs that finished. A run that was stopped says where it was stopped rather than what
     /// its task takes, so it raises the floor under `estimate` without being counted here.
     pub over: usize,
+}
+
+impl Sizing {
+    /// What a run of this model may be allowed.
+    ///
+    /// The estimate widened by how little it was worked out from: `estimate x (1 + 1/over)`.
+    /// Twice the estimate from one run, half as much again from two, an eighth more from
+    /// eight. Kubernetes' vertical autoscaler widens its own upper bound by this shape and for
+    /// this reason, and the shape is what recommends it -- nothing here picks a number to say
+    /// how much wider, the count of runs says it.
+    ///
+    /// Why widen at all. The estimate is what a run is expected to take, and a run allowed
+    /// exactly that is stopped the moment it takes any more; a figure worked out from one run
+    /// is not one to hold the next to, since it says what that run happened to cost and
+    /// nothing about what the next task is. This makes being stopped less likely. It does not
+    /// make it unlikely: what runs cost is spread far wider than the uncertainty this covers,
+    /// and the rest of the tail is not something a multiplier reaches.
+    pub fn allowing(&self) -> u64 {
+        self.estimate
+            .saturating_add(self.estimate / self.over.max(1) as u64)
+    }
 }
 
 /// What one run cost, and whether that figure is what its task takes.
@@ -463,7 +484,7 @@ mod tests {
 
     #[test]
     fn a_session_with_room_and_something_waiting_starts_more() {
-        assert_eq!(ceilings(decide(&standing())), [100, 100]);
+        assert_eq!(ceilings(decide(&standing())), [200, 200]);
     }
 
     #[test]
@@ -539,11 +560,12 @@ mod tests {
 
     // what each task is allowed
 
-    /// Every task that starts leaves with a figure it may not pass, and what one model has
-    /// cost is what it is.
+    /// Every task that starts leaves with a figure it may not pass, worked out from what runs
+    /// of its model have cost and widened by how few of them there were. One run of 100 here,
+    /// so the figure is twice it.
     #[test]
-    fn a_task_is_allowed_what_runs_of_its_model_have_cost() {
-        assert_eq!(ceilings(decide(&standing())), [100, 100]);
+    fn a_task_is_allowed_more_than_runs_of_its_model_have_cost() {
+        assert_eq!(ceilings(decide(&standing())), [200, 200]);
     }
 
     /// What is left less what the runs already going are allowed. Whatever any of them
@@ -552,12 +574,12 @@ mod tests {
     fn what_is_already_allowed_is_held_against_the_budget() {
         assert_eq!(
             ceilings(decide(&Standing {
-                left: 250,
-                booked: 100,
+                left: 500,
+                booked: 200,
                 ..standing()
             })),
-            [100],
-            "150 was left, which covers one of these and not two"
+            [200],
+            "300 was left, which covers one of these and not two"
         );
     }
 
@@ -570,7 +592,7 @@ mod tests {
     fn what_is_left_runs_out_partway_down_the_list() {
         assert_eq!(
             ceilings(decide(&Standing {
-                left: 250,
+                left: 500,
                 pending: vec![
                     (task(1), Some("opus".to_owned())),
                     (task(2), Some("opus".to_owned())),
@@ -578,7 +600,7 @@ mod tests {
                 ],
                 ..standing()
             })),
-            [100, 100]
+            [200, 200]
         );
     }
 
@@ -667,7 +689,7 @@ mod tests {
                 time_left: 3_600,
                 ..standing()
             })),
-            [100, 100]
+            [200, 200]
         );
     }
 
@@ -696,7 +718,7 @@ mod tests {
                 time_left: 1,
                 ..standing()
             })),
-            [100, 100]
+            [200, 200]
         );
     }
 

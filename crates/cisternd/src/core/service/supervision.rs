@@ -600,14 +600,14 @@ mod tests {
     ///
     /// The tasks take more and more, and nothing has been run before, so the session learns
     /// what a run costs from the runs it has already had. The first task has nothing to go on
-    /// and is given the whole budget. Every one after it is held to what the runs before it
-    /// cost, which is under what it takes until a run that was stopped has raised the figure
-    /// far enough.
+    /// and is given the whole budget; every one after it is held to a figure worked out from
+    /// the runs before it. That figure is widened by how few runs it came from, which is what
+    /// keeps a task that takes somewhat more than the last one from being stopped.
     ///
     /// One at a time, so that each task decides against everything before it. Four at once
-    /// would start them all against the first figure and stop them all at it.
+    /// would start them all against the first figure.
     #[test]
-    fn a_session_learns_what_a_run_costs_from_the_runs_it_stopped() {
+    fn a_session_carries_tasks_that_take_more_than_the_ones_before_them() {
         let sessions = Remembered::empty();
         let tasks = Tasks::holding(vec![
             a_pending_task(),
@@ -636,16 +636,43 @@ mod tests {
         execution.run(declaring("100000", "8h")).unwrap();
         carry_them_all(&work, &tasks);
 
-        assert_eq!(
-            states(&tasks),
-            [
-                "Completed",
-                "Interrupted",
-                "Interrupted",
-                "Completed",
-                "Completed"
-            ]
-        );
+        assert_eq!(states(&tasks), ["Completed"; 5]);
+    }
+
+    /// Widening is not enough where the next task takes several times the last, and then the
+    /// run that was stopped is what raises the figure. Nothing else does: the tasks after it
+    /// are the ones that climb the ladder, so a session with none left ends where it stopped.
+    #[test]
+    fn a_run_that_was_stopped_is_what_lets_the_next_one_through() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![
+            a_pending_task(),
+            a_second_task(),
+            a_task_numbered("3"),
+        ]);
+        let areas = Areas::default();
+        let agent = Costing::taking([100, 400, 400]);
+        let runs = Ledger::default();
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &UNTOUCHED,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, 1);
+        let execution = ExecutionService::new(outside, &supervisor);
+        let work = WorkService::new(outside, &supervisor);
+
+        execution.run(declaring("100000", "8h")).unwrap();
+        carry_them_all(&work, &tasks);
+
+        // 100 finishes, 400 is stopped at twice 100, and the third goes through on the floor
+        // that stopping left behind.
+        assert_eq!(states(&tasks), ["Completed", "Interrupted", "Completed"]);
     }
 
     /// The other half of the hardlock: a session that has spent the tokens it declared stops.
@@ -884,8 +911,8 @@ mod tests {
             let execution = ExecutionService::new(outside, &supervisor);
             let work = WorkService::new(outside, &supervisor);
 
-            // One starts alone, and the one after it fills the machine.
-            execution.run(declaring("2M", "8h")).unwrap();
+            // One starts alone, and the ones after it fill the machine.
+            execution.run(declaring("4M", "8h")).unwrap();
             work.carry_on("task:1").unwrap();
             assert_eq!(running_in(&tasks), AT_ONCE);
 
@@ -909,7 +936,9 @@ mod tests {
     /// records into that same backlog. A count read before the hold is a count from before the
     /// other thread recorded, and the budget left over then reads higher than it is.
     ///
-    /// One task here consumes 295,816 tokens, so three fit in a million and four do not.
+    /// One task here consumes 295,816 tokens and is allowed twice that, the estimate having
+    /// been worked out from one run. Two of those fit in what is left of two million and three
+    /// do not, so the budget binds before the machine's four does.
     #[test]
     fn two_tasks_ending_at_once_do_not_assign_past_what_is_left() {
         for _ in 0..64 {
@@ -934,11 +963,11 @@ mod tests {
             let work = WorkService::new(outside, &supervisor);
 
             // One alone, then two once there is a cost to divide by.
-            execution.run(declaring("1M", "8h")).unwrap();
+            execution.run(declaring("2M", "8h")).unwrap();
             work.carry_on("task:1").unwrap();
             assert_eq!(running_in(&tasks), 2);
 
-            // Both of those end together, and a fourth would put the session past its million.
+            // Both of those end together, and another would put the session past its two million.
             std::thread::scope(|threads| {
                 threads.spawn(|| work.carry_on("task:2"));
                 threads.spawn(|| work.carry_on("task:3"));
@@ -952,8 +981,8 @@ mod tests {
                 .filter(|task| task.state != "Pending")
                 .count();
             assert!(
-                started <= 3,
-                "{started} tasks started against a budget for 3"
+                started <= 6,
+                "{started} tasks started against a budget for 6"
             );
         }
     }
