@@ -501,6 +501,25 @@ fn a_run_the_session_put_a_ceiling_on_is_held_to_that() {
     assert!(!said.contains("\n20\n"), "{said}");
 }
 
+/// A session with a large budget does not make the guard stop being true. Its first run
+/// would otherwise be told it may have all of it.
+#[test]
+fn a_ceiling_larger_than_the_definition_allows_is_held_to_the_definition() {
+    let held = TempDir::new().unwrap();
+    let agent = standing_in(&held);
+
+    agent
+        .work(Work {
+            // A hundred dollars, against the twenty the definition carries.
+            ceiling: Some("100000000"),
+            ..working(held.path().to_str().unwrap(), "true")
+        })
+        .unwrap();
+
+    let said = given(&held);
+    assert!(said.contains("--max-budget-usd\n20\n"), "{said}");
+}
+
 /// Without one, the definition's figure stands. That one is a guard against a run that goes
 /// nowhere rather than a session's budget.
 #[test]

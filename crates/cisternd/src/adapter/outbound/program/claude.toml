@@ -14,9 +14,10 @@ program = "claude"
 # whoever composes the two.
 goal = "/goal The task described below is finished, its result is committed on the current branch, and git status reports a clean tree."
 
-# How far one run may go before it is cut off. A guard against a run that goes nowhere,
-# not the ceiling a session declares; that one is measured in what a task consumed and is
-# the supervisor's.
+# How far one run may go before it is cut off. A guard against one run going nowhere rather
+# than a session's budget: a session works its own ceiling out from what runs here have cost
+# and the smaller of the two is what the run is held to. Raise these where a session's runs
+# are meant to be larger than any run so far.
 turns = "200"
 spend = "20"
 
