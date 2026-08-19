@@ -5,7 +5,7 @@
 //! rule before any run, so this reads and proposes and nothing else. A cheaper model answers
 //! first; a stronger one is asked only when the cheaper found no place.
 
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::core::port::outbound::{Draft, Drafted, Drafter};
 
@@ -92,6 +92,9 @@ fn prompt(ask: &Draft<'_>, files: &[String]) -> String {
 fn ask_model(program: &str, model: &str, repository: &str, prompt: &str) -> Option<Drafted> {
     let done = Command::new(program)
         .current_dir(repository)
+        // It reads only its arguments. Closing stdin keeps it from waiting on input that,
+        // asked as a one-shot from the daemon, never comes.
+        .stdin(Stdio::null())
         .args(["-p", prompt, "--model", model, "--max-turns", TURNS])
         .output()
         .ok()?;
