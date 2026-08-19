@@ -382,12 +382,26 @@ impl Sessions {
     ///
     /// A share cannot be worked out later.
     /// What was read while the session ran is what is reported for it afterwards.
+    ///
+    /// Two things are turned away. A session that has stopped keeps what it consumed when it
+    /// did: a record arriving afterwards would report a figure from a moment the session was
+    /// no longer running, and `updated_at` is what `elapsed` reads as the moment it stopped.
+    /// And a figure below the one stored is one that was read earlier, since a session only
+    /// ever spends more; the readings are taken outside the hold this is called under, so two
+    /// of them can arrive in the other order from the one they were read in.
     pub fn record(&mut self, id: SessionId, consumed: Spending, now: u64) {
         for session in &mut self.sessions {
-            if session.id == id {
-                session.consumed = consumed;
-                session.updated_at = now;
+            if session.id != id {
+                continue;
             }
+            if session.state != SessionState::Running {
+                return;
+            }
+            if consumed.behind(&session.consumed) {
+                return;
+            }
+            session.consumed = consumed;
+            session.updated_at = now;
         }
     }
 
@@ -477,6 +491,41 @@ mod tests {
             started_at: 1_000,
             limit_at_start: Some(1_100),
         }
+    }
+
+    /// A session that has stopped keeps what it consumed when it did.
+    ///
+    /// A record arriving afterwards reports a figure from a moment the session was no longer
+    /// running, and it moves `updated_at`, which `elapsed` reads as the moment it stopped.
+    #[test]
+    fn a_session_that_stopped_takes_no_more_records() {
+        let mut sessions = Sessions::default();
+        let id = sessions.open(opening()).unwrap();
+
+        sessions.record(id, Spending::Share(600), 2_000);
+        sessions.stop(id, StoppedReason::AllDone, 3_000);
+        sessions.record(id, Spending::Share(900), 4_000);
+
+        let stopped = sessions.sessions().first().unwrap();
+        assert_eq!(stopped.consumed(), Spending::Share(600));
+        assert_eq!(stopped.updated_at(), 3_000);
+    }
+
+    /// A session only ever spends more, so the lower of two figures was read earlier.
+    /// The readings are taken outside the hold this is written under, so two of them can
+    /// arrive in the other order from the one they were read in.
+    #[test]
+    fn a_record_that_arrived_late_is_left_out() {
+        let mut sessions = Sessions::default();
+        let id = sessions.open(opening()).unwrap();
+
+        sessions.record(id, Spending::Share(900), 2_000);
+        sessions.record(id, Spending::Share(600), 3_000);
+
+        assert_eq!(
+            sessions.sessions().first().unwrap().consumed(),
+            Spending::Share(900)
+        );
     }
 
     #[test]

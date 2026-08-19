@@ -543,14 +543,24 @@ impl ExecutionService<'_> {
 
         // A share cannot be worked out again once the session has stopped.
         // What was read here is what is reported for it afterwards.
+        //
+        // A store that would not take it does not undo the assignment. The tasks are already
+        // written down as running and their numbers are what the caller starts them by, so
+        // dropping the numbers here leaves tasks nobody picks up and nothing to pick them up
+        // with. The figure is written again at the next task to end, and the assignment is
+        // not: one of the two comes back by itself.
         let spent = settled.spent();
-        sessions::change(self.outside.sessions, |sessions| {
+        let recorded = sessions::change(self.outside.sessions, |sessions| {
             sessions.record(session, spent, now);
             Ok(())
-        })?;
+        });
 
         match settled {
-            Settled::Stop(_, why) => self.stop(session, why).map(|()| Vec::new()),
+            // Stopping writes to the same store, so a store that would not take the figure
+            // will not take the stopping either. That one is reported.
+            Settled::Stop(_, why) => {
+                recorded.and_then(|()| self.stop(session, why).map(|()| Vec::new()))
+            }
             Settled::Started(_, assigned) => Ok(assigned),
         }
     }
@@ -573,8 +583,14 @@ impl Settled {
 
 /// How the session stands, from the backlog as it is held.
 ///
-/// Every figure comes from the one backlog the assignment is made against, so none of them can
-/// be from before another thread assigned.
+/// Every figure taken from the backlog comes from the one the assignment is made against, so
+/// none of those can be from before another thread assigned.
+///
+/// What a share spent is not one of them. It is the vendor's, read before this hold, and put
+/// beside a count of what ended that is read under it. A task ending between the two is
+/// counted as having ended without what it spent being in the figure, so the cost of a task
+/// reads low and `room_for` reads high. It is the wrong way to be wrong, and the alternative
+/// is holding the store for the ninety seconds the reading takes.
 fn standing(
     tasks: &Backlog,
     held: &Session,

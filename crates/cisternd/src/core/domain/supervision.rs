@@ -26,6 +26,21 @@ pub enum Spending {
     Tokens(u64),
 }
 
+impl Spending {
+    /// Whether this figure was read before the one it is put beside.
+    ///
+    /// A session only ever spends more, so the lower of two figures of the same kind is the
+    /// earlier reading. A share and a count are not put beside each other: they measure
+    /// different things, and a session is declared in one of them for its whole life.
+    pub fn behind(&self, other: &Spending) -> bool {
+        match (self, other) {
+            (Spending::Share(one), Spending::Share(another))
+            | (Spending::Tokens(one), Spending::Tokens(another)) => one < another,
+            _ => false,
+        }
+    }
+}
+
 impl Display for Spending {
     /// A share as the percentage a person declared, a count as the count.
     ///
