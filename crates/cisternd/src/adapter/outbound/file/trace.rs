@@ -33,6 +33,9 @@ pub struct Shapes {
     pub reached_for: String,
     pub result: String,
     pub errored: String,
+    pub held: String,
+    pub called: String,
+    pub given: String,
     pub subject: Vec<String>,
     pub subject_path: Vec<String>,
 }
@@ -209,7 +212,7 @@ fn failed_in(held: &Value, shapes: &Shapes) -> Option<String> {
         if block.get(&shapes.errored).and_then(Value::as_bool) != Some(true) {
             continue;
         }
-        let said = match block.get("content") {
+        let said = match block.get(&shapes.held) {
             Some(Value::String(said)) => said.clone(),
             Some(other) => other.to_string(),
             None => String::new(),
@@ -231,7 +234,10 @@ fn said_in(held: &Value, shapes: &Shapes) -> Option<String> {
                 said.push(shortened(text));
             }
         } else if kind == Some(shapes.reached_for.as_str()) {
-            let name = block.get("name").and_then(Value::as_str).unwrap_or("?");
+            let name = block
+                .get(&shapes.called)
+                .and_then(Value::as_str)
+                .unwrap_or("?");
             said.push(format!("{name} {}", shortened(&asked_for(block, shapes))));
         }
     }
@@ -245,7 +251,7 @@ fn said_in(held: &Value, shapes: &Shapes) -> Option<String> {
 /// A tool takes an object of arguments and one of them is what a person would say it acted on.
 /// The rest is left in the file.
 fn asked_for(block: &Value, shapes: &Shapes) -> String {
-    let Some(given) = block.get("input").and_then(Value::as_object) else {
+    let Some(given) = block.get(&shapes.given).and_then(Value::as_object) else {
         return String::new();
     };
     for name in &shapes.subject {
@@ -315,6 +321,9 @@ mod tests {
             reached_for: "tool_use".to_owned(),
             result: "tool_result".to_owned(),
             errored: "is_error".to_owned(),
+            held: "content".to_owned(),
+            called: "name".to_owned(),
+            given: "input".to_owned(),
             subject: ["command", "pattern", "url", "description"]
                 .map(str::to_owned)
                 .to_vec(),

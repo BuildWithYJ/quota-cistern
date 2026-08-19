@@ -103,6 +103,11 @@ pub struct Trace {
     pub result: String,
     /// The flag on a result that did not work.
     pub errored: String,
+    /// What a result block holds, what the tool a block reached for is called, and where the
+    /// arguments it was given are.
+    pub held: String,
+    pub called: String,
+    pub given: String,
     /// Which argument of a tool call names what it acted on, most telling first.
     pub subject: Vec<String>,
     /// The same, for arguments holding a path, which is shown from the work area down.

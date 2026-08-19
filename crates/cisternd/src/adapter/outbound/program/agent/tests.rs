@@ -462,3 +462,17 @@ fn a_name_filled_with_nothing_leaves_the_argument_empty() {
 
     assert_eq!(fill("{model}", &filling), "");
 }
+
+/// A `{` nothing closes is not a place, and what came before it was written once already.
+///
+/// Only an unmatched brace at the very start was covered, which is the one shape where the
+/// prefix is empty and writing it twice cannot be seen.
+#[test]
+fn an_unmatched_brace_is_written_once() {
+    let filling = [("model", "haiku")];
+
+    assert_eq!(super::fill("--flag={x", &filling), "--flag={x");
+    assert_eq!(super::fill("{model} {", &filling), "haiku {");
+    assert_eq!(super::fill("{", &filling), "{");
+    assert_eq!(super::fill("a{b{c", &filling), "a{b{c");
+}

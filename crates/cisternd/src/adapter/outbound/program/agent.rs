@@ -106,6 +106,10 @@ fn fill(token: &str, filling: &[(&str, &str)]) -> String {
         written.push_str(&left[..at]);
         let rest = &left[at..];
         let Some(end) = rest.find('}') else {
+            // Nothing closes it, so the rest of the token is not a place and is written as
+            // it stands. `left` has to move to it: what came before was written already, and
+            // the tail below writes whatever `left` still holds.
+            left = rest;
             break;
         };
         let name = &rest[1..end];

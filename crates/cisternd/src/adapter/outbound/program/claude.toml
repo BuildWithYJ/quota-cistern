@@ -22,6 +22,12 @@ spend = "20"
 
 # Arguments are grouped so that a group holding a place nobody filled is dropped whole.
 # A task that named no model has to lose --model with it.
+#
+# The last group is what `answer.reader` below reads. A file laid over this one replaces an
+# array whole rather than adding to it, so an `args` that leaves those flags out changes the
+# shape of the answer without changing the reader that expects it: runs then finish with
+# nothing readable where the usage should be. Override `args` and `answer.reader` together,
+# or leave that group in.
 args = [
   ["--permission-mode", "bypassPermissions"],
   ["--max-turns", "{turns}"],
@@ -88,7 +94,9 @@ prompt = "say ok and nothing else"
 
 # What the screen says at the two moments something has to be typed. These are the
 # vendor's words and change when the vendor changes them.
-trusts = "trustthisfolder"
+# Matched with the spacing and the case taken out, on both sides, so these are
+# written as the screen reads rather than as it arrives.
+trusts = "Trust this folder"
 ready = "try\""
 
 # The five-hour window. The longer one arrives beside it and is not read. The figure
@@ -119,6 +127,11 @@ text = "text"
 reached_for = "tool_use"
 result = "tool_result"
 errored = "is_error"
+
+# What a result block holds, what a tool is called, and where its arguments are.
+held = "content"
+called = "name"
+given = "input"
 
 # A tool takes an object of arguments and one of them is what a person would say it acted
 # on. The rest is left in the file.

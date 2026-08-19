@@ -221,6 +221,9 @@ fn shapes_of(definition: &outbound::program::Definition) -> outbound::file::trac
         reached_for: held.reached_for.clone(),
         result: held.result.clone(),
         errored: held.errored.clone(),
+        held: held.held.clone(),
+        called: held.called.clone(),
+        given: held.given.clone(),
         subject: held.subject.clone(),
         subject_path: held.subject_path.clone(),
     }

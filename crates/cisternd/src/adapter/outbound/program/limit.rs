@@ -199,6 +199,12 @@ impl ProgramLimit {
         held: &Held,
     ) -> Result<Reading, Unavailable> {
         let asking = &self.definition.limit;
+        // Reduced the same way the screen is. A definition is a file a person writes, and
+        // `trusts = "Trust this folder"` is what a person writes; matched as typed it never
+        // finds the screen, and every reading then waits out the whole of `give_up_after`
+        // with the core answering nothing else.
+        let trusts = reduced(&asking.trusts);
+        let ready = reduced(&asking.ready);
         let started = Instant::now();
         let give_up_after = Duration::from_secs(asking.give_up_after);
         let settles_in = Duration::from_secs(asking.settles_in);
@@ -216,13 +222,13 @@ impl ProgramLimit {
             }
 
             let said = plainly(&seen);
-            if !trusted && said.contains(&asking.trusts) {
+            if !trusted && said.contains(&trusts) {
                 let _ = typing.write_all(b"\r");
                 let _ = typing.flush();
                 trusted = true;
                 continue;
             }
-            if !asked && said.contains(&asking.ready) && started.elapsed() > settles_in {
+            if !asked && said.contains(&ready) && started.elapsed() > settles_in {
                 let _ = typing.write_all(format!("{}\r", asking.prompt).as_bytes());
                 let _ = typing.flush();
                 asked = true;
@@ -277,8 +283,18 @@ fn plainly(seen: &[u8]) -> String {
         left = rest[ends..].to_owned();
     }
     said.push_str(&left);
-    said.retain(|c| !c.is_whitespace());
-    said.to_lowercase()
+    reduced(&said)
+}
+
+/// The spacing and the case taken out.
+///
+/// The screen and what is looked for in it both pass through here, so that a definition holds
+/// the words as a person would write them rather than as the screen happens to arrive.
+fn reduced(said: &str) -> String {
+    said.chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_lowercase()
 }
 
 #[cfg(test)]

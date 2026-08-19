@@ -119,3 +119,14 @@ fn a_path_with_a_quote_in_it_leaves_both_files_readable() {
     );
     assert!(script.contains(&quoted), "{script}");
 }
+
+/// A definition is a file a person writes, and this is how a person writes it. Matched as
+/// typed against a screen that has been reduced, it never finds it, and every reading then
+/// waits out the whole timeout with the core answering nothing else.
+#[test]
+fn what_is_looked_for_is_reduced_the_way_the_screen_is() {
+    let screen = super::plainly(b"\x1b[1mYes, I \x1b[32mtrust\x1b[0m this folder\x1b[0m");
+
+    assert!(screen.contains(&super::reduced("Trust this folder")));
+    assert!(screen.contains(&super::reduced("trustthisfolder")));
+}
