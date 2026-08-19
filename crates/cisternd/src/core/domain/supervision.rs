@@ -97,8 +97,8 @@ impl Budget {
 /// and more start, each with a smaller allowance. It buys back the budget a run would
 /// otherwise spend going nowhere.
 ///
-/// A model nothing has been run with has no figure, so one task starts with the whole of what
-/// is left, and what it costs is the figure the next answer is worked out from.
+/// A model nothing has finished a run with has no figure, so one task starts with the whole of
+/// what is left, and what it costs is the figure the next answer is worked out from.
 fn allow(standing: &Standing) -> Vec<Allowance> {
     let mut free = standing.left.saturating_sub(standing.booked);
     let mut given: Vec<Allowance> = Vec::new();
@@ -121,7 +121,7 @@ fn allow(standing: &Standing) -> Vec<Allowance> {
         let ceiling = if free >= want {
             want
         } else if standing.running == 0 && given.is_empty() && free >= sizing.median.max(1) {
-            // Room for the middle of what this model costs but not for three in four of it.
+            // Room for the middle of what this model costs but not for a whole ceiling.
             // More than half of what might start would finish inside what is left, which is
             // worth more than stopping a session that still has budget.
             free
@@ -137,6 +137,25 @@ fn allow(standing: &Standing) -> Vec<Allowance> {
     given
 }
 
+/// The quantile a ceiling is set at, in whole percent.
+///
+/// High rather than middling, because the two ways of being wrong do not cost the same. A
+/// ceiling under what a run needs stops the run, and everything it spent up to then is paid
+/// for with nothing to show; doing the work again means reading the whole conversation back in
+/// as well. A ceiling over what a run needs costs nothing at all: what a run is allowed is held
+/// against the budget while it goes and comes back unspent when it ends, so the price of aiming
+/// high is that fewer run at once rather than that more is spent.
+///
+/// The figure is borrowed rather than measured. Systems that set a limit on something fatal to
+/// exceed use the same range: Kubernetes' vertical autoscaler takes the 95th percentile for
+/// memory and the 90th for CPU, and Google's Autopilot takes the 98th or the peak for memory
+/// and the mean for batch CPU, each with a margin on top. A run of ours that meets its ceiling
+/// loses its work, which puts it with memory rather than with CPU.
+const ESTIMATE: u64 = 95;
+
+/// The middle, in whole percent.
+const MIDDLE: u64 = 50;
+
 /// What runs of one model have cost.
 ///
 /// Two figures rather than one. A prediction used as a hard limit kills a run every time the
@@ -144,7 +163,11 @@ fn allow(standing: &Standing) -> Vec<Allowance> {
 /// apart: this says what to expect, and what is left of the budget says what is allowed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sizing {
-    /// Three runs in four cost this or less.
+    /// What a run of this model is expected to take, at the quantile above.
+    ///
+    /// Never under what a run of this model was stopped at: a run held to a ceiling was still
+    /// working when it was stopped, so its task takes at least that much and the figure that
+    /// decides the next ceiling cannot say otherwise.
     pub estimate: u64,
     /// Half of them cost this or less.
     ///
@@ -152,13 +175,50 @@ pub struct Sizing {
     /// since more than half of what it might start would fit.
     pub median: u64,
     /// How many runs these were worked out from.
+    ///
+    /// Runs that finished. A run that was stopped says where it was stopped rather than what
+    /// its task takes, so it raises the floor under `estimate` without being counted here.
     pub over: usize,
+}
+
+/// What one run cost, and whether that figure is what its task takes.
+///
+/// A run stopped at its ceiling spent what it was stopped at. Counting that as what the task
+/// costs closes a loop: the stopped figure pulls the estimate down toward the ceiling that
+/// stopped it, the lower estimate stops the next run sooner, and the sizing settles under
+/// what the work needs with nothing to pull it back up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ran {
+    model: Option<String>,
+    spent: u64,
+    stopped: bool,
+}
+
+impl Ran {
+    /// A run that did the work, which cost what its task takes.
+    pub fn finished(model: Option<&str>, spent: u64) -> Self {
+        Self {
+            model: model.map(str::to_owned),
+            spent,
+            stopped: false,
+        }
+    }
+
+    /// A run held to a ceiling, which says only that its task takes at least this much.
+    pub fn stopped(model: Option<&str>, spent: u64) -> Self {
+        Self {
+            model: model.map(str::to_owned),
+            spent,
+            stopped: true,
+        }
+    }
 }
 
 /// What runs have cost, by the model that ran them.
 ///
-/// A model nobody has run has nothing here, and a session that meets one starts a single task
-/// and measures it rather than guessing. The first run is the first sample.
+/// A model nothing has finished a run with has nothing here, and a session that meets one
+/// starts a single task and measures it rather than guessing. The first run that finishes is
+/// the first sample.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Sizings {
     by_model: BTreeMap<String, Sizing>,
@@ -173,17 +233,30 @@ impl Sizings {
     /// what one model's runs cost differs from another's by more than that, so a session
     /// running one model against a figure taken over all of them is measured against a size
     /// nothing it runs is.
-    pub fn of(runs: impl IntoIterator<Item = (Option<String>, u64)>) -> Self {
-        let mut apart: BTreeMap<Option<String>, Vec<u64>> = BTreeMap::new();
-        for (model, cost) in runs {
-            apart.entry(model).or_default().push(cost);
+    /// Runs that were stopped are kept apart from runs that finished. What a stopped run cost
+    /// is where we stopped it, which is a floor under what its task takes rather than a
+    /// measure of it, so it holds the estimate up without being averaged into it.
+    ///
+    /// A model with nothing but stopped runs has no figure at all. One task then starts with
+    /// the whole of what is left, which is more room than any floor would have given it.
+    pub fn of(runs: impl IntoIterator<Item = Ran>) -> Self {
+        let mut apart: BTreeMap<Option<String>, (Vec<u64>, u64)> = BTreeMap::new();
+        for run in runs {
+            let (finished, floor) = apart.entry(run.model).or_default();
+            match run.stopped {
+                false => finished.push(run.spent),
+                true => *floor = (*floor).max(run.spent),
+            }
         }
         let mut sizings = Sizings::default();
-        for (model, mut costs) in apart {
+        for (model, (mut costs, floor)) in apart {
+            if costs.is_empty() {
+                continue;
+            }
             costs.sort_unstable();
             let sizing = Sizing {
-                estimate: at(&costs, 75),
-                median: at(&costs, 50),
+                estimate: at(&costs, ESTIMATE).max(floor),
+                median: at(&costs, MIDDLE),
                 over: costs.len(),
             };
             match model {
@@ -205,16 +278,37 @@ impl Sizings {
     }
 }
 
-/// The value at a percentile of a sorted list, taking the nearer rank.
+/// The value at a quantile of a sorted list, by the rule Hyndman and Fan recommend.
 ///
-/// Nearest rank rather than interpolated. A session has a handful of runs to work from, and a
-/// figure between two of them is not one any run cost.
-fn at(sorted: &[u64], percentile: u64) -> u64 {
-    if sorted.is_empty() {
+/// `h = (n + 1/3)p + 1/3`, read between the two values it falls between and held inside the
+/// list at either end. The figure it gives is as often above the quantile it was asked for as
+/// below it, whatever shape the values were drawn from.
+///
+/// Which rule is used matters at these sizes. Taking the nearer rank asks four runs for their
+/// 75th and returns the third of them, and the kth of n sorted values sits at k/(n+1) of
+/// whatever they came from, so the third of four is the 60th. A ceiling set there stops two
+/// runs in five rather than the one in four it was asked for. That is arithmetic about ranks
+/// rather than an assumption about the shape: the position of an order statistic follows
+/// Beta(k, n - k + 1) for any continuous distribution, whose mean is k/(n+1).
+///
+/// Held whole throughout. `h` is carried in three-hundredths, which is exact for a quantile
+/// given in whole percent, and the reading between two values rounds down: a ceiling that
+/// lands under a figure some run cost is the safer way to be a fraction out.
+fn at(sorted: &[u64], per_cent: u64) -> u64 {
+    let Some(last) = sorted.len().checked_sub(1) else {
         return 0;
+    };
+    let over = 300 * sorted.len() as u64;
+    let h = 3 * per_cent * sorted.len() as u64 + per_cent + 100;
+    if h <= 300 {
+        return sorted[0];
     }
-    let rank = (percentile * sorted.len() as u64).div_ceil(100).max(1) as usize;
-    sorted[rank - 1]
+    if h >= over {
+        return sorted[last];
+    }
+    // Between 1 and n - 1 inclusive, since h is over 300 and under 300n.
+    let under = (h / 300) as usize;
+    sorted[under - 1] + (sorted[under] - sorted[under - 1]) * (h % 300) / 300
 }
 
 /// What one task is allowed to consume.
@@ -320,7 +414,7 @@ mod tests {
         Standing {
             left: 1_000,
             booked: 0,
-            sizings: Sizings::of([(Some("opus".to_owned()), 100)]),
+            sizings: Sizings::of([Ran::finished(Some("opus"), 100)]),
             pending: vec![
                 (task(1), Some("opus".to_owned())),
                 (task(2), Some("opus".to_owned())),
@@ -496,15 +590,15 @@ mod tests {
     fn a_session_with_nothing_running_lowers_its_bar_to_the_middle() {
         assert_eq!(
             ceilings(decide(&Standing {
-                left: 60,
+                left: 80,
                 running: 0,
                 sizings: Sizings::of([
-                    (Some("opus".to_owned()), 50),
-                    (Some("opus".to_owned()), 100),
+                    Ran::finished(Some("opus"), 50),
+                    Ran::finished(Some("opus"), 100),
                 ]),
                 ..standing()
             })),
-            [60]
+            [80]
         );
     }
 
@@ -516,8 +610,8 @@ mod tests {
                 left: 40,
                 running: 0,
                 sizings: Sizings::of([
-                    (Some("opus".to_owned()), 50),
-                    (Some("opus".to_owned()), 100),
+                    Ran::finished(Some("opus"), 50),
+                    Ran::finished(Some("opus"), 100),
                 ]),
                 ..standing()
             }),
@@ -533,8 +627,8 @@ mod tests {
             decide(&Standing {
                 left: 60,
                 sizings: Sizings::of([
-                    (Some("opus".to_owned()), 50),
-                    (Some("opus".to_owned()), 100),
+                    Ran::finished(Some("opus"), 50),
+                    Ran::finished(Some("opus"), 100),
                 ]),
                 ..standing()
             }),
@@ -566,10 +660,10 @@ mod tests {
     #[test]
     fn each_model_is_worked_out_from_its_own_runs() {
         let sizings = Sizings::of([
-            (Some("haiku".to_owned()), 10),
-            (Some("haiku".to_owned()), 20),
-            (Some("opus".to_owned()), 300),
-            (Some("opus".to_owned()), 400),
+            Ran::finished(Some("haiku"), 10),
+            Ran::finished(Some("haiku"), 20),
+            Ran::finished(Some("opus"), 300),
+            Ran::finished(Some("opus"), 400),
         ]);
 
         assert_eq!(sizings.model(Some("haiku")).unwrap().estimate, 20);
@@ -581,30 +675,88 @@ mod tests {
     /// its own rather than any of the named ones.
     #[test]
     fn runs_that_named_no_model_are_their_own() {
-        let sizings = Sizings::of([(None, 7), (Some("opus".to_owned()), 900)]);
+        let sizings = Sizings::of([Ran::finished(None, 7), Ran::finished(Some("opus"), 900)]);
 
         assert_eq!(sizings.model(None).unwrap().estimate, 7);
         assert_eq!(sizings.model(Some("opus")).unwrap().estimate, 900);
     }
 
-    /// Nearest rank rather than interpolated. A session has a handful of runs to work from,
-    /// and a figure between two of them is not one any run cost.
+    /// Read between two runs rather than at the nearer of them.
+    ///
+    /// The kth of n sorted runs sits at k/(n+1) of what they were drawn from, so the nearer
+    /// rank answers a question it was not asked: four runs asked for their 75th return the
+    /// third, which is the 60th, and a ceiling there stops two runs in five rather than one in
+    /// four. Four runs asked for their 95th have nothing above the largest to offer, and their
+    /// middle falls between the second and the third.
     #[test]
-    fn the_figures_are_ones_a_run_actually_cost() {
+    fn the_figures_are_read_between_the_runs() {
         let sizings = Sizings::of([
-            (Some("opus".to_owned()), 100),
-            (Some("opus".to_owned()), 200),
-            (Some("opus".to_owned()), 300),
-            (Some("opus".to_owned()), 400),
+            Ran::finished(Some("opus"), 100),
+            Ran::finished(Some("opus"), 200),
+            Ran::finished(Some("opus"), 300),
+            Ran::finished(Some("opus"), 400),
         ]);
         let sizing = sizings.model(Some("opus")).unwrap();
 
-        assert_eq!((sizing.estimate, sizing.median, sizing.over), (300, 200, 4));
+        assert_eq!((sizing.estimate, sizing.median, sizing.over), (400, 250, 4));
+    }
+
+    /// Until there are runs enough for a figure to sit under the largest of them, the estimate
+    /// is the largest. Thirteen runs is where it starts pulling in, and a session works from a
+    /// handful, so what a ceiling comes to in practice is the dearest run of that model yet.
+    #[test]
+    fn the_estimate_only_falls_under_the_dearest_run_once_there_are_runs_enough() {
+        let costs = |over: u64| {
+            Sizings::of((1..=over).map(|each| Ran::finished(Some("opus"), each * 100)))
+                .model(Some("opus"))
+                .unwrap()
+                .estimate
+        };
+
+        assert_eq!((costs(4), costs(8), costs(13)), (400, 800, 1_300));
+        assert_eq!(costs(14), 1_395);
+    }
+
+    /// A run stopped at its ceiling spent what it was stopped at. Counting that as what the
+    /// task costs would pull the estimate down toward the ceiling that stopped it, and the
+    /// lower estimate would stop the next run sooner.
+    #[test]
+    fn a_run_that_was_stopped_is_not_counted_as_what_its_task_costs() {
+        let sizings = Sizings::of([
+            Ran::finished(Some("opus"), 300),
+            Ran::finished(Some("opus"), 400),
+            Ran::stopped(Some("opus"), 20),
+        ]);
+        let sizing = sizings.model(Some("opus")).unwrap();
+
+        assert_eq!((sizing.estimate, sizing.median, sizing.over), (400, 350, 2));
+    }
+
+    /// It was still working when it was stopped, so its task takes at least that much.
+    #[test]
+    fn a_run_that_was_stopped_holds_the_estimate_up_to_where_it_stopped() {
+        let sizings = Sizings::of([
+            Ran::finished(Some("opus"), 300),
+            Ran::finished(Some("opus"), 400),
+            Ran::stopped(Some("opus"), 900),
+        ]);
+        let sizing = sizings.model(Some("opus")).unwrap();
+
+        assert_eq!((sizing.estimate, sizing.over), (900, 2));
+    }
+
+    /// Nothing has finished, so there is nothing to size from. One task then starts with the
+    /// whole of what is left, which is more room than the floor would have given it.
+    #[test]
+    fn a_model_that_has_only_been_stopped_has_no_figure() {
+        let sizings = Sizings::of([Ran::stopped(Some("opus"), 900)]);
+
+        assert_eq!(sizings.model(Some("opus")), None);
     }
 
     #[test]
     fn one_run_is_both_figures() {
-        let sizings = Sizings::of([(Some("opus".to_owned()), 42)]);
+        let sizings = Sizings::of([Ran::finished(Some("opus"), 42)]);
         let sizing = sizings.model(Some("opus")).unwrap();
 
         assert_eq!((sizing.estimate, sizing.median, sizing.over), (42, 42, 1));

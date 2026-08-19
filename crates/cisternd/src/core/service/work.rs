@@ -20,7 +20,10 @@ use super::{
 };
 
 /// The reason section 1 gives a task stopped at the ceiling on one run.
-const AT_CEILING: &str = "task ceiling";
+///
+/// The supervisor reads it back off the ledger: a run that ended this way says where it was
+/// stopped rather than what its task takes, which is not a figure to size the next one from.
+pub(super) const AT_CEILING: &str = "task ceiling";
 
 /// Carrying tasks on for the sessions the supervisor decides for.
 pub struct WorkService<'a> {

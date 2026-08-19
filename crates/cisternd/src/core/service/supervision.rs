@@ -10,8 +10,8 @@
 
 use crate::core::{
     domain::{
-        Backlog, Consumption, Decision, HUNDREDTHS, Observation, Session, SessionId, SessionState,
-        Sizings, Spending, Standing, StoppedReason, TaskId, TaskState, Usage, decide,
+        Backlog, Consumption, Decision, HUNDREDTHS, Observation, Ran, Session, SessionId,
+        SessionState, Sizings, Spending, Standing, StoppedReason, TaskId, TaskState, Usage, decide,
     },
     port::{
         inbound::Refusal,
@@ -22,7 +22,7 @@ use crate::core::{
     },
 };
 
-use super::{backlog, sessions};
+use super::{backlog, sessions, work::AT_CEILING};
 
 /// What running a session needs from outside.
 ///
@@ -227,9 +227,23 @@ impl Supervisor<'_> {
     ///
     /// Runs that say nothing in the unit asked for are left out rather than counted as zero.
     /// A figure worked out from runs that reported nothing is a figure about nothing.
+    /// What a run of each model has cost, from the ledger.
+    ///
+    /// A run that finished says what its task takes. A run stopped at its ceiling says where it
+    /// was stopped, which the sizing holds as a floor rather than counting as a measure. Runs
+    /// that ended any other way are left out: a run the vendor turned away or that failed on its
+    /// own spent what it spent before it went wrong, which is neither.
     fn sizings(&self, usage: Usage) -> Result<Sizings, Refusal> {
         let held = self.outside.runs.read()?;
         Ok(Sizings::of(held.into_iter().filter_map(|run| {
+            let ran = match (
+                TaskState::parse(&run.outcome)?,
+                run.reason.as_deref() == Some(AT_CEILING),
+            ) {
+                (TaskState::Completed, _) => Ran::finished,
+                (TaskState::Interrupted, true) => Ran::stopped,
+                _ => return None,
+            };
             let cost = match usage {
                 Usage::Tokens(_) => spending_of(&run.spent?).map(|counted| counted.tokens()),
                 // What the run moved the vendor's limit by, which is what a share is measured
@@ -241,7 +255,7 @@ impl Supervisor<'_> {
                     after.checked_sub(before)
                 }
             }?;
-            Some((run.model, cost))
+            Some(ran(run.model.as_deref(), cost))
         })))
     }
 
