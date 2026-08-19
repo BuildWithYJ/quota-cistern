@@ -890,6 +890,10 @@ mod tests {
     /// This is how a window that begins again is put in front of the core: a reading lower than
     /// the one before it. The last entry stands once the list runs out, so a test writes only
     /// the looks it cares about.
+    ///
+    /// The window is left unnamed, since a reading that fell is only a window turning over
+    /// where there is no name to tell one from the next. A vendor that names them says so, and
+    /// a fallen reading from a window it just named is a look that arrived late.
     struct Turning {
         left: Mutex<Vec<u64>>,
     }
@@ -912,7 +916,7 @@ mod tests {
             };
             Ok(Reading {
                 used: used.to_string(),
-                resets_at: "1786285800".to_owned(),
+                resets_at: String::new(),
             })
         }
     }

@@ -418,6 +418,13 @@ impl Sessions {
     ///
     /// Whatever was spent between the last look and the window turning over is in no reading at
     /// all, so the figure falls short by that much rather than by a whole window.
+    ///
+    /// A reading is taken outside the hold this is called under, since asking the vendor takes
+    /// as long as ninety seconds and nothing else could be answered while it did. Two threads
+    /// can therefore arrive here in the other order from the one they read in, and the later
+    /// arrival carries the older figure. Where the vendor named the window and named the same
+    /// one, that is what a lower reading means, and it is left out rather than counted as a
+    /// window that began again.
     pub fn measured(
         &mut self,
         id: SessionId,
@@ -434,6 +441,17 @@ impl Sessions {
             // Nothing to compare against says nothing about the window.
             _ => false,
         };
+
+        // Within one window a limit only climbs, so a lower reading of the window already
+        // being measured was taken before the last look. Counting it would add a whole
+        // window to a session that had spent none of it. Nothing is written down: the look
+        // this session is measured from stays the later one.
+        let named_the_same_window =
+            !began_again && session.resets_at.is_some() && resets_at.is_some();
+        if named_the_same_window && session.limit_last_seen.is_some_and(|seen| used < seen) {
+            return Some(session.consumed);
+        }
+
         let since = match session.limit_last_seen {
             Some(_) if began_again => used,
             Some(seen) if used >= seen => used - seen,
@@ -722,6 +740,48 @@ mod tests {
         assert_eq!(
             sessions.measured(id, 1_900, None, 3_000),
             Some(Spending::Share(800))
+        );
+    }
+
+    /// A reading is taken outside the hold it is applied under, so two threads can arrive in
+    /// the other order from the one they read in.
+    ///
+    /// Where the vendor named the window and named the same one, the later arrival carrying the
+    /// lower figure read first. Counting it would add a whole window to a session that had
+    /// spent none of it.
+    #[test]
+    fn a_reading_that_arrived_late_is_left_out() {
+        let mut sessions = Sessions::default();
+        let id = sessions.open(opening()).unwrap();
+
+        // The thread that read 3400 records first: 3400 - 1100 since the session opened.
+        assert_eq!(
+            sessions.measured(id, 3_400, Some(100), 2_000),
+            Some(Spending::Share(2_300))
+        );
+        // The thread that read 3000 records second, from the window the vendor just named.
+        assert_eq!(
+            sessions.measured(id, 3_000, Some(100), 3_000),
+            Some(Spending::Share(2_300))
+        );
+        // And the look the next is measured from is still the later one.
+        assert_eq!(
+            sessions.measured(id, 3_500, Some(100), 4_000),
+            Some(Spending::Share(2_400))
+        );
+    }
+
+    /// A window the vendor named as a new one is counted whole, however it reads.
+    /// That is what tells a window turning over from a look that arrived late.
+    #[test]
+    fn a_named_window_that_began_again_is_still_counted_whole() {
+        let mut sessions = Sessions::default();
+        let id = sessions.open(opening()).unwrap();
+
+        sessions.measured(id, 3_400, Some(100), 2_000);
+        assert_eq!(
+            sessions.measured(id, 200, Some(200), 3_000),
+            Some(Spending::Share(2_500))
         );
     }
 
