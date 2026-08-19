@@ -7,7 +7,10 @@
 /// The hands the composition root gives the core, fixed here.
 pub(super) const AT_ONCE: usize = 4;
 
-use std::sync::{Mutex, PoisonError};
+use std::{
+    collections::BTreeMap,
+    sync::{Mutex, PoisonError},
+};
 
 use crate::core::{
     port::inbound::Declaration,
@@ -349,6 +352,57 @@ impl Agent for Answering {
             work.model.map(str::to_owned),
         ));
         Ok(self.ended.clone())
+    }
+}
+
+/// An agent whose runs cost what their task takes, held to the ceiling they were given.
+///
+/// A stand-in that answered the same way whatever it was allowed would show every task
+/// finishing however low a ceiling was set, which is the one thing a ceiling decides. The
+/// vendor stops a run at the figure it is told, and the run ends having spent up to there with
+/// nothing done, so that is what this does.
+///
+/// One token to one of whatever the vendor prices in, so that a ceiling worked out in tokens
+/// reaches the run as the same figure and a test can read the two as one.
+pub(super) struct Costing {
+    /// What each task takes, by the task it belongs to.
+    pub(super) takes: BTreeMap<String, u64>,
+}
+
+impl Costing {
+    /// Tasks numbered from one, each taking what is given for it.
+    pub(super) fn taking(each: impl IntoIterator<Item = u64>) -> Self {
+        Costing {
+            takes: each
+                .into_iter()
+                .enumerate()
+                .map(|(at, takes)| ((at + 1).to_string(), takes))
+                .collect(),
+        }
+    }
+}
+
+impl Agent for Costing {
+    fn stop(&self, _task: &str) {}
+
+    fn work(&self, work: Work<'_>) -> Result<Ended, Unavailable> {
+        let takes = self.takes.get(work.task).copied().unwrap_or_default();
+        let allowed = work.ceiling.and_then(|at| at.parse::<u64>().ok());
+        let (outcome, spent) = match allowed {
+            Some(allowed) if allowed < takes => (Outcome::AtCeiling, allowed),
+            _ => (Outcome::Finished, takes),
+        };
+        Ok(Ended {
+            outcome,
+            reason: None,
+            observed: Observed::Spent(Spent {
+                input: "0".to_owned(),
+                output: spent.to_string(),
+                cache_written: "0".to_owned(),
+                cache_read: "0".to_owned(),
+                cost: spent.to_string(),
+            }),
+        })
     }
 }
 

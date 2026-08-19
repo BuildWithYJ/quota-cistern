@@ -165,9 +165,11 @@ const MIDDLE: u64 = 50;
 pub struct Sizing {
     /// What a run of this model is expected to take, at the quantile above.
     ///
-    /// Never under what a run of this model was stopped at: a run held to a ceiling was still
-    /// working when it was stopped, so its task takes at least that much and the figure that
-    /// decides the next ceiling cannot say otherwise.
+    /// Never under twice what a run of this model was stopped at. A run held to a ceiling was
+    /// still working when it was stopped, so its task takes more than that; a figure set at
+    /// where the last run stopped would stop the next one at the same place and stay there,
+    /// having learnt nothing. Doubling is how a backfilling scheduler grows a prediction its
+    /// job has already outlived, and it climbs to what the work takes in a few runs.
     pub estimate: u64,
     /// Half of them cost this or less.
     ///
@@ -235,7 +237,7 @@ impl Sizings {
     /// nothing it runs is.
     /// Runs that were stopped are kept apart from runs that finished. What a stopped run cost
     /// is where we stopped it, which is a floor under what its task takes rather than a
-    /// measure of it, so it holds the estimate up without being averaged into it.
+    /// measure of it, so it lifts the estimate without being averaged into it.
     ///
     /// A model with nothing but stopped runs has no figure at all. One task then starts with
     /// the whole of what is left, which is more room than any floor would have given it.
@@ -255,7 +257,7 @@ impl Sizings {
             }
             costs.sort_unstable();
             let sizing = Sizing {
-                estimate: at(&costs, ESTIMATE).max(floor),
+                estimate: at(&costs, ESTIMATE).max(floor.saturating_mul(2)),
                 median: at(&costs, MIDDLE),
                 over: costs.len(),
             };
@@ -732,9 +734,10 @@ mod tests {
         assert_eq!((sizing.estimate, sizing.median, sizing.over), (400, 350, 2));
     }
 
-    /// It was still working when it was stopped, so its task takes at least that much.
+    /// It was still working when it was stopped, so its task takes more than that. Holding the
+    /// estimate at where it stopped would stop the next run at the same place and stay there.
     #[test]
-    fn a_run_that_was_stopped_holds_the_estimate_up_to_where_it_stopped() {
+    fn a_run_that_was_stopped_lifts_the_estimate_past_where_it_stopped() {
         let sizings = Sizings::of([
             Ran::finished(Some("opus"), 300),
             Ran::finished(Some("opus"), 400),
@@ -742,7 +745,7 @@ mod tests {
         ]);
         let sizing = sizings.model(Some("opus")).unwrap();
 
-        assert_eq!((sizing.estimate, sizing.over), (900, 2));
+        assert_eq!((sizing.estimate, sizing.over), (1_800, 2));
     }
 
     /// Nothing has finished, so there is nothing to size from. One task then starts with the

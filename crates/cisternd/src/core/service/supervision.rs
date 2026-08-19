@@ -537,6 +537,83 @@ mod tests {
         );
     }
 
+    /// Carries every task a session has started through to its end.
+    ///
+    /// A session assigns as tasks end, so what is running has to be looked at again each time
+    /// rather than listed once.
+    fn carry_them_all(work: &WorkService<'_>, tasks: &Tasks) {
+        for _ in 0..100 {
+            let held = tasks.load().unwrap();
+            let Some(running) = held.tasks.iter().find(|task| task.state == "Running") else {
+                return;
+            };
+            work.carry_on(&format!("task:{}", running.id)).unwrap();
+        }
+        panic!("a task kept running");
+    }
+
+    fn states(tasks: &Tasks) -> Vec<String> {
+        tasks
+            .load()
+            .unwrap()
+            .tasks
+            .iter()
+            .map(|task| task.state.clone())
+            .collect()
+    }
+
+    /// What a ceiling does to a session, with a stand-in that stops where it is told to.
+    ///
+    /// The tasks take more and more, and nothing has been run before, so the session learns
+    /// what a run costs from the runs it has already had. The first task has nothing to go on
+    /// and is given the whole budget. Every one after it is held to what the runs before it
+    /// cost, which is under what it takes until a run that was stopped has raised the figure
+    /// far enough.
+    ///
+    /// One at a time, so that each task decides against everything before it. Four at once
+    /// would start them all against the first figure and stop them all at it.
+    #[test]
+    fn a_session_learns_what_a_run_costs_from_the_runs_it_stopped() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![
+            a_pending_task(),
+            a_second_task(),
+            a_task_numbered("3"),
+            a_task_numbered("4"),
+            a_task_numbered("5"),
+        ]);
+        let areas = Areas::default();
+        let agent = Costing::taking([100, 200, 300, 400, 400]);
+        let runs = Ledger::default();
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &UNTOUCHED,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, 1);
+        let execution = ExecutionService::new(outside, &supervisor);
+        let work = WorkService::new(outside, &supervisor);
+
+        execution.run(declaring("100000", "8h")).unwrap();
+        carry_them_all(&work, &tasks);
+
+        assert_eq!(
+            states(&tasks),
+            [
+                "Completed",
+                "Interrupted",
+                "Interrupted",
+                "Completed",
+                "Completed"
+            ]
+        );
+    }
+
     /// The other half of the hardlock: a session that has spent the tokens it declared stops.
     /// It stops whether or not its time is up.
     #[test]
