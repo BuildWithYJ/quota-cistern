@@ -91,23 +91,23 @@ fn main() -> ExitCode {
     let configuration = ConfigurationService::new(&configuration_store, known);
     let backlog = BacklogService::new(&backlog_store, &roots, &results);
     let review = ReviewService::new(&backlog_store, &results);
-    // One judgement, held by the commands that ask for a decision and by the workers that
-    // carry out what one assigned.
-    let supervisor = Supervisor::new(
-        Outside {
-            sessions: &session_store,
-            tasks: &backlog_store,
-            worktrees: &worktrees,
-            agent: &agent,
-            clock: &clock,
-            limit: &limit,
-            traces: &traces,
-            runs: &runs,
-        },
-        AT_ONCE,
-    );
-    let execution = ExecutionService::new(&supervisor);
-    let work = WorkService::new(&supervisor);
+    // The ports, once. Each service takes its own copy rather than reaching for another's.
+    let outside = Outside {
+        sessions: &session_store,
+        tasks: &backlog_store,
+        worktrees: &worktrees,
+        agent: &agent,
+        clock: &clock,
+        limit: &limit,
+        traces: &traces,
+        runs: &runs,
+    };
+
+    // One judgement, asked by the commands that need a decision and by the workers that carry
+    // out what one assigned.
+    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let execution = ExecutionService::new(outside, &supervisor);
+    let work = WorkService::new(outside, &supervisor);
 
     let server = match exchange::listen() {
         Ok(server) => server,

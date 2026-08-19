@@ -14,19 +14,26 @@ use crate::core::{
     },
 };
 
-use super::{backlog, labelled, sessions, supervision::Supervisor};
+use super::{
+    backlog, labelled, sessions,
+    supervision::{Outside, Supervisor},
+};
 
 /// The reason section 1 gives a task stopped at the ceiling on one run.
 const AT_CEILING: &str = "task ceiling";
 
 /// Carrying tasks on for the sessions the supervisor decides for.
 pub struct WorkService<'a> {
+    outside: Outside<'a>,
     supervising: &'a Supervisor<'a>,
 }
 
 impl<'a> WorkService<'a> {
-    pub fn new(supervising: &'a Supervisor<'a>) -> Self {
-        WorkService { supervising }
+    pub fn new(outside: Outside<'a>, supervising: &'a Supervisor<'a>) -> Self {
+        WorkService {
+            outside,
+            supervising,
+        }
     }
 }
 
@@ -43,7 +50,7 @@ impl WorkService<'_> {
     /// the run happened and the task it belonged to was removed while it did.
     fn remember(&self, run: Option<Run>) -> Result<(), Refusal> {
         match run {
-            Some(run) => Ok(self.supervising.outside.runs.append(run)?),
+            Some(run) => Ok(self.outside.runs.append(run)?),
             None => Ok(()),
         }
     }
@@ -56,7 +63,7 @@ impl WorkService<'_> {
         })?;
 
         let (repository, base, branch, instruction, model) = {
-            let tasks = backlog::read(self.supervising.outside.tasks)?;
+            let tasks = backlog::read(self.outside.tasks)?;
             let held = tasks
                 .find(id)
                 .ok_or_else(|| Refusal::NoSuchTask { id: id.labelled() })?;
@@ -75,7 +82,7 @@ impl WorkService<'_> {
             )
         };
 
-        let at = match self.supervising.outside.worktrees.prepare(Cut {
+        let at = match self.outside.worktrees.prepare(Cut {
             repository: &repository,
             base: &base,
             branch: &branch,
@@ -85,13 +92,13 @@ impl WorkService<'_> {
             // A task with nowhere to work has ended, and nothing ran, so there is nothing to have consumed.
             Err(e) => return self.ended(id, TaskState::Error, Some(e.reason), Observation::NotYet),
         };
-        backlog::change(self.supervising.outside.tasks, |tasks| {
+        backlog::change(self.outside.tasks, |tasks| {
             tasks.work_area(id, at.clone());
             Ok(())
         })?;
 
-        let trace = self.supervising.outside.traces.keeping(&id.to_string())?;
-        let ended = self.supervising.outside.agent.work(Work {
+        let trace = self.outside.traces.keeping(&id.to_string())?;
+        let ended = self.outside.agent.work(Work {
             task: &id.to_string(),
             at: &at,
             trace,
@@ -129,14 +136,13 @@ impl WorkService<'_> {
     /// The session stops, because every other task in it would be turned away the same way.
     fn turned_away(&self, id: TaskId, consumed: Observation) -> Result<Vec<String>, Refusal> {
         let starts_over = self
-            .supervising
             .outside
             .limit
             .read()
             .ok()
             .and_then(|at| at.resets_at.parse().ok());
-        let now = self.supervising.outside.clock.now();
-        let (session, run) = backlog::change(self.supervising.outside.tasks, |tasks| {
+        let now = self.outside.clock.now();
+        let (session, run) = backlog::change(self.outside.tasks, |tasks| {
             tasks.record(id, consumed.clone());
             let held = tasks.find(id);
             let session = held.and_then(Task::session);
@@ -148,7 +154,7 @@ impl WorkService<'_> {
 
         if let Some(session) = session {
             if let Some(at) = starts_over {
-                sessions::change(self.supervising.outside.sessions, |sessions| {
+                sessions::change(self.outside.sessions, |sessions| {
                     sessions.resets_at(session, at);
                     Ok(())
                 })?;
@@ -168,8 +174,8 @@ impl WorkService<'_> {
         reason: Option<String>,
         consumed: Observation,
     ) -> Result<Vec<String>, Refusal> {
-        let now = self.supervising.outside.clock.now();
-        let (session, run) = backlog::change(self.supervising.outside.tasks, |tasks| {
+        let now = self.outside.clock.now();
+        let (session, run) = backlog::change(self.outside.tasks, |tasks| {
             tasks.finish(id, state, reason.clone(), now);
             tasks.record(id, consumed.clone());
             let held = tasks.find(id);
@@ -271,21 +277,19 @@ mod tests {
         let areas = Areas::default();
         let agent = Answering::finishing();
         let runs = Ledger::default();
-        let supervisor = Supervisor::new(
-            Outside {
-                sessions: &sessions,
-                tasks: &tasks,
-                worktrees: &areas,
-                agent: &agent,
-                clock: &STILL,
-                limit: &UNTOUCHED,
-                traces: &NOTHING_KEPT,
-                runs: &runs,
-            },
-            AT_ONCE,
-        );
-        let execution = ExecutionService::new(&supervisor);
-        let work = WorkService::new(&supervisor);
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &UNTOUCHED,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        let execution = ExecutionService::new(outside, &supervisor);
+        let work = WorkService::new(outside, &supervisor);
 
         execution.run(declaring("50%", "8h")).unwrap();
         work.carry_on("task:1").unwrap();
@@ -316,21 +320,19 @@ mod tests {
         let areas = Areas::default();
         let agent = Answering::finishing();
         let runs = Ledger::default();
-        let supervisor = Supervisor::new(
-            Outside {
-                sessions: &sessions,
-                tasks: &tasks,
-                worktrees: &areas,
-                agent: &agent,
-                clock: &STILL,
-                limit: &UNTOUCHED,
-                traces: &NOTHING_KEPT,
-                runs: &runs,
-            },
-            AT_ONCE,
-        );
-        let execution = ExecutionService::new(&supervisor);
-        let work = WorkService::new(&supervisor);
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &UNTOUCHED,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        let execution = ExecutionService::new(outside, &supervisor);
+        let work = WorkService::new(outside, &supervisor);
 
         execution.run(declaring("50%", "8h")).unwrap();
         work.carry_on("task:1").unwrap();
@@ -362,21 +364,19 @@ mod tests {
         };
         let agent = Answering::finishing();
         let runs = Ledger::default();
-        let supervisor = Supervisor::new(
-            Outside {
-                sessions: &sessions,
-                tasks: &tasks,
-                worktrees: &areas,
-                agent: &agent,
-                clock: &STILL,
-                limit: &UNTOUCHED,
-                traces: &NOTHING_KEPT,
-                runs: &runs,
-            },
-            AT_ONCE,
-        );
-        let execution = ExecutionService::new(&supervisor);
-        let work = WorkService::new(&supervisor);
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &UNTOUCHED,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        let execution = ExecutionService::new(outside, &supervisor);
+        let work = WorkService::new(outside, &supervisor);
 
         execution.run(declaring("50%", "8h")).unwrap();
         work.carry_on("task:1").unwrap();
@@ -405,21 +405,19 @@ mod tests {
             }),
         });
         let runs = Ledger::default();
-        let supervisor = Supervisor::new(
-            Outside {
-                sessions: &sessions,
-                tasks: &tasks,
-                worktrees: &areas,
-                agent: &agent,
-                clock: &STILL,
-                limit: &UNTOUCHED,
-                traces: &NOTHING_KEPT,
-                runs: &runs,
-            },
-            AT_ONCE,
-        );
-        let execution = ExecutionService::new(&supervisor);
-        let work = WorkService::new(&supervisor);
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &UNTOUCHED,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        let execution = ExecutionService::new(outside, &supervisor);
+        let work = WorkService::new(outside, &supervisor);
 
         execution.run(declaring("50%", "8h")).unwrap();
         work.carry_on("task:1").unwrap();
@@ -439,21 +437,19 @@ mod tests {
             observed: spending(),
         });
         let runs = Ledger::default();
-        let supervisor = Supervisor::new(
-            Outside {
-                sessions: &sessions,
-                tasks: &tasks,
-                worktrees: &areas,
-                agent: &agent,
-                clock: &STILL,
-                limit: &UNTOUCHED,
-                traces: &NOTHING_KEPT,
-                runs: &runs,
-            },
-            AT_ONCE,
-        );
-        let execution = ExecutionService::new(&supervisor);
-        let work = WorkService::new(&supervisor);
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &UNTOUCHED,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        let execution = ExecutionService::new(outside, &supervisor);
+        let work = WorkService::new(outside, &supervisor);
 
         execution.run(declaring("50%", "8h")).unwrap();
         work.carry_on("task:1").unwrap();
@@ -475,21 +471,19 @@ mod tests {
             observed: spending(),
         });
         let runs = Ledger::default();
-        let supervisor = Supervisor::new(
-            Outside {
-                sessions: &sessions,
-                tasks: &tasks,
-                worktrees: &areas,
-                agent: &agent,
-                clock: &STILL,
-                limit: &UNTOUCHED,
-                traces: &NOTHING_KEPT,
-                runs: &runs,
-            },
-            AT_ONCE,
-        );
-        let execution = ExecutionService::new(&supervisor);
-        let work = WorkService::new(&supervisor);
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &UNTOUCHED,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        let execution = ExecutionService::new(outside, &supervisor);
+        let work = WorkService::new(outside, &supervisor);
 
         execution.run(declaring("2M", "8h")).unwrap();
         work.carry_on("task:1").unwrap();
@@ -516,21 +510,19 @@ mod tests {
             refuse: Mutex::new(false),
         };
         let runs = Ledger::default();
-        let supervisor = Supervisor::new(
-            Outside {
-                sessions: &sessions,
-                tasks: &tasks,
-                worktrees: &areas,
-                agent: &agent,
-                clock: &STILL,
-                limit: &full,
-                traces: &NOTHING_KEPT,
-                runs: &runs,
-            },
-            AT_ONCE,
-        );
-        let execution = ExecutionService::new(&supervisor);
-        let work = WorkService::new(&supervisor);
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &full,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        let execution = ExecutionService::new(outside, &supervisor);
+        let work = WorkService::new(outside, &supervisor);
 
         execution.run(declaring("2M", "8h")).unwrap();
         work.carry_on("task:1").unwrap();
@@ -563,21 +555,19 @@ mod tests {
             refuse: Mutex::new(false),
         };
         let runs = Ledger::default();
-        let supervisor = Supervisor::new(
-            Outside {
-                sessions: &sessions,
-                tasks: &tasks,
-                worktrees: &areas,
-                agent: &agent,
-                clock: &STILL,
-                limit: &room,
-                traces: &NOTHING_KEPT,
-                runs: &runs,
-            },
-            AT_ONCE,
-        );
-        let execution = ExecutionService::new(&supervisor);
-        let work = WorkService::new(&supervisor);
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &room,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        let execution = ExecutionService::new(outside, &supervisor);
+        let work = WorkService::new(outside, &supervisor);
 
         execution.run(declaring("2M", "8h")).unwrap();
         work.carry_on("task:1").unwrap();
@@ -604,21 +594,19 @@ mod tests {
             refuse: Mutex::new(true),
         };
         let runs = Ledger::default();
-        let supervisor = Supervisor::new(
-            Outside {
-                sessions: &sessions,
-                tasks: &tasks,
-                worktrees: &areas,
-                agent: &agent,
-                clock: &STILL,
-                limit: &silent,
-                traces: &NOTHING_KEPT,
-                runs: &runs,
-            },
-            AT_ONCE,
-        );
-        let execution = ExecutionService::new(&supervisor);
-        let work = WorkService::new(&supervisor);
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &silent,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        let execution = ExecutionService::new(outside, &supervisor);
+        let work = WorkService::new(outside, &supervisor);
 
         execution.run(declaring("2M", "8h")).unwrap();
         work.carry_on("task:1").unwrap();
@@ -635,21 +623,19 @@ mod tests {
         let areas = Areas::default();
         let agent = Answering::finishing();
         let runs = Ledger::default();
-        let supervisor = Supervisor::new(
-            Outside {
-                sessions: &sessions,
-                tasks: &tasks,
-                worktrees: &areas,
-                agent: &agent,
-                clock: &STILL,
-                limit: &UNTOUCHED,
-                traces: &NOTHING_KEPT,
-                runs: &runs,
-            },
-            AT_ONCE,
-        );
-        let execution = ExecutionService::new(&supervisor);
-        let work = WorkService::new(&supervisor);
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &UNTOUCHED,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        let execution = ExecutionService::new(outside, &supervisor);
+        let work = WorkService::new(outside, &supervisor);
 
         // The supervisor is what assigns more than one.
         // Until it exists, a test stands in for it by assigning the second task itself.
@@ -682,21 +668,19 @@ mod tests {
         };
         let agent = Answering::finishing();
         let runs = Ledger::default();
-        let supervisor = Supervisor::new(
-            Outside {
-                sessions: &sessions,
-                tasks: &tasks,
-                worktrees: &areas,
-                agent: &agent,
-                clock: &STILL,
-                limit: &UNTOUCHED,
-                traces: &NOTHING_KEPT,
-                runs: &runs,
-            },
-            AT_ONCE,
-        );
-        let execution = ExecutionService::new(&supervisor);
-        let work = WorkService::new(&supervisor);
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &UNTOUCHED,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        let execution = ExecutionService::new(outside, &supervisor);
+        let work = WorkService::new(outside, &supervisor);
 
         execution.run(declaring("50%", "8h")).unwrap();
         work.carry_on("task:1").unwrap();
@@ -715,21 +699,19 @@ mod tests {
         let areas = Areas::default();
         let agent = Answering::finishing();
         let ledger = Ledger::default();
-        let supervisor = Supervisor::new(
-            Outside {
-                sessions: &sessions,
-                tasks: &tasks,
-                worktrees: &areas,
-                agent: &agent,
-                clock: &STILL,
-                limit: &UNTOUCHED,
-                traces: &NOTHING_KEPT,
-                runs: &ledger,
-            },
-            AT_ONCE,
-        );
-        let execution = ExecutionService::new(&supervisor);
-        let work = WorkService::new(&supervisor);
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &UNTOUCHED,
+            traces: &NOTHING_KEPT,
+            runs: &ledger,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        let execution = ExecutionService::new(outside, &supervisor);
+        let work = WorkService::new(outside, &supervisor);
 
         execution.run(declaring("2M", "8h")).unwrap();
         work.carry_on("task:1").unwrap();
@@ -762,21 +744,19 @@ mod tests {
             refuse: Mutex::new(false),
         };
         let ledger = Ledger::default();
-        let supervisor = Supervisor::new(
-            Outside {
-                sessions: &sessions,
-                tasks: &tasks,
-                worktrees: &areas,
-                agent: &agent,
-                clock: &STILL,
-                limit: &full,
-                traces: &NOTHING_KEPT,
-                runs: &ledger,
-            },
-            AT_ONCE,
-        );
-        let execution = ExecutionService::new(&supervisor);
-        let work = WorkService::new(&supervisor);
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &full,
+            traces: &NOTHING_KEPT,
+            runs: &ledger,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        let execution = ExecutionService::new(outside, &supervisor);
+        let work = WorkService::new(outside, &supervisor);
 
         execution.run(declaring("2M", "8h")).unwrap();
         work.carry_on("task:1").unwrap();
@@ -805,21 +785,19 @@ mod tests {
             },
         });
         let ledger = Ledger::default();
-        let supervisor = Supervisor::new(
-            Outside {
-                sessions: &sessions,
-                tasks: &tasks,
-                worktrees: &areas,
-                agent: &agent,
-                clock: &STILL,
-                limit: &UNTOUCHED,
-                traces: &NOTHING_KEPT,
-                runs: &ledger,
-            },
-            AT_ONCE,
-        );
-        let execution = ExecutionService::new(&supervisor);
-        let work = WorkService::new(&supervisor);
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &UNTOUCHED,
+            traces: &NOTHING_KEPT,
+            runs: &ledger,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        let execution = ExecutionService::new(outside, &supervisor);
+        let work = WorkService::new(outside, &supervisor);
 
         execution.run(declaring("2M", "8h")).unwrap();
         work.carry_on("task:1").unwrap();
@@ -841,21 +819,19 @@ mod tests {
         let areas = Areas::default();
         let agent = Answering::finishing();
         let runs = Ledger::default();
-        let supervisor = Supervisor::new(
-            Outside {
-                sessions: &sessions,
-                tasks: &tasks,
-                worktrees: &areas,
-                agent: &agent,
-                clock: &STILL,
-                limit: &UNTOUCHED,
-                traces: &NOTHING_KEPT,
-                runs: &runs,
-            },
-            AT_ONCE,
-        );
-        let execution = ExecutionService::new(&supervisor);
-        let work = WorkService::new(&supervisor);
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &UNTOUCHED,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        let execution = ExecutionService::new(outside, &supervisor);
+        let work = WorkService::new(outside, &supervisor);
 
         execution.run(declaring("2M", "8h")).unwrap();
         // Everything the run assigned is interrupted, which is what a session stopping does.

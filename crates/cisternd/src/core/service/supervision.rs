@@ -25,6 +25,10 @@ use super::{backlog, sessions};
 ///
 /// One value rather than an argument each, so that a port added later is a line here and a
 /// line where the daemon is built, and nothing in between.
+///
+/// Copied rather than shared, since it holds nothing but references. Each service that needs
+/// the outside takes its own, so that none of them reaches the outside through another.
+#[derive(Clone, Copy)]
 pub struct Outside<'a> {
     pub sessions: &'a dyn SessionStore,
     pub tasks: &'a dyn BacklogStore,
@@ -41,17 +45,19 @@ const FULL: u64 = 100 * HUNDREDTHS;
 
 /// Who decides what a session does next.
 ///
-/// The commands and the workers hold one of these rather than each holding the ports and the
-/// rules, so that a rule added later is added once.
+/// The commands and the workers each hold their own ports and ask this one for a decision.
+/// Nothing reaches the outside through here: a service that did would be borrowing a role's
+/// state rather than holding its own.
+///
+/// What may be asked is `settle`, `stop`, `spending_of`, `limit_now`, and `at_its_limit`.
+/// Everything else is this one's own.
 pub struct Supervisor<'a> {
-    /// Reachable to the services beside this one, which run what a decision assigned and
-    /// report what it decided. Nothing outside `service` sees it.
-    pub(super) outside: Outside<'a>,
+    outside: Outside<'a>,
     /// The most tasks this machine has hands for.
     ///
     /// A guard on the machine rather than on the budget, so the number belongs to whoever
     /// started the daemon rather than to a rule about spending.
-    pub(super) at_once: usize,
+    at_once: usize,
 }
 
 impl<'a> Supervisor<'a> {
@@ -203,7 +209,7 @@ impl Supervisor<'_> {
     ///
     /// A vendor that stops answering leaves a share unknown rather than zero. Section 1 stops a
     /// session in that state, and nothing is a failure for the caller to carry.
-    pub(super) fn spending(&self, held: &Session) -> Result<Option<Spending>, Refusal> {
+    fn spending(&self, held: &Session) -> Result<Option<Spending>, Refusal> {
         let session = held.id();
         let now = self.outside.clock.now();
         match (held.budget().usage, held.limit_at_start()) {
@@ -230,7 +236,7 @@ impl Supervisor<'_> {
     }
 
     /// The session, if it is one this still decides for.
-    pub(super) fn held(&self, session: SessionId) -> Result<Option<Session>, Refusal> {
+    fn held(&self, session: SessionId) -> Result<Option<Session>, Refusal> {
         let mut found = None;
         sessions::change(self.outside.sessions, |sessions| {
             found = sessions
@@ -330,21 +336,19 @@ mod tests {
             },
         });
         let runs = Ledger::default();
-        let supervisor = Supervisor::new(
-            Outside {
-                sessions: &sessions,
-                tasks: &tasks,
-                worktrees: &areas,
-                agent: &agent,
-                clock: &STILL,
-                limit: &UNTOUCHED,
-                traces: &NOTHING_KEPT,
-                runs: &runs,
-            },
-            AT_ONCE,
-        );
-        let execution = ExecutionService::new(&supervisor);
-        let work = WorkService::new(&supervisor);
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &UNTOUCHED,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        let execution = ExecutionService::new(outside, &supervisor);
+        let work = WorkService::new(outside, &supervisor);
 
         execution.run(declaring("50%", "8h")).unwrap();
         work.carry_on("task:1").unwrap();
@@ -373,21 +377,19 @@ mod tests {
         let areas = Areas::default();
         let agent = Answering::finishing();
         let runs = Ledger::default();
-        let supervisor = Supervisor::new(
-            Outside {
-                sessions: &sessions,
-                tasks: &tasks,
-                worktrees: &areas,
-                agent: &agent,
-                clock: &STILL,
-                limit: &UNTOUCHED,
-                traces: &NOTHING_KEPT,
-                runs: &runs,
-            },
-            AT_ONCE,
-        );
-        let execution = ExecutionService::new(&supervisor);
-        let work = WorkService::new(&supervisor);
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &UNTOUCHED,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        let execution = ExecutionService::new(outside, &supervisor);
+        let work = WorkService::new(outside, &supervisor);
 
         // The stand-in agent reports far more than this budget allows, so the first task spends the whole of it.
         execution.run(declaring("1000", "8h")).unwrap();
@@ -422,21 +424,19 @@ mod tests {
             step: 50,
         };
         let runs = Ledger::default();
-        let supervisor = Supervisor::new(
-            Outside {
-                sessions: &sessions,
-                tasks: &tasks,
-                worktrees: &areas,
-                agent: &agent,
-                clock: &STILL,
-                limit: &moving,
-                traces: &NOTHING_KEPT,
-                runs: &runs,
-            },
-            AT_ONCE,
-        );
-        let execution = ExecutionService::new(&supervisor);
-        let work = WorkService::new(&supervisor);
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &moving,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        let execution = ExecutionService::new(outside, &supervisor);
+        let work = WorkService::new(outside, &supervisor);
 
         // The first decision has no task to go on, so one starts alone.
         let started = execution.run(declaring("5%", "8h")).unwrap();
@@ -461,21 +461,19 @@ mod tests {
             step: 100,
         };
         let runs = Ledger::default();
-        let supervisor = Supervisor::new(
-            Outside {
-                sessions: &sessions,
-                tasks: &tasks,
-                worktrees: &areas,
-                agent: &agent,
-                clock: &STILL,
-                limit: &moving,
-                traces: &NOTHING_KEPT,
-                runs: &runs,
-            },
-            AT_ONCE,
-        );
-        let execution = ExecutionService::new(&supervisor);
-        let work = WorkService::new(&supervisor);
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &moving,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        let execution = ExecutionService::new(outside, &supervisor);
+        let work = WorkService::new(outside, &supervisor);
 
         execution.run(declaring("1%", "8h")).unwrap();
         let assigned = work.carry_on("task:1").unwrap();
@@ -500,21 +498,19 @@ mod tests {
         // Opens at 30%, climbs to 34%, and then the window begins again at 2%.
         let turning = Turning::over(&[3_000, 3_400, 200]);
         let runs = Ledger::default();
-        let supervisor = Supervisor::new(
-            Outside {
-                sessions: &sessions,
-                tasks: &tasks,
-                worktrees: &areas,
-                agent: &agent,
-                clock: &STILL,
-                limit: &turning,
-                traces: &NOTHING_KEPT,
-                runs: &runs,
-            },
-            AT_ONCE,
-        );
-        let execution = ExecutionService::new(&supervisor);
-        let work = WorkService::new(&supervisor);
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &turning,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        let execution = ExecutionService::new(outside, &supervisor);
+        let work = WorkService::new(outside, &supervisor);
 
         execution.run(declaring("10%", "8h")).unwrap();
         let assigned = work.carry_on("task:1").unwrap();
@@ -544,21 +540,19 @@ mod tests {
         let agent = Answering::finishing();
         let turning = Turning::over(&[3_000, 3_100, 100]);
         let runs = Ledger::default();
-        let supervisor = Supervisor::new(
-            Outside {
-                sessions: &sessions,
-                tasks: &tasks,
-                worktrees: &areas,
-                agent: &agent,
-                clock: &STILL,
-                limit: &turning,
-                traces: &NOTHING_KEPT,
-                runs: &runs,
-            },
-            AT_ONCE,
-        );
-        let execution = ExecutionService::new(&supervisor);
-        let work = WorkService::new(&supervisor);
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &turning,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        let execution = ExecutionService::new(outside, &supervisor);
+        let work = WorkService::new(outside, &supervisor);
 
         // Nothing has reported yet, so one starts alone.
         let started = execution.run(declaring("50%", "8h")).unwrap();
@@ -585,21 +579,19 @@ mod tests {
             let areas = Areas::default();
             let agent = Answering::finishing();
             let runs = Ledger::default();
-            let supervisor = Supervisor::new(
-                Outside {
-                    sessions: &sessions,
-                    tasks: &tasks,
-                    worktrees: &areas,
-                    agent: &agent,
-                    clock: &STILL,
-                    limit: &UNTOUCHED,
-                    traces: &NOTHING_KEPT,
-                    runs: &runs,
-                },
-                AT_ONCE,
-            );
-            let execution = ExecutionService::new(&supervisor);
-            let work = WorkService::new(&supervisor);
+            let outside = Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+                runs: &runs,
+            };
+            let supervisor = Supervisor::new(outside, AT_ONCE);
+            let execution = ExecutionService::new(outside, &supervisor);
+            let work = WorkService::new(outside, &supervisor);
 
             // One starts alone, and the one after it fills the machine.
             execution.run(declaring("2M", "8h")).unwrap();
@@ -635,22 +627,20 @@ mod tests {
             let areas = Areas::default();
             let agent = Answering::finishing();
             let runs = Ledger::default();
-            let supervisor = Supervisor::new(
-                Outside {
-                    sessions: &sessions,
-                    tasks: &tasks,
-                    worktrees: &areas,
-                    agent: &agent,
-                    clock: &STILL,
-                    limit: &UNTOUCHED,
-                    traces: &NOTHING_KEPT,
-                    runs: &runs,
-                },
-                // Room enough that what is left is what decides, not the machine.
-                8,
-            );
-            let execution = ExecutionService::new(&supervisor);
-            let work = WorkService::new(&supervisor);
+            let outside = Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+                runs: &runs,
+            };
+            // Room enough that what is left is what decides, not the machine.
+            let supervisor = Supervisor::new(outside, 8);
+            let execution = ExecutionService::new(outside, &supervisor);
+            let work = WorkService::new(outside, &supervisor);
 
             // One alone, then two once there is a cost to divide by.
             execution.run(declaring("1M", "8h")).unwrap();
@@ -689,21 +679,19 @@ mod tests {
         let agent = Answering::finishing();
         let limit = AtPercent::at(1_000);
         let runs = Ledger::default();
-        let supervisor = Supervisor::new(
-            Outside {
-                sessions: &sessions,
-                tasks: &tasks,
-                worktrees: &areas,
-                agent: &agent,
-                clock: &STILL,
-                limit: &limit,
-                traces: &NOTHING_KEPT,
-                runs: &runs,
-            },
-            AT_ONCE,
-        );
-        let execution = ExecutionService::new(&supervisor);
-        let work = WorkService::new(&supervisor);
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &limit,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        let execution = ExecutionService::new(outside, &supervisor);
+        let work = WorkService::new(outside, &supervisor);
         execution.run(declaring("50%", "8h")).unwrap();
 
         limit.refuse();
@@ -728,20 +716,18 @@ mod tests {
         let areas = Areas::default();
         let agent = Answering::finishing();
         let runs = Ledger::default();
-        let supervisor = Supervisor::new(
-            Outside {
-                sessions: &sessions,
-                tasks: &tasks,
-                worktrees: &areas,
-                agent: &agent,
-                clock: &STILL,
-                limit: &UNTOUCHED,
-                traces: &NOTHING_KEPT,
-                runs: &runs,
-            },
-            AT_ONCE,
-        );
-        ExecutionService::new(&supervisor)
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &UNTOUCHED,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        ExecutionService::new(outside, &supervisor)
             .run(declaring("2M", "8h"))
             .unwrap();
 
