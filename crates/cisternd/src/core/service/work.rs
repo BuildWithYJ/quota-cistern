@@ -146,7 +146,9 @@ impl WorkService<'_> {
             tasks.record(id, consumed.clone());
             let held = tasks.find(id);
             let session = held.and_then(Task::session);
-            let run = held.map(|held| ran(held, now));
+            // The vendor turned this run away, so the session stops rather than deciding
+            // again, and the reading it is holding is the last there will be.
+            let run = held.map(|held| ran(held, now, (None, None)));
             tasks.wait_again(id, now);
             Ok((session, run))
         })?;
@@ -175,21 +177,29 @@ impl WorkService<'_> {
         consumed: Observation,
     ) -> Result<Vec<String>, Refusal> {
         let now = self.outside.clock.now();
-        let (session, run) = backlog::change(self.outside.tasks, |tasks| {
+        let (session, ended) = backlog::change(self.outside.tasks, |tasks| {
             tasks.finish(id, state, reason.clone(), now);
             tasks.record(id, consumed.clone());
             let held = tasks.find(id);
-            Ok((
-                held.and_then(Task::session),
-                held.map(|held| ran(held, now)),
-            ))
+            Ok((held.and_then(Task::session), held.cloned()))
         })?;
-        self.remember(run)?;
 
         let Some(session) = session else {
+            self.remember(ended.as_ref().map(|held| ran(held, now, (None, None))))?;
             return Ok(Vec::new());
         };
-        self.supervising.settle(session).map(labelled)
+
+        // The reading the session is holding is the one it took when the run before this ended,
+        // which is where this run started from. Deciding takes the next one, and the two of
+        // them are what this run cost in the unit a share is declared in.
+        let before = self.supervising.limit_last_seen(session)?;
+        let decided = self.supervising.settle(session);
+        let after = self.supervising.limit_last_seen(session)?;
+
+        // Written down whether or not the decision landed. The run happened either way, and a
+        // decision that failed is reported by what it answered with.
+        self.remember(ended.as_ref().map(|held| ran(held, now, (before, after))))?;
+        decided.map(labelled)
     }
 }
 
@@ -237,7 +247,10 @@ fn not_carried(why: Refusal) -> NotCarried {
 ///
 /// Taken from the task while the store is held, so the figures are the ones the run left rather
 /// than the ones a later run put there.
-fn ran(held: &Task, now: u64) -> Run {
+///
+/// `over` is how far the vendor's limit was spent before the run and after it. Both are
+/// readings the session already took, so they are handed in rather than asked for.
+fn ran(held: &Task, now: u64, over: (Option<u64>, Option<u64>)) -> Run {
     Run {
         task: held.id().to_string(),
         session: held.session().map(|session| session.to_string()),
@@ -251,6 +264,8 @@ fn ran(held: &Task, now: u64) -> Run {
             Observation::Unreadable { why } => Some(why.clone()),
             _ => None,
         },
+        limit_before: over.0.map(|at| at.to_string()),
+        limit_after: over.1.map(|at| at.to_string()),
     }
 }
 
@@ -850,5 +865,84 @@ mod tests {
             runs.runs().is_empty(),
             "a run was written for a task that never started"
         );
+    }
+
+    /// What a run cost in the unit a share is declared in.
+    ///
+    /// Tokens say what it cost in the other unit, and neither converts to the other on its
+    /// own. The two readings are ones the session already took, so they are written down
+    /// rather than asked for again.
+    #[test]
+    fn a_run_of_a_share_records_where_the_limit_stood_either_side_of_it() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+        let areas = Areas::default();
+        let agent = Answering::finishing();
+        // Opens at 1000, and each look after that is 300 further on.
+        let climbing = Advancing {
+            used: Mutex::new(1_000),
+            step: 300,
+        };
+        let runs = Ledger::default();
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &climbing,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+
+        ExecutionService::new(outside, &supervisor)
+            .run(declaring("50%", "8h"))
+            .unwrap();
+        WorkService::new(outside, &supervisor)
+            .carry_on("task:1")
+            .unwrap();
+
+        let written = runs.runs();
+        assert_eq!(written.len(), 1, "{written:?}");
+        let (before, after) = (
+            written[0].limit_before.as_deref(),
+            written[0].limit_after.as_deref(),
+        );
+        assert!(before.is_some() && after.is_some(), "{written:?}");
+        assert_ne!(before, after, "the run cost nothing the limit could see");
+    }
+
+    /// A session declared in tokens never asks how far the limit is spent, so a run of one has
+    /// no reading either side of it.
+    #[test]
+    fn a_run_of_a_count_records_no_reading_at_all() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task()]);
+        let areas = Areas::default();
+        let agent = Answering::finishing();
+        let runs = Ledger::default();
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &UNTOUCHED,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+
+        ExecutionService::new(outside, &supervisor)
+            .run(declaring("2M", "8h"))
+            .unwrap();
+        WorkService::new(outside, &supervisor)
+            .carry_on("task:1")
+            .unwrap();
+
+        let written = runs.runs();
+        assert_eq!(written[0].limit_before, None, "{written:?}");
+        assert_eq!(written[0].limit_after, None, "{written:?}");
     }
 }

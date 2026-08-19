@@ -288,7 +288,7 @@ task:2  Interrupted
 
 세션은 `$XDG_DATA_HOME/cistern/sessions.json`에 저장하거나, `XDG_DATA_HOME`이 없을 경우 `~/.local/share/cistern/sessions.json`에 저장한다.
 
-모든 작업의 모든 실행을 `$XDG_DATA_HOME/cistern/runs.jsonl`에 한 줄씩 덧붙이며, 이미 적힌 줄은 고치지 않는다. 벤더가 거절하면 한 작업이 여러 번 실행되는데 백로그는 가장 최근 것만 들고 있고 `task show`가 보여 주는 것도 그것이다. 예산을 계산하는 값은 이 기록에서 읽으므로 나중 실행이 앞 실행을 덮지 않는다. 이 파일은 저절로 지워지지 않는다.
+모든 작업의 모든 실행을 `$XDG_DATA_HOME/cistern/runs.jsonl`에 한 줄씩 덧붙이며, 이미 적힌 줄은 고치지 않는다. 몫으로 선언한 세션의 실행은 시작 시점과 종료 시점의 사용량 판독값도 함께 남긴다. 그 차이가 그 실행이 선언한 단위로 얼마를 썼는지다. 둘 다 세션이 이미 읽어 둔 값이므로 벤더에게 더 묻지 않는다. 벤더가 거절하면 한 작업이 여러 번 실행되는데 백로그는 가장 최근 것만 들고 있고 `task show`가 보여 주는 것도 그것이다. 예산을 계산하는 값은 이 기록에서 읽으므로 나중 실행이 앞 실행을 덮지 않는다. 이 파일은 저절로 지워지지 않는다.
 
 작업은 `$XDG_DATA_HOME/cistern/worktrees` 아래에 `git worktree`로 만드는 별도 체크아웃에서 실행한다.
 

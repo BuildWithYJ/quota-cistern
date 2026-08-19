@@ -186,6 +186,18 @@ impl Supervisor<'_> {
     }
 
     /// The same, for a session named only by its number.
+    /// How far the vendor's limit was spent when this session last looked.
+    ///
+    /// A store read rather than a vendor one, so it costs nothing. Nothing for a session
+    /// declared in tokens, which never looks.
+    pub(super) fn limit_last_seen(&self, session: SessionId) -> Result<Option<u64>, Refusal> {
+        Ok(sessions::read(self.outside.sessions)?
+            .sessions()
+            .iter()
+            .find(|held| held.id() == session)
+            .and_then(Session::limit_last_seen))
+    }
+
     pub(super) fn spending_of(&self, session: SessionId) -> Result<Option<Spending>, Refusal> {
         let held = sessions::read(self.outside.sessions)?;
         let held = held

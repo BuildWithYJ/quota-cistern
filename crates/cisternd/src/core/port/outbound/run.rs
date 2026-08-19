@@ -26,6 +26,19 @@ pub struct Run {
     ///
     /// Both this and `spent` are absent for a run that reported nothing at all.
     pub unreadable: Option<String>,
+    /// How far the vendor's limit was spent when the run started and when it stopped, in
+    /// hundredths of a percent.
+    ///
+    /// The difference is what the run cost in the unit a share is declared in. Tokens say what
+    /// a run cost in the other unit, and neither converts to the other on its own: how much of
+    /// the limit a token moves is the vendor's to decide and differs between subscriptions.
+    ///
+    /// Both are readings the session already took -- one when the run before it ended, one
+    /// when this one did -- so writing them down costs no further asking. Absent for a session
+    /// declared in tokens, which never asks, and for the first run of a session, which has
+    /// nothing before it.
+    pub limit_before: Option<String>,
+    pub limit_after: Option<String>,
 }
 
 /// Every run there has been, in the order they ended.

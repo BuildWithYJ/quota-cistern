@@ -47,6 +47,11 @@ struct Entry {
     spent: Option<Counted>,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     unreadable: Value,
+    /// How far the vendor's limit was spent when the run started and when it stopped.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    limit_before: Value,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    limit_after: Value,
 }
 
 /// What one run consumed, as the file holds it.
@@ -115,6 +120,8 @@ fn written(run: Run) -> Entry {
         reason: as_value(run.reason),
         spent: run.spent.map(counted),
         unreadable: as_value(run.unreadable),
+        limit_before: run.limit_before.as_deref().map_or(Value::Null, as_number),
+        limit_after: run.limit_after.as_deref().map_or(Value::Null, as_number),
     }
 }
 
@@ -157,6 +164,8 @@ mod tests {
                 cost: "50".to_owned(),
             }),
             unreadable: None,
+            limit_before: Some("1100".to_owned()),
+            limit_after: Some("1400".to_owned()),
         }
     }
 
@@ -186,8 +195,28 @@ mod tests {
                     "input": 10, "output": 20,
                     "cache_written": 30, "cache_read": 40, "cost": 50,
                 },
+                "limit_before": 1_100u64,
+                "limit_after": 1_400u64,
             })]
         );
+    }
+
+    /// A session declared in tokens never asks the vendor how far its limit is spent, so a run
+    /// of one has no reading either side of it. The line leaves the two out rather than
+    /// holding a figure that would read as zero.
+    #[test]
+    fn a_run_with_no_reading_either_side_leaves_them_out() {
+        let (_dir, runs) = in_a_temporary_directory();
+        runs.append(Run {
+            limit_before: None,
+            limit_after: None,
+            ..a_run("1")
+        })
+        .unwrap();
+
+        let held = lines(&runs)[0].clone();
+        assert!(held.get("limit_before").is_none(), "{held}");
+        assert!(held.get("limit_after").is_none(), "{held}");
     }
 
     /// The whole reason this file is not read and written whole.
