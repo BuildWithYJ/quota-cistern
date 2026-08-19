@@ -6,7 +6,7 @@
 // Tests may panic to signal failure.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
-use std::{fmt::Display, process::ExitCode, thread};
+use std::{fmt::Display, process::ExitCode, thread, time::Duration};
 
 use cistern_contract::exchange;
 
@@ -38,6 +38,12 @@ const AT_ONCE: usize = 4;
 
 /// The vendor a configuration that names none falls back to.
 const BY_DEFAULT: &str = "claude";
+
+/// How long to wait before looking again for a session to hold to its deadline.
+///
+/// Only ever waited out with nothing running, since a session that is running says exactly how
+/// long it has.
+const LOOKS_EVERY: Duration = Duration::from_secs(60);
 
 fn main() -> ExitCode {
     if let Err(e) = platform::signal::remove_on_signal() {
@@ -127,6 +133,23 @@ fn main() -> ExitCode {
     };
 
     thread::scope(|threads| {
+        // The other half of the budget. A decision is reached when a task ends, so a session
+        // with one long run going would pass the time it declared with nobody looking.
+        threads.spawn(|| {
+            loop {
+                if let Err(e) = supervisor.stop_if_out_of_time() {
+                    eprintln!("cisternd: the deadline could not be checked: {e:?}");
+                }
+                thread::sleep(match supervisor.time_left() {
+                    // Until the moment it is due, and then once more to act on it.
+                    Ok(Some(left)) => Duration::from_secs(left.max(1)),
+                    // Nothing is running. Long enough that waiting costs nothing, short enough
+                    // that a session opened just after this went to sleep is not missed by much.
+                    _ => LOOKS_EVERY,
+                });
+            }
+        });
+
         // The same number the core was given, so a task it assigns has a thread waiting.
         for _ in 0..AT_ONCE {
             threads.spawn(|| {

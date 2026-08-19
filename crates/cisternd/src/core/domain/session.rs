@@ -347,6 +347,18 @@ impl Session {
     pub fn out_of_time(&self, now: u64) -> bool {
         now.saturating_sub(self.started_at) >= self.budget.time.seconds()
     }
+
+    /// How much of the time it declared is left, in seconds.
+    ///
+    /// Nought once it has run that long, which `out_of_time` says the same way. Something has
+    /// to wake at that moment, since a session with one long run going is a session nothing
+    /// else would ask about until that run ended.
+    pub fn time_left(&self, now: u64) -> u64 {
+        self.budget
+            .time
+            .seconds()
+            .saturating_sub(now.saturating_sub(self.started_at))
+    }
 }
 
 impl Sessions {

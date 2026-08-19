@@ -266,6 +266,8 @@ Sessions are stored at `$XDG_DATA_HOME/cistern/sessions.json`, or `~/.local/shar
 
 Every run of every task is appended to `$XDG_DATA_HOME/cistern/runs.jsonl`, one line each, and nothing rewrites a line already there. A run of a session declared as a share also records how far the vendor's limit was spent when it started and when it stopped, which is what that run cost in the unit the share was declared in. Both are readings the session had already taken, so writing them down asks the vendor nothing further. A task runs more than once when the vendor turns it away, and the backlog keeps only the most recent, which is what `task show` reports. What a budget is worked out from is read from the ledger instead, so a second run does not displace the first. Nothing removes the file for you.
 
+A session is held to the time it declared whether or not anything ends. Nothing else asks about a session until one of its tasks ends, and a session with one long run going would otherwise pass its deadline unnoticed.
+
 A task runs in a checkout of its own, made with `git worktree` under `$XDG_DATA_HOME/cistern/worktrees`.
 
 #### `cistern run`

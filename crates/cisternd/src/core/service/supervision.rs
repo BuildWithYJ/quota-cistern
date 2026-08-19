@@ -245,6 +245,36 @@ impl Supervisor<'_> {
         })))
     }
 
+    /// How long the running session still has, or nothing where none is running.
+    ///
+    /// A store read. Whoever waits on it is not asking the vendor anything.
+    pub fn time_left(&self) -> Result<Option<u64>, Refusal> {
+        let now = self.outside.clock.now();
+        Ok(sessions::read(self.outside.sessions)?
+            .running()
+            .map(|held| held.time_left(now)))
+    }
+
+    /// Stops the running session where it has had the time it declared.
+    ///
+    /// The other half of the budget. A usage ceiling bounds what a run spends, not how long it
+    /// takes, and a decision is only reached when a task ends, so a session with one long run
+    /// going would pass the time it declared and nobody would be looking. This is what looks.
+    ///
+    /// Nothing where none is running or where time is left, so whoever calls it may call it
+    /// whenever and this is what decides.
+    pub fn stop_if_out_of_time(&self) -> Result<(), Refusal> {
+        let now = self.outside.clock.now();
+        let Some(session) = sessions::read(self.outside.sessions)?
+            .running()
+            .filter(|held| held.out_of_time(now))
+            .map(Session::id)
+        else {
+            return Ok(());
+        };
+        self.stop(session, StoppedReason::BudgetHardlock)
+    }
+
     /// What a session declared its budget in, or nothing where it is no longer there.
     pub(super) fn declared(&self, session: SessionId) -> Result<Option<Usage>, Refusal> {
         Ok(sessions::read(self.outside.sessions)?
@@ -874,5 +904,103 @@ mod tests {
 
         let ended = agent.stopped.lock().unwrap().clone();
         assert_eq!(ended, running, "a run outlived the session that started it");
+    }
+
+    /// A decision is reached when a task ends, so a session with one long run going would pass
+    /// the time it declared with nobody looking.
+    #[test]
+    fn a_session_past_the_time_it_declared_is_stopped_without_anything_ending() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+        let areas = Areas::default();
+        let agent = Answering::finishing();
+        let runs = Ledger::default();
+        let opened = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &UNTOUCHED,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        ExecutionService::new(opened, &Supervisor::new(opened, AT_ONCE))
+            .run(declaring("2M", "8h"))
+            .unwrap();
+        assert_eq!(sessions.load().sessions[0].state, "running");
+
+        // Eight hours on, with nothing having ended in between.
+        let late = Frozen(1_000 + 8 * 3_600);
+        let now = Supervisor::new(
+            Outside {
+                clock: &late,
+                ..opened
+            },
+            AT_ONCE,
+        );
+        assert_eq!(now.time_left().unwrap(), Some(0));
+        now.stop_if_out_of_time().unwrap();
+
+        let session = sessions.load().sessions[0].clone();
+        assert_eq!(session.state, "stopped");
+        assert_eq!(session.stopped_reason.as_deref(), Some("budget hardlock"));
+        // And what it had going was ended with it.
+        assert_eq!(agent.stopped.lock().unwrap().len(), 1);
+    }
+
+    /// Whoever waits on it may call it whenever, and this is what decides.
+    #[test]
+    fn a_session_with_time_left_is_left_alone() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task()]);
+        let areas = Areas::default();
+        let agent = Answering::finishing();
+        let runs = Ledger::default();
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &UNTOUCHED,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        ExecutionService::new(outside, &supervisor)
+            .run(declaring("2M", "8h"))
+            .unwrap();
+
+        assert_eq!(supervisor.time_left().unwrap(), Some(8 * 3_600));
+        supervisor.stop_if_out_of_time().unwrap();
+
+        assert_eq!(sessions.load().sessions[0].state, "running");
+    }
+
+    /// Nothing is running, so there is nothing to hold to a deadline and nothing to wait on.
+    #[test]
+    fn nothing_running_has_no_deadline_to_wait_on() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task()]);
+        let areas = Areas::default();
+        let agent = Answering::finishing();
+        let runs = Ledger::default();
+        let supervisor = Supervisor::new(
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+                runs: &runs,
+            },
+            AT_ONCE,
+        );
+
+        assert_eq!(supervisor.time_left().unwrap(), None);
+        supervisor.stop_if_out_of_time().unwrap();
     }
 }
