@@ -69,6 +69,12 @@ pub struct Task {
     ended_at: Option<u64>,
     /// Why it ended as it did, for a task that did not simply finish.
     reason: Option<String>,
+    /// What the run going now is allowed to consume, in the unit its session declared.
+    ///
+    /// Held against that session's budget until the run ends, so that runs starting together
+    /// cannot together pass what the session declared. Absent for a task nothing is running
+    /// for, and for one assigned before this was kept.
+    ceiling: Option<u64>,
     /// What running it consumed, as far as that is known.
     consumed: Observation,
     /// What was decided about its result, once anyone decided.
@@ -93,6 +99,7 @@ pub struct Restored {
     pub started_at: Option<u64>,
     pub ended_at: Option<u64>,
     pub reason: Option<String>,
+    pub ceiling: Option<u64>,
     pub consumed: Observation,
     pub disposition: Option<Disposition>,
 }
@@ -287,6 +294,11 @@ impl Task {
         self.ended_at
     }
 
+    /// What the run going now is allowed to consume, once one was assigned.
+    pub fn ceiling(&self) -> Option<u64> {
+        self.ceiling
+    }
+
     pub fn reason(&self) -> Option<&str> {
         self.reason.as_deref()
     }
@@ -361,6 +373,7 @@ impl Backlog {
             started_at: None,
             ended_at: None,
             reason: None,
+            ceiling: None,
             consumed: Observation::NotYet,
             disposition: None,
         };
@@ -392,18 +405,22 @@ impl Backlog {
     /// Hands the first task that may start to a session, and says which.
     ///
     /// Nothing is answered when none may start, which an empty backlog and a blocked one both look like from here.
-    pub fn assign(&mut self, to: SessionId, now: u64) -> Option<TaskId> {
-        let id = self.next_to_assign()?;
-        for task in &mut self.tasks {
-            if task.id == id {
-                task.state = TaskState::Running;
-                task.session = Some(to);
-                // A task the vendor turned away is assigned again, and the run that
-                // starts now is the one these two describe.
-                task.started_at = Some(now);
-                task.ended_at = None;
-            }
-        }
+    /// Hands one named task to a session, with what its run may take.
+    ///
+    /// Named rather than taken from the front, since what each may take was decided over the
+    /// whole list and the decision says which ones.
+    pub fn assign(&mut self, id: TaskId, to: SessionId, ceiling: u64, now: u64) -> Option<TaskId> {
+        let held = self
+            .tasks
+            .iter_mut()
+            .find(|task| task.id == id && task.state == TaskState::Pending)?;
+        held.state = TaskState::Running;
+        held.session = Some(to);
+        held.ceiling = Some(ceiling);
+        // A task the vendor turned away is assigned again, and the run that
+        // starts now is the one these two describe.
+        held.started_at = Some(now);
+        held.ended_at = None;
         Some(id)
     }
 
@@ -412,16 +429,39 @@ impl Backlog {
     /// A run that has nothing to start is refused before a session is opened.
     /// Asking that question is what this is for.
     pub fn next_to_assign(&self) -> Option<TaskId> {
+        self.waiting().first().map(|(id, _)| *id)
+    }
+
+    /// Every task that may start, in the order `assign` would take them, each with the model
+    /// it named.
+    ///
+    /// What each may be allowed depends on its model, so a decision needs the list rather than
+    /// a count of it.
+    pub fn waiting(&self) -> Vec<(TaskId, Option<String>)> {
         self.tasks
             .iter()
             .filter(|task| task.state == TaskState::Pending)
-            .find(|task| match task.after {
+            .filter(|task| match task.after {
                 None => true,
                 Some(after) => self
                     .find(after)
                     .is_some_and(|held| held.state == TaskState::Completed),
             })
-            .map(|task| task.id)
+            .map(|task| (task.id, task.model.clone()))
+            .collect()
+    }
+
+    /// What the runs already going are allowed to take, together.
+    ///
+    /// A task that was assigned before this figure was kept has none, and counts as nothing.
+    /// The session it belongs to has already spent whatever that run spent, which the budget
+    /// sees; what is missing is only the room held for the rest of it.
+    pub fn booked_in(&self, session: SessionId) -> u64 {
+        self.tasks
+            .iter()
+            .filter(|task| task.session == Some(session) && task.state == TaskState::Running)
+            .filter_map(|task| task.ceiling)
+            .sum()
     }
 
     /// Records where a task is being worked on.
@@ -550,20 +590,6 @@ impl Backlog {
         ended
     }
 
-    /// What each task that reported a count consumed, over the whole backlog.
-    ///
-    /// A task from an earlier session counts.
-    /// A session which has run nothing of its own can still tell what a task around here costs.
-    pub fn counted(&self) -> Vec<Consumption> {
-        self.tasks
-            .iter()
-            .filter_map(|task| match &task.consumed {
-                Observation::Spent(spent) => Some(*spent),
-                _ => None,
-            })
-            .collect()
-    }
-
     /// What a session's own tasks consumed.
     pub fn counted_in(&self, session: SessionId) -> Vec<Consumption> {
         self.tasks
@@ -574,14 +600,6 @@ impl Backlog {
                 _ => None,
             })
             .collect()
-    }
-
-    /// How many of a session's tasks have ended, whatever they ended as.
-    pub fn ended_in(&self, session: SessionId) -> usize {
-        self.tasks
-            .iter()
-            .filter(|task| task.session == Some(session) && task.state != TaskState::Running)
-            .count()
     }
 
     /// Every task a session took, in the order they were registered.
@@ -635,6 +653,7 @@ impl Backlog {
                 started_at: held.started_at,
                 ended_at: held.ended_at,
                 reason: held.reason,
+                ceiling: held.ceiling,
                 consumed: held.consumed,
                 disposition: held.disposition,
             })
@@ -701,6 +720,7 @@ mod tests {
             started_at: None,
             ended_at: None,
             reason: None,
+            ceiling: None,
             consumed: Observation::NotYet,
             disposition: None,
             id: TaskId::parse(id).unwrap(),
@@ -951,7 +971,8 @@ mod tests {
 
     fn assigned(backlog: &mut Backlog, to: SessionId) -> TaskId {
         registered(backlog, None, None);
-        backlog.assign(to, AT).unwrap()
+        let waiting = backlog.next_to_assign().unwrap();
+        backlog.assign(waiting, to, 0, AT).unwrap()
     }
 
     fn a_session() -> SessionId {
@@ -981,7 +1002,7 @@ mod tests {
         backlog.wait_again(id, AT + 60);
         assert_eq!(backlog.find(id).unwrap().ended_at(), Some(AT + 60));
 
-        assert_eq!(backlog.assign(session, AT + 300), Some(id));
+        assert_eq!(backlog.assign(id, session, 0, AT + 300), Some(id));
         let held = backlog.find(id).unwrap();
         assert_eq!(held.started_at(), Some(AT + 300));
         assert_eq!(held.ended_at(), None);
@@ -1011,7 +1032,7 @@ mod tests {
         backlog.wait_again(id, AT + 60);
 
         let next = SessionId::parse("2").unwrap();
-        assert_eq!(backlog.assign(next, AT + 300), Some(id));
+        assert_eq!(backlog.assign(id, next, 0, AT + 300), Some(id));
         assert_eq!(backlog.consumed_by(first), spent(0));
         assert_eq!(backlog.consumed_by(next), spent(40));
     }

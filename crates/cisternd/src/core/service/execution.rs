@@ -82,7 +82,9 @@ impl ExecutionUseCase for ExecutionService<'_> {
                 })
         })?;
 
-        let assigned = self.supervising.settle(opened)?;
+        // Nothing has run yet, so there is nothing to write down between the two.
+        let read = self.supervising.measured(opened)?;
+        let assigned = self.supervising.settle(opened, read)?;
 
         Ok(Started {
             session: opened.labelled(),

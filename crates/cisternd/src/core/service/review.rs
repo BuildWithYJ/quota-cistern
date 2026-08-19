@@ -288,6 +288,7 @@ mod tests {
             started_at: None,
             ended_at: None,
             reason: None,
+            ceiling: None,
             consumed: None,
             unreadable: None,
             disposition: None,

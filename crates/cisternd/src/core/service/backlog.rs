@@ -296,6 +296,11 @@ fn restored_from(held: StoredTask) -> Result<Restored, Refusal> {
             .map(|at| stored_count("ended_at", at))
             .transpose()?,
         reason: held.reason,
+        ceiling: held
+            .ceiling
+            .as_deref()
+            .map(|at| stored_count("ceiling", at))
+            .transpose()?,
         consumed: observed(held.consumed, held.unreadable)?,
         disposition: held
             .disposition
@@ -326,6 +331,7 @@ fn written(backlog: &Backlog) -> StoredBacklog {
                 started_at: task.started_at().map(|at| at.to_string()),
                 ended_at: task.ended_at().map(|at| at.to_string()),
                 reason: task.reason().map(str::to_owned),
+                ceiling: task.ceiling().map(|at| at.to_string()),
                 consumed: kept(task.consumed()),
                 unreadable: match task.consumed() {
                     Observation::Unreadable { why } => Some(why.clone()),
@@ -775,6 +781,7 @@ mod tests {
                 started_at: None,
                 ended_at: None,
                 reason: None,
+                ceiling: None,
                 consumed: None,
                 unreadable: None,
                 disposition: None,
@@ -793,6 +800,7 @@ mod tests {
                 started_at: None,
                 ended_at: None,
                 reason: None,
+                ceiling: None,
                 consumed: None,
                 unreadable: None,
                 disposition: None,
@@ -826,6 +834,7 @@ mod tests {
             started_at: None,
             ended_at: None,
             reason: None,
+            ceiling: None,
             consumed: Some(StoredConsumption {
                 input: "77".to_owned(),
                 output: "3377".to_owned(),
@@ -862,6 +871,7 @@ mod tests {
             started_at: None,
             ended_at: None,
             reason: None,
+            ceiling: None,
             consumed: Some(StoredConsumption {
                 input: "a lot".to_owned(),
                 output: "3377".to_owned(),

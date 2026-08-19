@@ -10,8 +10,8 @@
 
 use crate::core::{
     domain::{
-        Backlog, Consumption, Cost, Decision, HUNDREDTHS, Observation, Session, SessionId,
-        SessionState, Spending, Standing, StoppedReason, TaskId, TaskState, Usage, cost_of, decide,
+        Backlog, Consumption, Decision, HUNDREDTHS, Observation, Session, SessionId, SessionState,
+        Sizings, Spending, Standing, StoppedReason, TaskId, TaskState, Usage, decide,
     },
     port::{
         inbound::Refusal,
@@ -92,31 +92,58 @@ impl Supervisor<'_> {
         self.limit_now().is_ok_and(|(used, _)| used >= FULL)
     }
 
+    /// Asks the vendor how far the session has spent, and writes what it said down.
+    ///
+    /// Apart from deciding, because a run that just ended has to reach the ledger before the
+    /// decision reads it: `docs/cli.md` says each task's own cost is what decides, and a
+    /// decision made before the ledger has that run decides from the one before it.
+    ///
+    /// Nothing where the session is no longer one this decides for, and nothing where a share
+    /// can no longer be read -- section 1 stops a session in that state, and the caller has the
+    /// reading either side of it to write down first.
+    pub(super) fn measured(&self, session: SessionId) -> Result<Option<Spending>, Refusal> {
+        let Some(held) = self.held(session)? else {
+            return Ok(None);
+        };
+        match held.budget().usage {
+            // A share is read from the vendor, which is outside and slow.
+            Usage::Share(_) => self.spending(&held),
+            // A count is the backlog's own sum, taken under the hold the decision is made
+            // under rather than here. Another task ending in between would leave that decision
+            // made from a budget that has since gone down.
+            Usage::Tokens(_) => Ok(Some(Spending::Tokens(0))),
+        }
+    }
+
     /// One decision: whether the session carries on, and with what.
     ///
     /// Section 2.2 says assignment is dynamic and this is the whole of it.
     /// When this is called is the composition root's; what it decides is here.
-    pub(super) fn settle(&self, session: SessionId) -> Result<Vec<TaskId>, Refusal> {
+    ///
+    /// `read` is what `measured` said, which the caller took first so that the run that just
+    /// ended is in the ledger by the time this reads it.
+    pub(super) fn settle(
+        &self,
+        session: SessionId,
+        read: Option<Spending>,
+    ) -> Result<Vec<TaskId>, Refusal> {
         let Some(held) = self.held(session)? else {
             return Ok(Vec::new());
         };
 
-        // A share is read from the vendor, which is outside and slow, so it is read before the
-        // hold below. Section 1 stops a session whose usage can no longer be read.
-        let read = match held.budget().usage {
-            Usage::Share(_) => match self.spending(&held)? {
-                Some(spent) => Some(spent),
-                None => {
-                    return self
-                        .stop(session, StoppedReason::ObservationUnreadable)
-                        .map(|()| Vec::new());
-                }
-            },
-            // A count is the backlog's own sum, so it is taken under the hold rather than
-            // before it. Another task ending in between would leave this one deciding from a
-            // budget that has since gone down.
-            Usage::Tokens(_) => None,
+        let read = match (held.budget().usage, read) {
+            (Usage::Share(_), None) => {
+                return self
+                    .stop(session, StoppedReason::ObservationUnreadable)
+                    .map(|()| Vec::new());
+            }
+            (Usage::Share(_), spent) => spent,
+            (Usage::Tokens(_), _) => None,
         };
+
+        // What runs have cost, in the unit this session declared. A file read rather than a
+        // vendor one, and taken before the hold like the vendor reading was.
+        let sizings = self.sizings(held.budget().usage)?;
 
         let now = self.outside.clock.now();
         let settled = backlog::change(self.outside.tasks, |tasks| {
@@ -125,14 +152,17 @@ impl Supervisor<'_> {
                 None => Spending::Tokens(Consumption::total(tasks.counted_in(session)).tokens()),
             };
             Ok(
-                match decide(&standing(tasks, &held, spent, self.at_once, now)) {
+                match decide(&standing(tasks, &held, spent, &sizings, self.at_once, now)) {
                     // Stopping takes this store again and the sessions store with it, so it happens
                     // once this hold is given up rather than under it.
                     Decision::Stop(why) => Settled::Stop(spent, why),
-                    Decision::Start(room) => Settled::Started(
+                    Decision::Start(allowed) => Settled::Started(
                         spent,
-                        (0..room)
-                            .filter_map(|_| tasks.assign(session, now))
+                        allowed
+                            .iter()
+                            .filter_map(|allowance| {
+                                tasks.assign(allowance.task, session, allowance.ceiling, now)
+                            })
                             .collect(),
                     ),
                 },
@@ -186,6 +216,44 @@ impl Supervisor<'_> {
     }
 
     /// The same, for a session named only by its number.
+    /// What runs have cost, by the model that ran them, in the unit a session declared.
+    ///
+    /// A share and a count are different questions of the same ledger. A run's tokens are
+    /// there whatever its session declared; how far it moved the vendor's limit is there only
+    /// for a session that was watching that limit, since only those read it.
+    ///
+    /// Runs that say nothing in the unit asked for are left out rather than counted as zero.
+    /// A figure worked out from runs that reported nothing is a figure about nothing.
+    fn sizings(&self, usage: Usage) -> Result<Sizings, Refusal> {
+        let held = self.outside.runs.read()?;
+        Ok(Sizings::of(held.into_iter().filter_map(|run| {
+            let cost = match usage {
+                Usage::Tokens(_) => {
+                    let spent = run.spent?;
+                    Some(
+                        Consumption {
+                            input: spent.input.parse().ok()?,
+                            output: spent.output.parse().ok()?,
+                            cache_written: spent.cache_written.parse().ok()?,
+                            cache_read: spent.cache_read.parse().ok()?,
+                            cost: spent.cost.parse().ok()?,
+                        }
+                        .tokens(),
+                    )
+                }
+                // What the run moved the vendor's limit by, which is what a share is measured
+                // in. A limit that read lower afterwards is a window that began again, and
+                // what the run spent before it turned over is in no reading at all.
+                Usage::Share(_) => {
+                    let before: u64 = run.limit_before?.parse().ok()?;
+                    let after: u64 = run.limit_after?.parse().ok()?;
+                    after.checked_sub(before)
+                }
+            }?;
+            Some((run.model, cost))
+        })))
+    }
+
     /// How far the vendor's limit was spent when this session last looked.
     ///
     /// A store read rather than a vendor one, so it costs nothing. Nothing for a session
@@ -292,26 +360,17 @@ fn standing(
     tasks: &Backlog,
     held: &Session,
     spent: Spending,
+    sizings: &Sizings,
     at_once: usize,
     now: u64,
 ) -> Standing {
     let session = held.id();
-    let cost = match (held.budget().usage, spent) {
-        // Tokens mean the same in every session, so what a task costs is what tasks have cost here at all.
-        (Usage::Tokens(_), _) => Some(cost_of(tasks.counted().iter().map(Consumption::tokens))),
-        // A share is how far this session moved the vendor's limit, and only this session's tasks moved it.
-        (Usage::Share(_), Spending::Share(spent)) => Some(Cost {
-            total: spent,
-            over: tasks.ended_in(session) as u64,
-        }),
-        (Usage::Share(_), Spending::Tokens(_)) => None,
-    };
-
     Standing {
         left: held.budget().left(spent),
-        cost,
+        booked: tasks.booked_in(session),
+        sizings: sizings.clone(),
+        pending: tasks.waiting(),
         running: tasks.running_in(session),
-        waiting: tasks.next_to_assign().is_some(),
         out_of_time: held.out_of_time(now),
         unreadable: matches!(tasks.consumed_by(session), Observation::Unreadable { .. }),
         at_once,
@@ -530,16 +589,25 @@ mod tests {
         // 4 points in the first window and 2 in the second, against the 10 it declared.
         let session = sessions.load().sessions[0].clone();
         assert_eq!(session.consumed, "600");
-        assert!(assigned.is_empty());
-        assert_eq!(session.stopped_reason.as_deref(), Some("budget hardlock"));
+
+        // And the 4 that are left are what the next run may take. A run that crossed the
+        // turnover says nothing about what a run of that model costs -- what it spent before
+        // the window began again is in no reading at all -- so this is a session with a budget
+        // and nothing to go on, which starts one and measures it.
+        assert_eq!(assigned.len(), 1);
+        assert_eq!(session.stopped_reason, None);
     }
 
-    /// The other half of what a window turning over used to do.
+    /// A run that crossed a window turning over says nothing about what a run costs.
     ///
-    /// A session that read as having spent nothing had no cost to divide by either, which is
-    /// the state a session is in before its first task reports and which starts one at a time.
+    /// What it spent before the window began again is in no reading at all, so the difference
+    /// either side of it is not what it cost. It is left out rather than counted low, and the
+    /// session is then one with a budget and nothing to go on: one task starts and is
+    /// measured, and the run after it has a figure again.
+    ///
+    /// Once per window at most, since only a run that spans the turnover is like this.
     #[test]
-    fn a_share_that_crosses_a_window_does_not_fall_back_to_one_at_a_time() {
+    fn a_run_that_crossed_a_window_is_no_sample_at_all() {
         let sessions = Remembered::empty();
         let tasks = Tasks::holding(vec![
             a_pending_task(),
@@ -570,9 +638,11 @@ mod tests {
         let started = execution.run(declaring("50%", "8h")).unwrap();
         assert_eq!(started.assigned.len(), 1);
 
-        // The window turned over between the two, and two points still divide into what is left.
+        // The window turned over during that run, so it is no sample, and the session starts
+        // one more to get one rather than stopping.
         let assigned = work.carry_on("task:1").unwrap();
-        assert_eq!(assigned.len(), 4);
+        assert_eq!(assigned.len(), 1);
+        assert_eq!(sessions.load().sessions[0].stopped_reason, None);
     }
 
     /// Two of a session's tasks ending at once each decide how many more fit.

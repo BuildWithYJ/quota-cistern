@@ -189,17 +189,19 @@ impl WorkService<'_> {
             return Ok(Vec::new());
         };
 
-        // The reading the session is holding is the one it took when the run before this ended,
-        // which is where this run started from. Deciding takes the next one, and the two of
-        // them are what this run cost in the unit a share is declared in.
+        // Measured, written down, and only then decided. The reading the session is holding
+        // is the one it took when the run before this ended, which is where this run started
+        // from; measuring takes the next one, and the two of them are what this run cost in
+        // the unit a share is declared in.
+        //
+        // The order is what `docs/cli.md` promises: each task's own cost is what decides.
+        // Deciding first would decide from the run before this one.
         let before = self.supervising.limit_last_seen(session)?;
-        let decided = self.supervising.settle(session);
+        let read = self.supervising.measured(session)?;
         let after = self.supervising.limit_last_seen(session)?;
-
-        // Written down whether or not the decision landed. The run happened either way, and a
-        // decision that failed is reported by what it answered with.
         self.remember(ended.as_ref().map(|held| ran(held, now, (before, after))))?;
-        decided.map(labelled)
+
+        self.supervising.settle(session, read).map(labelled)
     }
 }
 
@@ -656,7 +658,11 @@ mod tests {
         // Until it exists, a test stands in for it by assigning the second task itself.
         execution.run(declaring("50%", "8h")).unwrap();
         let opened = SessionId::parse("1").unwrap();
-        backlog::change(&tasks, |held| Ok(held.assign(opened, 0))).unwrap();
+        backlog::change(&tasks, |held| {
+            let waiting = held.next_to_assign().unwrap();
+            Ok(held.assign(waiting, opened, u64::MAX, 0))
+        })
+        .unwrap();
 
         let work = &work;
         std::thread::scope(|threads| {

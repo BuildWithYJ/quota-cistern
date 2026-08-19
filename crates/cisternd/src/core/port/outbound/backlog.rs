@@ -33,6 +33,10 @@ pub struct StoredTask {
     pub ended_at: Option<String>,
     /// Why it ended as it did, for a task that did not simply finish.
     pub reason: Option<String>,
+    /// What the run going now is allowed to consume, in the unit its session declared.
+    ///
+    /// Absent for a task nothing is running for, and for one a version before this assigned.
+    pub ceiling: Option<String>,
     /// What it consumed, once a run's answer said.
     pub consumed: Option<StoredConsumption>,
     /// Why what it consumed could not be read, when it could not.
