@@ -5,8 +5,9 @@ use crate::core::{
     port::{
         inbound::{
             Awaiting, Changed, Difference, Dropped, Queue, Refusal, Requeued, ReviewUseCase, Taken,
+            Tidied, Tidying,
         },
-        outbound::{BacklogStore, Between, Changes, NotApplied, Results, Touched},
+        outbound::{BacklogStore, Between, Changes, NotApplied, Results, Touched, Worktrees},
     },
 };
 
@@ -16,6 +17,7 @@ use super::backlog::{change, read};
 pub struct ReviewService<'a> {
     tasks: &'a dyn BacklogStore,
     results: &'a dyn Results,
+    worktrees: &'a dyn Worktrees,
 }
 
 /// The three names a question about a result takes.
@@ -48,8 +50,16 @@ impl Lies {
 }
 
 impl<'a> ReviewService<'a> {
-    pub fn new(tasks: &'a dyn BacklogStore, results: &'a dyn Results) -> Self {
-        ReviewService { tasks, results }
+    pub fn new(
+        tasks: &'a dyn BacklogStore,
+        results: &'a dyn Results,
+        worktrees: &'a dyn Worktrees,
+    ) -> Self {
+        ReviewService {
+            tasks,
+            results,
+            worktrees,
+        }
     }
 
     /// What a task changed, or why it could not be read.
@@ -198,6 +208,51 @@ impl ReviewUseCase for ReviewService<'_> {
             })
         })
     }
+
+    /// Takes away the work areas of tasks that have been disposed of.
+    ///
+    /// Which ones may go is the backlog's to say. Taking one away runs git, which is slow and
+    /// may be refused, so it happens between two holds rather than under one: the list is read,
+    /// the work areas are taken away, and only what actually went is written down.
+    ///
+    /// A work area git would not remove is left where it is and says why. Section 2.4 keeps the
+    /// branch either way, so nothing a run committed goes with a work area that does go.
+    fn tidy(&self) -> Result<Tidying, Refusal> {
+        let backlog = read(self.tasks)?;
+        let asked: Vec<(TaskId, String, String)> = backlog
+            .tidyable()
+            .into_iter()
+            .filter_map(|(id, at)| Some((id, backlog.find(id)?.repository().to_string(), at)))
+            .collect();
+
+        let tidied: Vec<(TaskId, Tidied)> = asked
+            .into_iter()
+            .map(|(id, repository, at)| {
+                let kept = self
+                    .worktrees
+                    .remove(&repository, &at)
+                    .err()
+                    .map(|why| why.reason);
+                (
+                    id,
+                    Tidied {
+                        task: id.labelled(),
+                        worktree: at,
+                        kept,
+                    },
+                )
+            })
+            .collect();
+
+        change(self.tasks, |backlog| {
+            for (id, _) in tidied.iter().filter(|(_, one)| one.kept.is_none()) {
+                backlog.work_area_gone(*id);
+            }
+            Ok(Tidying {
+                items: tidied.iter().map(|(_, one)| one.clone()).collect(),
+            })
+        })
+    }
 }
 
 /// The branch a task's result is on, for a task whose run is over.
@@ -262,7 +317,9 @@ fn count(written: &str) -> Option<u64> {
 mod tests {
     use std::sync::Mutex;
 
-    use crate::core::port::outbound::{Commit, Counts, StoredBacklog, StoredTask, Unavailable};
+    use crate::core::port::outbound::{
+        Commit, Counts, Cut, StoredBacklog, StoredTask, Unavailable,
+    };
 
     use super::*;
 
@@ -286,6 +343,42 @@ mod tests {
             if change(&mut backlog) {
                 *held = backlog;
             }
+            Ok(())
+        }
+    }
+
+    /// Work areas nothing takes away, for the tests that are not about tidying up.
+    struct Untouched;
+
+    impl Worktrees for Untouched {
+        fn prepare(&self, _cut: Cut<'_>) -> Result<String, Unavailable> {
+            Err(Unavailable::new("nothing prepares a work area here"))
+        }
+
+        fn remove(&self, _repository: &str, _at: &str) -> Result<(), Unavailable> {
+            Err(Unavailable::new("nothing takes a work area away here"))
+        }
+    }
+
+    static UNTOUCHED: Untouched = Untouched;
+
+    /// Work areas that remember what they were asked to take away, and refuse the ones named.
+    #[derive(Default)]
+    struct Taking {
+        taken: Mutex<Vec<String>>,
+        refusing: Vec<String>,
+    }
+
+    impl Worktrees for Taking {
+        fn prepare(&self, _cut: Cut<'_>) -> Result<String, Unavailable> {
+            Err(Unavailable::new("nothing prepares a work area here"))
+        }
+
+        fn remove(&self, _repository: &str, at: &str) -> Result<(), Unavailable> {
+            if self.refusing.iter().any(|one| one == at) {
+                return Err(Unavailable::new(format!("{at} contains modified files")));
+            }
+            self.taken.lock().unwrap().push(at.to_owned());
             Ok(())
         }
     }
@@ -319,6 +412,16 @@ mod tests {
             consumed: None,
             unreadable: None,
             disposition: None,
+        }
+    }
+
+    /// A task that ended, was disposed of, and has a work area to take away.
+    fn a_tidied_task(id: &str) -> StoredTask {
+        StoredTask {
+            state: "Completed".to_owned(),
+            worktree: Some(format!("/areas/{id}")),
+            disposition: Some("applied".to_owned()),
+            ..a_task(id, "Completed")
         }
     }
 
@@ -434,7 +537,9 @@ mod tests {
         ]);
         let git = Repository::default();
 
-        let queue = ReviewService::new(&tasks, &git).queue().unwrap();
+        let queue = ReviewService::new(&tasks, &git, &UNTOUCHED)
+            .queue()
+            .unwrap();
         let ids: Vec<&str> = queue.items.iter().map(|item| item.id.as_str()).collect();
         assert_eq!(ids, ["task:3", "task:4", "task:5"]);
         assert_eq!(queue.items[0].commit_count, Some(3));
@@ -449,7 +554,9 @@ mod tests {
         let tasks = holding(vec![a_task("1", "Completed"), a_task("2", "Error")]);
         let git = Repository::default();
 
-        ReviewService::new(&tasks, &git).queue().unwrap();
+        ReviewService::new(&tasks, &git, &UNTOUCHED)
+            .queue()
+            .unwrap();
         assert_eq!(
             git.asked.lock().unwrap().as_slice(),
             [
@@ -465,7 +572,9 @@ mod tests {
         let tasks = holding(vec![a_task("1", "Completed")]);
         let git = Repository::holding_nothing();
 
-        let queue = ReviewService::new(&tasks, &git).queue().unwrap();
+        let queue = ReviewService::new(&tasks, &git, &UNTOUCHED)
+            .queue()
+            .unwrap();
         assert_eq!(queue.items.len(), 1);
         assert_eq!(queue.items[0].commit_count, None);
         assert_eq!(queue.items[0].base_ahead, None);
@@ -476,7 +585,9 @@ mod tests {
         let tasks = holding(vec![a_task("1", "Pending")]);
         let git = Repository::default();
 
-        let difference = ReviewService::new(&tasks, &git).diff("1").unwrap();
+        let difference = ReviewService::new(&tasks, &git, &UNTOUCHED)
+            .diff("1")
+            .unwrap();
         assert_eq!(difference.branch, None);
         assert_eq!(difference.files, Vec::new());
         assert_eq!(difference.patch, "");
@@ -487,7 +598,9 @@ mod tests {
         let tasks = holding(vec![a_task("1", "Completed")]);
         let git = Repository::default();
 
-        let difference = ReviewService::new(&tasks, &git).diff("1").unwrap();
+        let difference = ReviewService::new(&tasks, &git, &UNTOUCHED)
+            .diff("1")
+            .unwrap();
         assert_eq!(difference.base, "main");
         assert_eq!(difference.branch.as_deref(), Some("cistern/1"));
         assert_eq!(difference.files[0].added, Some(64));
@@ -505,7 +618,7 @@ mod tests {
 
         let gone = Repository::holding_nothing();
         assert!(matches!(
-            ReviewService::new(&tasks, &gone).diff("1"),
+            ReviewService::new(&tasks, &gone, &UNTOUCHED).diff("1"),
             Err(Refusal::NoResult { .. })
         ));
 
@@ -514,7 +627,7 @@ mod tests {
             ..Repository::holding_nothing()
         };
         assert!(matches!(
-            ReviewService::new(&tasks, &moved).diff("1"),
+            ReviewService::new(&tasks, &moved, &UNTOUCHED).diff("1"),
             Err(Refusal::NoRepository { .. })
         ));
     }
@@ -523,7 +636,7 @@ mod tests {
     fn applying_a_result_records_it_and_takes_the_task_out_of_the_queue() {
         let tasks = holding(vec![a_task("1", "Completed")]);
         let git = Repository::default();
-        let review = ReviewService::new(&tasks, &git);
+        let review = ReviewService::new(&tasks, &git, &UNTOUCHED);
 
         let taken = review.apply("1").unwrap();
         assert_eq!(taken.task, "task:1");
@@ -538,7 +651,7 @@ mod tests {
     fn discarding_a_result_leaves_the_branch_and_the_state_where_they_are() {
         let tasks = holding(vec![a_task("1", "Interrupted")]);
         let git = Repository::default();
-        let review = ReviewService::new(&tasks, &git);
+        let review = ReviewService::new(&tasks, &git, &UNTOUCHED);
 
         let dropped = review.discard("1").unwrap();
         assert_eq!(dropped.branch, "cistern/1");
@@ -556,7 +669,7 @@ mod tests {
     fn a_discarded_result_can_be_applied_afterwards() {
         let tasks = holding(vec![a_task("1", "Completed")]);
         let git = Repository::default();
-        let review = ReviewService::new(&tasks, &git);
+        let review = ReviewService::new(&tasks, &git, &UNTOUCHED);
 
         review.discard("1").unwrap();
         review.apply("1").unwrap();
@@ -567,7 +680,7 @@ mod tests {
     fn a_run_that_has_not_ended_cannot_be_disposed_of() {
         let tasks = holding(vec![a_task("1", "Running")]);
         let git = Repository::default();
-        let review = ReviewService::new(&tasks, &git);
+        let review = ReviewService::new(&tasks, &git, &UNTOUCHED);
 
         for outcome in [
             format!("{:?}", review.apply("1")),
@@ -597,7 +710,7 @@ mod tests {
         for (why, named) in refusals {
             let tasks = holding(vec![a_task("1", "Completed")]);
             let git = Repository::refusing(why);
-            let refused = ReviewService::new(&tasks, &git).apply("1");
+            let refused = ReviewService::new(&tasks, &git, &UNTOUCHED).apply("1");
             assert!(
                 format!("{refused:?}").contains(named),
                 "{named}: {refused:?}"
@@ -611,7 +724,7 @@ mod tests {
     fn disposing_of_a_task_nobody_registered_says_so() {
         let tasks = holding(Vec::new());
         let git = Repository::default();
-        let review = ReviewService::new(&tasks, &git);
+        let review = ReviewService::new(&tasks, &git, &UNTOUCHED);
 
         for outcome in [
             format!("{:?}", review.apply("7")),
@@ -627,7 +740,7 @@ mod tests {
         let tasks = holding(Vec::new());
         let git = Repository::default();
         assert!(matches!(
-            ReviewService::new(&tasks, &git).diff("seven"),
+            ReviewService::new(&tasks, &git, &UNTOUCHED).diff("seven"),
             Err(Refusal::BadValue { .. })
         ));
     }
@@ -648,8 +761,96 @@ mod tests {
             ..Default::default()
         };
 
-        let difference = ReviewService::new(&tasks, &git).diff("1").unwrap();
+        let difference = ReviewService::new(&tasks, &git, &UNTOUCHED)
+            .diff("1")
+            .unwrap();
         assert_eq!(difference.files[0].added, None);
         assert_eq!(difference.files[0].removed, None);
+    }
+
+    // taking work areas away
+
+    /// Section 2.1 reports the place as null once it is gone.
+    #[test]
+    fn tidying_up_takes_away_the_work_areas_of_tasks_that_were_disposed_of() {
+        let tasks = holding(vec![a_tidied_task("1"), a_tidied_task("2")]);
+        let git = Repository::default();
+        let areas = Taking::default();
+
+        let tidied = ReviewService::new(&tasks, &git, &areas).tidy().unwrap();
+
+        assert_eq!(*areas.taken.lock().unwrap(), ["/areas/1", "/areas/2"]);
+        assert!(tidied.items.iter().all(|one| one.kept.is_none()));
+        assert!(
+            tasks
+                .load()
+                .unwrap()
+                .tasks
+                .iter()
+                .all(|task| task.worktree.is_none())
+        );
+    }
+
+    /// Until a task has been disposed of, its work area is what a person opens to see what was
+    /// done, and a task that ended may be put back in the backlog and carry on in it.
+    #[test]
+    fn a_task_nobody_has_disposed_of_keeps_its_work_area() {
+        let tasks = holding(vec![StoredTask {
+            worktree: Some("/areas/1".to_owned()),
+            ..a_task("1", "Completed")
+        }]);
+        let git = Repository::default();
+        let areas = Taking::default();
+
+        let tidied = ReviewService::new(&tasks, &git, &areas).tidy().unwrap();
+
+        assert!(tidied.items.is_empty());
+        assert!(areas.taken.lock().unwrap().is_empty());
+    }
+
+    /// A run going is in there.
+    #[test]
+    fn a_task_still_running_keeps_its_work_area() {
+        let tasks = holding(vec![StoredTask {
+            worktree: Some("/areas/1".to_owned()),
+            disposition: Some("applied".to_owned()),
+            ..a_task("1", "Running")
+        }]);
+        let git = Repository::default();
+        let areas = Taking::default();
+
+        assert!(
+            ReviewService::new(&tasks, &git, &areas)
+                .tidy()
+                .unwrap()
+                .items
+                .is_empty()
+        );
+    }
+
+    /// What a run left uncommitted is in no branch, so whether a work area is safe to take away
+    /// is git's to answer. A refusal is passed on as it was given and the place is still there.
+    #[test]
+    fn a_work_area_git_will_not_take_away_is_left_and_says_why() {
+        let tasks = holding(vec![a_tidied_task("1"), a_tidied_task("2")]);
+        let git = Repository::default();
+        let areas = Taking {
+            refusing: vec!["/areas/1".to_owned()],
+            ..Taking::default()
+        };
+
+        let tidied = ReviewService::new(&tasks, &git, &areas).tidy().unwrap();
+
+        let left = tidied
+            .items
+            .iter()
+            .find(|one| one.task == "task:1")
+            .unwrap();
+        assert!(left.kept.as_deref().unwrap().contains("modified files"));
+        assert_eq!(*areas.taken.lock().unwrap(), ["/areas/2"]);
+
+        let held = tasks.load().unwrap();
+        assert_eq!(held.tasks[0].worktree.as_deref(), Some("/areas/1"));
+        assert_eq!(held.tasks[1].worktree, None);
     }
 }

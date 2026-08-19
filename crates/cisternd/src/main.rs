@@ -96,7 +96,7 @@ fn main() -> ExitCode {
 
     let configuration = ConfigurationService::new(&configuration_store, known);
     let backlog = BacklogService::new(&backlog_store, &roots, &results);
-    let review = ReviewService::new(&backlog_store, &results);
+    let review = ReviewService::new(&backlog_store, &results, &worktrees);
     // The ports, once. Each service takes its own copy rather than reaching for another's.
     let outside = Outside {
         sessions: &session_store,

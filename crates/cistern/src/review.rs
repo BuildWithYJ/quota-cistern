@@ -66,6 +66,10 @@ pub fn retry(task: &str) -> ExitCode {
     send("retry", serde_json::json!({ "task": task }), requeued)
 }
 
+pub fn tidy() -> ExitCode {
+    send("tidy", serde_json::json!({}), tidied)
+}
+
 /// Asks the core and hands back what it answered, or the code to exit with.
 fn ask(command: &str, params: Value) -> Result<Value, ExitCode> {
     match daemon::ask(command, params) {
@@ -182,6 +186,30 @@ fn dropped(data: &Value) {
     println!("{task} discarded");
     if let Some(branch) = text(data, "branch") {
         println!("  branch {branch} is kept");
+    }
+}
+
+fn tidied(data: &Value) {
+    let Some(items) = data.get("items").and_then(Value::as_array) else {
+        return;
+    };
+    let gone: Vec<&Value> = items
+        .iter()
+        .filter(|one| one.get("kept").is_none_or(Value::is_null))
+        .collect();
+    if gone.is_empty() && items.is_empty() {
+        println!("nothing to tidy up");
+        return;
+    }
+    if !gone.is_empty() {
+        let named: Vec<&str> = gone.iter().filter_map(|one| text(one, "task")).collect();
+        println!("tidied up  {}", named.join("  "));
+    }
+    for one in items.iter().filter(|one| !gone.contains(one)) {
+        let (Some(task), Some(kept)) = (text(one, "task"), text(one, "kept")) else {
+            continue;
+        };
+        println!("left       {task}  {kept}");
     }
 }
 

@@ -110,6 +110,25 @@ impl Worktrees for GitWorktrees {
             ))),
         }
     }
+
+    fn remove(&self, repository: &str, at: &str) -> Result<(), Unavailable> {
+        // Registered but not on the disk is what somebody removing one by hand leaves, and git
+        // will not remove what it cannot find. Pruning first answers for that one too.
+        let _ = git(&["-C", repository, "worktree", "prune"]);
+        if !Path::new(at).exists() {
+            return Ok(());
+        }
+
+        // No `--force`. Git refuses a work area holding changes nobody committed, and that
+        // refusal is the guard: what a run left uncommitted is in no branch.
+        let done = git(&["-C", repository, "worktree", "remove", at])
+            .map_err(|e| Unavailable::new(format!("git worktree remove: {e}")))?;
+
+        match done.status.success() {
+            true => Ok(()),
+            false => Err(Unavailable::new(said(&done))),
+        }
+    }
 }
 
 fn git(args: &[&str]) -> std::io::Result<Output> {
@@ -276,6 +295,56 @@ mod tests {
 
         assert_eq!(made, again);
         assert!(PathBuf::from(&again).join("README.md").exists());
+    }
+
+    /// Section 2.4 keeps the branch whatever happens to the work area, so what a run committed
+    /// is still there to apply after the place it worked in has gone.
+    #[test]
+    fn taking_a_work_area_away_keeps_the_branch_it_was_on() {
+        let repository = a_repository();
+        let at = repository.path().display().to_string();
+        let held = TempDir::new().unwrap();
+        let worktrees = GitWorktrees::under(held.path().join("worktrees"));
+        let made = worktrees.prepare(cutting(&at, "1", "cistern/1")).unwrap();
+
+        worktrees.remove(&at, &made).unwrap();
+
+        assert!(!PathBuf::from(&made).exists());
+        assert!(worktrees.holds(&at, "cistern/1"));
+    }
+
+    /// What a run left uncommitted is in no branch and the work area is the only place it is.
+    /// Nothing here forces it, so git's refusal is what keeps it.
+    #[test]
+    fn a_work_area_holding_uncommitted_changes_is_refused_and_left() {
+        let repository = a_repository();
+        let at = repository.path().display().to_string();
+        let held = TempDir::new().unwrap();
+        let worktrees = GitWorktrees::under(held.path().join("worktrees"));
+        let made = worktrees.prepare(cutting(&at, "1", "cistern/1")).unwrap();
+        fs::write(PathBuf::from(&made).join("half.txt"), "not committed\n").unwrap();
+        run(Path::new(&made), &["add", "half.txt"]);
+
+        let refused = worktrees.remove(&at, &made).unwrap_err();
+
+        assert!(PathBuf::from(&made).join("half.txt").exists());
+        assert!(!refused.reason.is_empty());
+    }
+
+    /// A work area somebody removed by hand is still registered, and a registration nothing
+    /// prunes is what stops the branch being checked out again.
+    #[test]
+    fn a_work_area_that_is_already_gone_is_not_a_failure() {
+        let repository = a_repository();
+        let at = repository.path().display().to_string();
+        let held = TempDir::new().unwrap();
+        let worktrees = GitWorktrees::under(held.path().join("worktrees"));
+        let made = worktrees.prepare(cutting(&at, "1", "cistern/1")).unwrap();
+        fs::remove_dir_all(&made).unwrap();
+
+        worktrees.remove(&at, &made).unwrap();
+
+        assert!(worktrees.prepare(cutting(&at, "1", "cistern/1")).is_ok());
     }
 
     /// Two tasks never share a place, so a work area on another branch is not one to carry on in.

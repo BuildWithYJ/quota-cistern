@@ -487,6 +487,32 @@ impl Backlog {
         }
     }
 
+    /// The tasks whose work areas may be taken away, each with where it is.
+    ///
+    /// A task that has ended and been disposed of. Ended, because a run going is in there.
+    /// Disposed of, because until then the work area is what a person opens to look at what
+    /// was done, and because a task that ended may be put back in the backlog and carries on
+    /// in the work area its last run left.
+    ///
+    /// Section 2.1 reports the place as null once it is gone, and section 2.4 keeps the branch
+    /// whatever happens to the work area, so nothing a run committed goes with it.
+    pub fn tidyable(&self) -> Vec<(TaskId, String)> {
+        self.tasks
+            .iter()
+            .filter(|task| task.state.ended() && task.disposition.is_some())
+            .filter_map(|task| Some((task.id, task.worktree.clone()?)))
+            .collect()
+    }
+
+    /// Forgets where a task worked, for one whose work area has been taken away.
+    pub fn work_area_gone(&mut self, id: TaskId) {
+        for task in &mut self.tasks {
+            if task.id == id {
+                task.worktree = None;
+            }
+        }
+    }
+
     /// Moves a task to the state it ended in, leaving the branch alone.
     ///
     /// Only a task that is still running ends.

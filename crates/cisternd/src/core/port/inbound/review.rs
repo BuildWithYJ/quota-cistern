@@ -80,6 +80,24 @@ pub trait ReviewUseCase {
 
     /// Puts a task that ended back where it started, so a session may take it again.
     fn retry(&self, id: &str) -> Result<Requeued, Refusal>;
+
+    /// Takes away the work areas of tasks that have been disposed of.
+    fn tidy(&self) -> Result<Tidying, Refusal>;
+}
+
+/// One task's work area, and what became of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tidied {
+    pub task: String,
+    pub worktree: String,
+    /// Why it was left where it is, or nothing for one that was taken away.
+    pub kept: Option<String>,
+}
+
+/// What tidying up came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tidying {
+    pub items: Vec<Tidied>,
 }
 
 /// A task that ended and is waiting again.

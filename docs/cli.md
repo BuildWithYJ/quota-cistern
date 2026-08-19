@@ -541,7 +541,7 @@ $ cistern diff 1 --stat
 
 ### 2.4 Review and disposition
 
-`review ls` lists what is waiting to be disposed of, and `apply`, `discard`, and `retry` dispose of it. None of them changes a branch.
+`review ls` lists what is waiting to be disposed of, and `apply`, `discard`, and `retry` dispose of it. None of them changes a branch. `tidy` takes away the work areas of tasks already disposed of.
 
 #### `cistern retry`
 
@@ -568,6 +568,32 @@ For a task cut off at its ceiling, or one that failed. The branch its last run l
 | 0 | Success |
 | 3 | No such task |
 | 4 | The task has not ended |
+| 5 | Core error |
+
+#### `cistern tidy`
+
+Takes away the work areas of tasks that have been disposed of.
+
+```
+cistern tidy
+```
+
+A task runs in a checkout of its own and nothing removes it, so they accumulate one per task. This removes those a person is finished with: the task has ended, and `apply` or `discard` has taken it out of the review queue. A task still running keeps its work area because a run is in it, and one nobody has disposed of keeps it because that is where a person looks at what was done and where `retry` carries on.
+
+The branch is kept whatever happens to the work area, so nothing a run committed goes with it, and `apply` reads from the branch. A work area holding changes nobody committed is left where it is: git refuses to remove it, nothing here forces it, and what git said is reported. Registrations for work areas somebody removed by hand are pruned at the same time.
+
+**Output**
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `items` | array | Per task: `task`, `worktree`, `kept` |
+| `items[].kept` | string | Why it was left where it is, or null for one that was taken away |
+
+**Exit codes**
+
+| Code | Condition |
+| --- | --- |
+| 0 | Success |
 | 5 | Core error |
 
 #### `cistern review ls`

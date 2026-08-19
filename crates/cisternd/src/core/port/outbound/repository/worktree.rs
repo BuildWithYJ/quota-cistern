@@ -25,4 +25,14 @@ pub trait Worktrees: Sync {
     /// The place it answers with is what the agent runs in and what `task show` reports.
     /// It is a path a person can open.
     fn prepare(&self, cut: Cut<'_>) -> Result<String, Unavailable>;
+
+    /// Takes a work area away, leaving the branch it was on.
+    ///
+    /// Refused where the work area holds changes nobody committed. What a run left uncommitted
+    /// is in no branch and this is the only place it is, so whether it is safe to remove is
+    /// git's to answer rather than ours to guess: nothing here forces it, and a refusal is
+    /// reported as it was given.
+    ///
+    /// A work area that is not there is already gone rather than a failure.
+    fn remove(&self, repository: &str, at: &str) -> Result<(), Unavailable>;
 }

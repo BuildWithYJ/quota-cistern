@@ -4,7 +4,7 @@ use cistern_contract::{Request, Response};
 use serde_json::Value;
 
 use crate::core::port::inbound::{
-    Changed, Difference, Dropped, Queue, Refusal, Requeued, ReviewUseCase, Taken,
+    Changed, Difference, Dropped, Queue, Refusal, Requeued, ReviewUseCase, Taken, Tidying,
 };
 
 use super::{answer, missing, text};
@@ -17,6 +17,7 @@ pub fn respond(review: &impl ReviewUseCase, request: Request) -> Result<Response
         "apply" => Ok(about(request, |id| review.apply(id).map(applied))),
         "discard" => Ok(about(request, |id| review.discard(id).map(discarded))),
         "retry" => Ok(about(request, |id| review.retry(id).map(requeued))),
+        "tidy" => Ok(answer(request.command, review.tidy().map(tidied))),
         _ => Err(request),
     }
 }
@@ -75,6 +76,20 @@ fn discarded(dropped: Dropped) -> Value {
     serde_json::json!({ "task": dropped.task, "branch": dropped.branch })
 }
 
+fn tidied(tidying: Tidying) -> Value {
+    serde_json::json!({
+        "items": tidying
+            .items
+            .iter()
+            .map(|one| serde_json::json!({
+                "task": one.task,
+                "worktree": one.worktree,
+                "kept": one.kept,
+            }))
+            .collect::<Vec<Value>>(),
+    })
+}
+
 fn requeued(waiting: Requeued) -> Value {
     serde_json::json!({
         "task": waiting.task,
@@ -103,7 +118,7 @@ mod tests {
     use cistern_contract::code::{GENERAL_FAILURE, NOT_FOUND, STATE_CONFLICT, USAGE_ERROR};
 
     use super::super::tests::{asked, data, failure};
-    use crate::core::port::inbound::{Awaiting, Refusal};
+    use crate::core::port::inbound::{Awaiting, Refusal, Tidied};
 
     use super::*;
 
@@ -178,6 +193,16 @@ mod tests {
                 branch: "cistern/5".to_owned(),
                 attempts: "2".to_owned(),
             }))
+        }
+
+        fn tidy(&self) -> Result<Tidying, Refusal> {
+            Ok(Tidying {
+                items: vec![Tidied {
+                    task: "task:1".to_owned(),
+                    worktree: "/areas/1".to_owned(),
+                    kept: None,
+                }],
+            })
         }
     }
 

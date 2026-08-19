@@ -150,6 +150,7 @@ pub(super) fn a_pending_task() -> StoredTask {
 #[derive(Default)]
 pub(super) struct Areas {
     pub(super) cut: Mutex<Vec<(String, String, String)>>,
+    pub(super) taken: Mutex<Vec<String>>,
     pub(super) refuse: bool,
 }
 
@@ -164,6 +165,11 @@ impl Worktrees for Areas {
             cut.branch.to_owned(),
         ));
         Ok(format!("/areas/{}", cut.task))
+    }
+
+    fn remove(&self, _repository: &str, at: &str) -> Result<(), Unavailable> {
+        self.taken.lock().unwrap().push(at.to_owned());
+        Ok(())
     }
 }
 
