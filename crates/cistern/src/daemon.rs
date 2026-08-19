@@ -60,29 +60,51 @@ fn nobody_listening(e: &io::Error) -> bool {
 /// Asking is the test of whether it is ready, so there is no second idea of readiness to keep
 /// in step with this one.
 ///
-/// Two commands starting at once each start a core, and the one that loses the socket ends
-/// with what it could not bind. That is the loser's own message in the log, and the winner
-/// answers both.
+/// Two commands starting at once each start a core, and the one that loses ends with what it
+/// could not take. That is the loser's own message in the log, and the winner answers both.
+///
+/// So the core this command started stopping is not a reason to stop asking. It stopped
+/// because another one holds the stores, which is to say because an answer is coming from
+/// somewhere. What this wants is an answer, not an answer from the core it happened to start.
+/// Only the deadline ends the waiting, and what the core said is where the message points
+/// either way.
 fn started_then_asked(command: &str, params: Value) -> io::Result<Response> {
     let kept = kept()?;
     let mut core = start(&kept)?;
     let since = Instant::now();
+    let mut stopped = None;
 
     loop {
         match exchange::ask(command, params.clone()) {
             Err(e) if nobody_listening(&e) => {}
             answered => return answered,
         }
-        if let Some(status) = core.try_wait()? {
-            return Err(gave_up(&format!(
-                "the core stopped without answering ({status}); what it said is in {}",
-                kept.display()
-            )));
+        if stopped.is_none() {
+            stopped = core.try_wait()?;
         }
         if since.elapsed() >= ANSWERS_WITHIN {
+            // Left running rather than killed. A core that took the stores and is still
+            // starting is the one thing that will answer, and a command that gave up is not
+            // reason enough to take that away from the next one.
+            let why = match stopped {
+                Some(status) => format!(
+                    "the core this command started stopped ({status}) and no other answered \
+                     within {}s",
+                    ANSWERS_WITHIN.as_secs()
+                ),
+                None => format!(
+                    "the core did not answer within {}s",
+                    ANSWERS_WITHIN.as_secs()
+                ),
+            };
+            if stopped.is_none() {
+                // Nothing answered and it is still running, so it is stuck before it
+                // listened. Left behind, every command after this starts another.
+                let _ = core.kill();
+                let _ = core.wait();
+            }
             return Err(gave_up(&format!(
-                "the core did not answer within {}s; what it said is in {}",
-                ANSWERS_WITHIN.as_secs(),
+                "{why}; what it said is in {}",
                 kept.display()
             )));
         }
