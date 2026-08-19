@@ -11,6 +11,11 @@ interprocess = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+# Only one core may hold the stores, and only the kernel can say so across processes.
+# A lock the kernel gives back when the holder dies is what a lock file cannot be.
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true }
+
 [dev-dependencies]
 serde_json = { workspace = true }
 tempfile = { workspace = true }

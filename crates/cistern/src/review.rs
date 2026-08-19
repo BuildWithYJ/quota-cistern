@@ -8,11 +8,10 @@ use std::process::ExitCode;
 use cistern_contract::{
     Response,
     code::{CORE_ERROR, GENERAL_FAILURE},
-    exchange,
 };
 use serde_json::Value;
 
-use crate::cli::ReviewCommand;
+use crate::{cli::ReviewCommand, daemon};
 
 /// The marks section 2.2 puts before a task, one per terminal state.
 const FINISHED: &str = "\u{2713}";
@@ -65,7 +64,7 @@ pub fn discard(task: &str) -> ExitCode {
 
 /// Asks the core and hands back what it answered, or the code to exit with.
 fn ask(command: &str, params: Value) -> Result<Value, ExitCode> {
-    match exchange::ask(command, params) {
+    match daemon::ask(command, params) {
         Ok(Response::Data(answer)) => Ok(answer.data),
         Ok(Response::Error(failure)) => {
             eprintln!("cistern: {}", failure.message);
