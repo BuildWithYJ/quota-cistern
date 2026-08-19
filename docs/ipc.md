@@ -11,6 +11,8 @@ The `cistern-contract` crate defines the envelope in Rust. The crate is the sour
 | Unix | `$XDG_RUNTIME_DIR/cistern/sock`, or `~/.local/state/cistern/sock` when that variable is unset |
 | Windows | the named pipe `\\.\pipe\cistern` |
 
+**The core runs on Unix.** The requirements say macOS or Linux, the daemon reads the vendor's limit through a pseudo-terminal, and nothing is built or run against Windows. The Windows address is written down and the code carries the arms for it so that the envelope is one document rather than two, but a Windows core is not something this project offers today. One thing already known to be missing: `interprocess` answers `Unsupported` to a receive timeout on a named pipe, and the wait on a request below is set through one.
+
 The core creates the socket when it starts and removes it when it exits. A surface that cannot connect reports that the core is not running.
 
 One connection carries one request. The core never sends a message the surface did not ask for.

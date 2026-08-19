@@ -152,6 +152,9 @@ impl Exchange {
                     "the whole request did not arrive in time",
                 ));
             }
+            // A named pipe answers `Unsupported` to this. The core is Unix, which
+            // `docs/ipc.md` says; a Windows core would need another way to bound a read
+            // before it needed anything else here.
             self.0.set_recv_timeout(Some(left))?;
 
             let held = match reading.fill_buf() {
