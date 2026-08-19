@@ -10,7 +10,7 @@ use crate::core::{
     domain::{Consumption, Observation, StoppedReason, Task, TaskId, TaskState},
     port::{
         inbound::{Carrying, NotCarried, Refusal},
-        outbound::{Cut, Observed, Outcome, Spent, Work},
+        outbound::{Cut, Observed, Outcome, Run, Spent, Work},
     },
 };
 
@@ -37,6 +37,17 @@ impl Carrying for WorkService<'_> {
 }
 
 impl WorkService<'_> {
+    /// Puts one run in the ledger.
+    ///
+    /// A task that is no longer there leaves nothing to write down, which is not a failure:
+    /// the run happened and the task it belonged to was removed while it did.
+    fn remember(&self, run: Option<Run>) -> Result<(), Refusal> {
+        match run {
+            Some(run) => Ok(self.supervising.outside.runs.append(run)?),
+            None => Ok(()),
+        }
+    }
+
     /// Everything `carry_on` does, in the words the rest of this file speaks.
     fn carrying(&self, task: &str) -> Result<Vec<String>, Refusal> {
         let id = TaskId::parse(task).ok_or_else(|| Refusal::BadValue {
@@ -49,6 +60,12 @@ impl WorkService<'_> {
             let held = tasks
                 .find(id)
                 .ok_or_else(|| Refusal::NoSuchTask { id: id.labelled() })?;
+            // A task queued before its session stopped is still on the queue when a worker
+            // reaches it. Starting it would spend against a session that has already reported
+            // what it spent, and nothing would stop the run afterwards.
+            if held.state() != TaskState::Running {
+                return Ok(Vec::new());
+            }
             (
                 held.repository().to_string(),
                 held.base_branch(),
@@ -119,12 +136,15 @@ impl WorkService<'_> {
             .ok()
             .and_then(|at| at.resets_at.parse().ok());
         let now = self.supervising.outside.clock.now();
-        let session = backlog::change(self.supervising.outside.tasks, |tasks| {
+        let (session, run) = backlog::change(self.supervising.outside.tasks, |tasks| {
             tasks.record(id, consumed.clone());
-            let session = tasks.find(id).and_then(Task::session);
+            let held = tasks.find(id);
+            let session = held.and_then(Task::session);
+            let run = held.map(|held| ran(held, now));
             tasks.wait_again(id, now);
-            Ok(session)
+            Ok((session, run))
         })?;
+        self.remember(run)?;
 
         if let Some(session) = session {
             if let Some(at) = starts_over {
@@ -149,11 +169,16 @@ impl WorkService<'_> {
         consumed: Observation,
     ) -> Result<Vec<String>, Refusal> {
         let now = self.supervising.outside.clock.now();
-        let session = backlog::change(self.supervising.outside.tasks, |tasks| {
+        let (session, run) = backlog::change(self.supervising.outside.tasks, |tasks| {
             tasks.finish(id, state, reason.clone(), now);
             tasks.record(id, consumed.clone());
-            Ok(tasks.find(id).and_then(Task::session))
+            let held = tasks.find(id);
+            Ok((
+                held.and_then(Task::session),
+                held.map(|held| ran(held, now)),
+            ))
         })?;
+        self.remember(run)?;
 
         let Some(session) = session else {
             return Ok(Vec::new());
@@ -202,6 +227,27 @@ fn not_carried(why: Refusal) -> NotCarried {
     }
 }
 
+/// One run of one task, as the ledger holds it.
+///
+/// Taken from the task while the store is held, so the figures are the ones the run left rather
+/// than the ones a later run put there.
+fn ran(held: &Task, now: u64) -> Run {
+    Run {
+        task: held.id().to_string(),
+        session: held.session().map(|session| session.to_string()),
+        model: held.model().map(str::to_owned),
+        started_at: held.started_at().unwrap_or(now).to_string(),
+        ended_at: held.ended_at().unwrap_or(now).to_string(),
+        outcome: held.state().to_string(),
+        reason: held.reason().map(str::to_owned),
+        spent: backlog::kept(held.consumed()),
+        unreadable: match held.consumed() {
+            Observation::Unreadable { why } => Some(why.clone()),
+            _ => None,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -224,6 +270,7 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Answering::finishing();
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -233,6 +280,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -267,6 +315,7 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Answering::finishing();
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -276,6 +325,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -311,6 +361,7 @@ mod tests {
             ..Areas::default()
         };
         let agent = Answering::finishing();
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -320,6 +371,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -352,6 +404,7 @@ mod tests {
                 cost: "92170".to_owned(),
             }),
         });
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -361,6 +414,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -384,6 +438,7 @@ mod tests {
             reason: Some("it went wrong".to_owned()),
             observed: spending(),
         });
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -393,6 +448,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -418,6 +474,7 @@ mod tests {
             reason: Some("the agent was cut off after 200 turns".to_owned()),
             observed: spending(),
         });
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -427,6 +484,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -457,6 +515,7 @@ mod tests {
             used: Mutex::new(100 * HUNDREDTHS),
             refuse: Mutex::new(false),
         };
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -466,6 +525,7 @@ mod tests {
                 clock: &STILL,
                 limit: &full,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -477,8 +537,10 @@ mod tests {
 
         let held = tasks.first();
         assert_eq!(held.state, "Pending");
-        assert_eq!(held.session, None);
         assert_eq!(held.reason, None);
+        // The session it was assigned to stays. It paid for whatever the refused run got
+        // through, and assigning the task again is what names the next one.
+        assert_eq!(held.session.as_deref(), Some("1"));
 
         let session = sessions.load().sessions[0].clone();
         assert_eq!(session.state, "stopped");
@@ -500,6 +562,7 @@ mod tests {
             used: Mutex::new(40 * HUNDREDTHS),
             refuse: Mutex::new(false),
         };
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -509,6 +572,7 @@ mod tests {
                 clock: &STILL,
                 limit: &room,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -539,6 +603,7 @@ mod tests {
             used: Mutex::new(0),
             refuse: Mutex::new(true),
         };
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -548,6 +613,7 @@ mod tests {
                 clock: &STILL,
                 limit: &silent,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -568,6 +634,7 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task(), a_second_pending_task()]);
         let areas = Areas::default();
         let agent = Answering::finishing();
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -577,6 +644,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -613,6 +681,7 @@ mod tests {
             ..Areas::default()
         };
         let agent = Answering::finishing();
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -622,6 +691,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -635,5 +705,174 @@ mod tests {
         assert_eq!(held.state, "Error");
         assert_eq!(held.reason.as_deref(), Some("no such base branch"));
         assert!(agent.asked.lock().unwrap().is_empty());
+    }
+
+    /// The backlog keeps one run to a task, so what a budget is worked out from is kept apart.
+    #[test]
+    fn a_run_that_ended_is_written_to_the_ledger() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task()]);
+        let areas = Areas::default();
+        let agent = Answering::finishing();
+        let ledger = Ledger::default();
+        let supervisor = Supervisor::new(
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+                runs: &ledger,
+            },
+            AT_ONCE,
+        );
+        let execution = ExecutionService::new(&supervisor);
+        let work = WorkService::new(&supervisor);
+
+        execution.run(declaring("2M", "8h")).unwrap();
+        work.carry_on("task:1").unwrap();
+
+        let written = ledger.runs();
+        assert_eq!(written.len(), 1, "{written:?}");
+        assert_eq!(written[0].task, "1");
+        assert_eq!(written[0].session.as_deref(), Some("1"));
+        assert_eq!(written[0].outcome, "Completed");
+        assert_eq!(
+            written[0].spent.as_ref().map(|spent| spent.cost.as_str()),
+            Some("92170")
+        );
+        assert_eq!(written[0].unreadable, None);
+    }
+
+    /// A refused run is still a run, and the session it was assigned to paid for it.
+    #[test]
+    fn a_run_the_vendor_refused_is_written_to_the_ledger_with_its_session() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+        let areas = Areas::default();
+        let agent = Answering::ending(Ended {
+            outcome: Outcome::Failed,
+            reason: Some("it stopped".to_owned()),
+            observed: spending(),
+        });
+        let full = AtPercent {
+            used: Mutex::new(100 * HUNDREDTHS),
+            refuse: Mutex::new(false),
+        };
+        let ledger = Ledger::default();
+        let supervisor = Supervisor::new(
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &full,
+                traces: &NOTHING_KEPT,
+                runs: &ledger,
+            },
+            AT_ONCE,
+        );
+        let execution = ExecutionService::new(&supervisor);
+        let work = WorkService::new(&supervisor);
+
+        execution.run(declaring("2M", "8h")).unwrap();
+        work.carry_on("task:1").unwrap();
+
+        let written = ledger.runs();
+        assert_eq!(written.len(), 1, "{written:?}");
+        assert_eq!(written[0].task, "1");
+        assert_eq!(written[0].session.as_deref(), Some("1"));
+        assert_eq!(
+            written[0].spent.as_ref().map(|spent| spent.cost.as_str()),
+            Some("92170")
+        );
+    }
+
+    /// What a run consumed may be unreadable, and that is not the same as nothing.
+    #[test]
+    fn a_run_nobody_could_read_is_written_to_the_ledger_as_unreadable() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task()]);
+        let areas = Areas::default();
+        let agent = Answering::ending(Ended {
+            outcome: Outcome::Finished,
+            reason: None,
+            observed: Observed::Unreadable {
+                why: "no last line".to_owned(),
+            },
+        });
+        let ledger = Ledger::default();
+        let supervisor = Supervisor::new(
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+                runs: &ledger,
+            },
+            AT_ONCE,
+        );
+        let execution = ExecutionService::new(&supervisor);
+        let work = WorkService::new(&supervisor);
+
+        execution.run(declaring("2M", "8h")).unwrap();
+        work.carry_on("task:1").unwrap();
+
+        let written = ledger.runs();
+        assert_eq!(written.len(), 1, "{written:?}");
+        assert_eq!(written[0].spent, None);
+        assert_eq!(written[0].unreadable.as_deref(), Some("no last line"));
+    }
+
+    /// A task is put on the queue when it is assigned and reached when a worker gets to it.
+    ///
+    /// The session can stop in between. Starting the task then spends against a session that
+    /// has already reported what it spent, and nothing would end the run afterwards.
+    #[test]
+    fn a_task_whose_session_stopped_before_a_worker_reached_it_does_not_start() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+        let areas = Areas::default();
+        let agent = Answering::finishing();
+        let runs = Ledger::default();
+        let supervisor = Supervisor::new(
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+                runs: &runs,
+            },
+            AT_ONCE,
+        );
+        let execution = ExecutionService::new(&supervisor);
+        let work = WorkService::new(&supervisor);
+
+        execution.run(declaring("2M", "8h")).unwrap();
+        // Everything the run assigned is interrupted, which is what a session stopping does.
+        execution.interrupt().unwrap();
+        let asked = agent.asked.lock().unwrap().len();
+
+        let assigned = work.carry_on("task:1").unwrap();
+
+        assert!(assigned.is_empty());
+        assert_eq!(
+            agent.asked.lock().unwrap().len(),
+            asked,
+            "a task was started for a session that had stopped"
+        );
+        assert!(
+            runs.runs().is_empty(),
+            "a run was written for a task that never started"
+        );
     }
 }

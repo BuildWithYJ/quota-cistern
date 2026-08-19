@@ -363,7 +363,7 @@ fn observed(
 }
 
 /// Hands one task's consumption to a store as the text a user would have typed.
-fn kept(consumed: &Observation) -> Option<StoredConsumption> {
+pub(super) fn kept(consumed: &Observation) -> Option<StoredConsumption> {
     match consumed {
         Observation::Spent(counted) => Some(StoredConsumption {
             input: counted.input.to_string(),

@@ -511,11 +511,12 @@ impl Backlog {
     /// Puts a task back where it was before it was assigned.
     ///
     /// For a task nobody would run.
+    /// The session it was assigned to stays, since that session paid for whatever the refused run
+    /// got through and `counted_in` is what says so. Assigning it again names the next one.
     pub fn wait_again(&mut self, id: TaskId, now: u64) {
         for task in &mut self.tasks {
             if task.id == id {
                 task.state = TaskState::Pending;
-                task.session = None;
                 task.reason = None;
                 // The run it had is over even though the task waits again, and it
                 // consumed whatever it consumed before the vendor refused it.
@@ -984,6 +985,35 @@ mod tests {
         let held = backlog.find(id).unwrap();
         assert_eq!(held.started_at(), Some(AT + 300));
         assert_eq!(held.ended_at(), None);
+    }
+
+    /// The vendor refusing a run does not refund what the run got through first.
+    #[test]
+    fn a_task_sent_back_to_waiting_still_counts_against_the_session_that_ran_it() {
+        let mut backlog = Backlog::default();
+        let session = a_session();
+        let id = assigned(&mut backlog, session);
+        backlog.record(id, spent(40));
+
+        backlog.wait_again(id, AT + 60);
+
+        assert_eq!(backlog.find(id).unwrap().state(), TaskState::Pending);
+        assert_eq!(backlog.consumed_by(session), spent(40));
+    }
+
+    /// Assigning it again is what moves it, and the next session is what it costs.
+    #[test]
+    fn a_task_assigned_again_counts_against_the_session_that_took_it() {
+        let mut backlog = Backlog::default();
+        let first = a_session();
+        let id = assigned(&mut backlog, first);
+        backlog.record(id, spent(40));
+        backlog.wait_again(id, AT + 60);
+
+        let next = SessionId::parse("2").unwrap();
+        assert_eq!(backlog.assign(next, AT + 300), Some(id));
+        assert_eq!(backlog.consumed_by(first), spent(0));
+        assert_eq!(backlog.consumed_by(next), spent(40));
     }
 
     /// A session stopped by hand ends its tasks, and they took as long as they took.

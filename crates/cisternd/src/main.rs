@@ -79,6 +79,10 @@ fn main() -> ExitCode {
         return quit("neither XDG_DATA_HOME nor HOME is set");
     };
 
+    let Some(runs) = outbound::file::run::FileRuns::in_data_home() else {
+        return quit("neither XDG_DATA_HOME nor HOME is set");
+    };
+
     let roots = outbound::git::roots::GitRoots;
     let results = outbound::git::result::GitResults;
     let clock = outbound::clock::SystemClock;
@@ -98,6 +102,7 @@ fn main() -> ExitCode {
             clock: &clock,
             limit: &limit,
             traces: &traces,
+            runs: &runs,
         },
         AT_ONCE,
     );

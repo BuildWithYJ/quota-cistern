@@ -305,6 +305,7 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Answering::finishing();
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -314,6 +315,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -333,6 +335,7 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Answering::finishing();
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -342,6 +345,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -363,6 +367,7 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Answering::finishing();
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -372,6 +377,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -389,6 +395,7 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task(), a_second_pending_task()]);
         let areas = Areas::default();
         let agent = Answering::finishing();
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -398,6 +405,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -419,6 +427,7 @@ mod tests {
         let tasks = Tasks::holding(Vec::new());
         let areas = Areas::default();
         let agent = Answering::finishing();
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -428,6 +437,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -446,6 +456,7 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Answering::finishing();
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -455,6 +466,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -498,6 +510,7 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Answering::finishing();
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -507,6 +520,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -522,6 +536,7 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Answering::finishing();
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -531,6 +546,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -550,6 +566,7 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Answering::finishing();
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -559,6 +576,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -574,6 +592,7 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
         let areas = Areas::default();
         let agent = Answering::finishing();
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -583,6 +602,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -602,6 +622,7 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Answering::finishing();
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -611,6 +632,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -630,6 +652,7 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
         let areas = Areas::default();
         let agent = Answering::finishing();
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -639,6 +662,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -666,6 +690,7 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
         let areas = Areas::default();
         let agent = Answering::finishing();
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -675,6 +700,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -699,6 +725,7 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task()]);
         let areas = Areas::default();
         let agent = Answering::finishing();
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -708,6 +735,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -724,6 +752,7 @@ mod tests {
         let areas = Areas::default();
         let agent = Answering::finishing();
         let late = Frozen(1_000 + 8 * 3_600);
+        let runs = Ledger::default();
         let on_time = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -733,6 +762,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -740,6 +770,7 @@ mod tests {
             .run(declaring("2M", "8h"))
             .unwrap();
 
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -749,6 +780,7 @@ mod tests {
                 clock: &late,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -773,6 +805,7 @@ mod tests {
         }]);
         let areas = Areas::default();
         let agent = Answering::finishing();
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -782,6 +815,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -799,6 +833,7 @@ mod tests {
         let tasks = Tasks::holding(Vec::new());
         let areas = Areas::default();
         let agent = Answering::finishing();
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -808,6 +843,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -828,6 +864,7 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
         let areas = Areas::default();
         let agent = Answering::finishing();
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -837,6 +874,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -862,6 +900,7 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
         let areas = Areas::default();
         let agent = Answering::finishing();
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -871,6 +910,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -892,6 +932,7 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
         let areas = Areas::default();
         let agent = Answering::finishing();
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -901,6 +942,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -935,6 +977,7 @@ mod tests {
             used: Mutex::new(0),
             step: 100,
         };
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -944,6 +987,7 @@ mod tests {
                 clock: &STILL,
                 limit: &moving,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -978,6 +1022,7 @@ mod tests {
             used: Mutex::new(100 * HUNDREDTHS),
             refuse: Mutex::new(false),
         };
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -987,6 +1032,7 @@ mod tests {
                 clock: &STILL,
                 limit: &full,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -1013,6 +1059,7 @@ mod tests {
             reason: Some("it was killed".to_owned()),
             observed: spending(),
         });
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -1022,6 +1069,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );

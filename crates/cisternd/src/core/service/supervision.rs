@@ -11,11 +11,11 @@
 use crate::core::{
     domain::{
         Backlog, Consumption, Cost, Decision, HUNDREDTHS, Observation, Session, SessionId,
-        SessionState, Spending, Standing, StoppedReason, TaskId, Usage, cost_of, decide,
+        SessionState, Spending, Standing, StoppedReason, TaskId, TaskState, Usage, cost_of, decide,
     },
     port::{
         inbound::Refusal,
-        outbound::{Agent, BacklogStore, Clock, Limit, SessionStore, Traces, Worktrees},
+        outbound::{Agent, BacklogStore, Clock, Limit, Runs, SessionStore, Traces, Worktrees},
     },
 };
 
@@ -33,6 +33,7 @@ pub struct Outside<'a> {
     pub clock: &'a dyn Clock,
     pub limit: &'a dyn Limit,
     pub traces: &'a dyn Traces,
+    pub runs: &'a dyn Runs,
 }
 
 /// The reading at which the vendor has nothing left to give.
@@ -157,8 +158,17 @@ impl Supervisor<'_> {
     }
 
     /// Stops the session and ends whatever it still had running.
+    ///
+    /// Marking a task interrupted does not end the run behind it. The run is a process this
+    /// core started, and a session that stopped while one was still going would go on spending
+    /// against a budget it had already reported as spent.
     pub(super) fn stop(&self, session: SessionId, why: StoppedReason) -> Result<(), Refusal> {
         let now = self.outside.clock.now();
+        for task in backlog::read(self.outside.tasks)?.taken_by(session) {
+            if task.state() == TaskState::Running {
+                self.outside.agent.stop(&task.id().to_string());
+            }
+        }
         sessions::change(self.outside.sessions, |sessions| {
             sessions.stop(session, why, now);
             Ok(())
@@ -294,9 +304,12 @@ fn standing(
 mod tests {
     use std::sync::Mutex;
 
-    use crate::core::port::{
-        inbound::{Carrying, ExecutionUseCase},
-        outbound::{BacklogStore, Ended, Observed, Outcome},
+    use crate::core::{
+        domain::{SessionId, StoppedReason},
+        port::{
+            inbound::{Carrying, ExecutionUseCase},
+            outbound::{BacklogStore, Ended, Observed, Outcome},
+        },
     };
 
     use super::super::fixtures::*;
@@ -316,6 +329,7 @@ mod tests {
                 why: "the answer said nothing about it".to_owned(),
             },
         });
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -325,6 +339,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -357,6 +372,7 @@ mod tests {
         let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
         let areas = Areas::default();
         let agent = Answering::finishing();
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -366,6 +382,7 @@ mod tests {
                 clock: &STILL,
                 limit: &UNTOUCHED,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -404,6 +421,7 @@ mod tests {
             used: Mutex::new(0),
             step: 50,
         };
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -413,6 +431,7 @@ mod tests {
                 clock: &STILL,
                 limit: &moving,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -441,6 +460,7 @@ mod tests {
             used: Mutex::new(0),
             step: 100,
         };
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -450,6 +470,7 @@ mod tests {
                 clock: &STILL,
                 limit: &moving,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -478,6 +499,7 @@ mod tests {
         let agent = Answering::finishing();
         // Opens at 30%, climbs to 34%, and then the window begins again at 2%.
         let turning = Turning::over(&[3_000, 3_400, 200]);
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -487,6 +509,7 @@ mod tests {
                 clock: &STILL,
                 limit: &turning,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -520,6 +543,7 @@ mod tests {
         let areas = Areas::default();
         let agent = Answering::finishing();
         let turning = Turning::over(&[3_000, 3_100, 100]);
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -529,6 +553,7 @@ mod tests {
                 clock: &STILL,
                 limit: &turning,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -559,6 +584,7 @@ mod tests {
             let tasks = Tasks::holding((1..=10).map(|n| a_task_numbered(&n.to_string())).collect());
             let areas = Areas::default();
             let agent = Answering::finishing();
+            let runs = Ledger::default();
             let supervisor = Supervisor::new(
                 Outside {
                     sessions: &sessions,
@@ -568,6 +594,7 @@ mod tests {
                     clock: &STILL,
                     limit: &UNTOUCHED,
                     traces: &NOTHING_KEPT,
+                    runs: &runs,
                 },
                 AT_ONCE,
             );
@@ -607,6 +634,7 @@ mod tests {
             let tasks = Tasks::holding((1..=10).map(|n| a_task_numbered(&n.to_string())).collect());
             let areas = Areas::default();
             let agent = Answering::finishing();
+            let runs = Ledger::default();
             let supervisor = Supervisor::new(
                 Outside {
                     sessions: &sessions,
@@ -616,6 +644,7 @@ mod tests {
                     clock: &STILL,
                     limit: &UNTOUCHED,
                     traces: &NOTHING_KEPT,
+                    runs: &runs,
                 },
                 // Room enough that what is left is what decides, not the machine.
                 8,
@@ -659,6 +688,7 @@ mod tests {
         let areas = Areas::default();
         let agent = Answering::finishing();
         let limit = AtPercent::at(1_000);
+        let runs = Ledger::default();
         let supervisor = Supervisor::new(
             Outside {
                 sessions: &sessions,
@@ -668,6 +698,7 @@ mod tests {
                 clock: &STILL,
                 limit: &limit,
                 traces: &NOTHING_KEPT,
+                runs: &runs,
             },
             AT_ONCE,
         );
@@ -684,5 +715,43 @@ mod tests {
             held.sessions[0].stopped_reason.as_deref(),
             Some("observation unreadable")
         );
+    }
+
+    /// Marking a task interrupted does not end the run behind it.
+    ///
+    /// A session that stopped while one was still going would go on spending against a budget
+    /// it had already reported as spent, and nothing else would end it.
+    #[test]
+    fn stopping_a_session_ends_the_runs_it_still_had_going() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+        let areas = Areas::default();
+        let agent = Answering::finishing();
+        let runs = Ledger::default();
+        let supervisor = Supervisor::new(
+            Outside {
+                sessions: &sessions,
+                tasks: &tasks,
+                worktrees: &areas,
+                agent: &agent,
+                clock: &STILL,
+                limit: &UNTOUCHED,
+                traces: &NOTHING_KEPT,
+                runs: &runs,
+            },
+            AT_ONCE,
+        );
+        ExecutionService::new(&supervisor)
+            .run(declaring("2M", "8h"))
+            .unwrap();
+
+        let running = tasks.running();
+        assert!(!running.is_empty(), "nothing was running to end");
+        supervisor
+            .stop(SessionId::parse("1").unwrap(), StoppedReason::AllDone)
+            .unwrap();
+
+        let ended = agent.stopped.lock().unwrap().clone();
+        assert_eq!(ended, running, "a run outlived the session that started it");
     }
 }

@@ -12,9 +12,9 @@ use std::sync::{Mutex, PoisonError};
 use crate::core::{
     port::inbound::Declaration,
     port::outbound::{
-        Agent, BacklogStore, Clock, Cut, Ended, Keeping, Limit, Observed, Outcome, Reading,
-        SessionStore, Spent, StoredBacklog, StoredSessions, StoredTask, Traces, Unavailable, Work,
-        Worktrees,
+        Agent, BacklogStore, Clock, Cut, Ended, Keeping, Limit, Observed, Outcome, Reading, Run,
+        Runs, SessionStore, Spent, StoredBacklog, StoredSessions, StoredTask, Traces, Unavailable,
+        Work, Worktrees,
     },
 };
 
@@ -71,6 +71,18 @@ impl Tasks {
                 tasks,
             }),
         }
+    }
+
+    /// The tasks the store says are running, in the order it holds them.
+    pub(super) fn running(&self) -> Vec<String> {
+        self.stored
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .tasks
+            .iter()
+            .filter(|task| task.state == "Running")
+            .map(|task| task.id.clone())
+            .collect()
     }
 
     pub(super) fn first(&self) -> StoredTask {
@@ -362,4 +374,27 @@ pub(super) fn running_in(tasks: &Tasks) -> usize {
         .iter()
         .filter(|task| task.state == "Running")
         .count()
+}
+
+/// Every run there has been, kept in memory.
+#[derive(Default)]
+pub(super) struct Ledger(pub(super) Mutex<Vec<Run>>);
+
+impl Runs for Ledger {
+    fn append(&self, run: Run) -> Result<(), Unavailable> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(run);
+        Ok(())
+    }
+}
+
+impl Ledger {
+    pub(super) fn runs(&self) -> Vec<Run> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
 }
