@@ -388,6 +388,10 @@ impl Runs for Ledger {
             .push(run);
         Ok(())
     }
+
+    fn read(&self) -> Result<Vec<Run>, Unavailable> {
+        Ok(self.runs())
+    }
 }
 
 impl Ledger {

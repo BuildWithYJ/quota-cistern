@@ -7,7 +7,7 @@
 
 use std::{
     env, fs,
-    io::Write as _,
+    io::{self, Write as _},
     path::{Path, PathBuf},
 };
 
@@ -16,7 +16,7 @@ use serde_json::Value;
 
 use crate::core::port::outbound::{Run, Runs, StoredConsumption, Unavailable};
 
-use super::{as_number, as_value};
+use super::{as_number, as_optional, as_text, as_value};
 
 /// What the file is called, beside the two the other stores keep.
 const NAMED: &str = "runs.jsonl";
@@ -105,6 +105,48 @@ impl Runs for FileRuns {
 
         // One write of one line, so that two runs ending at once do not interleave.
         writeln!(held, "{line}").map_err(|e| self.failing(&self.at, e))
+    }
+
+    fn read(&self) -> Result<Vec<Run>, Unavailable> {
+        let written = match fs::read_to_string(&self.at) {
+            Ok(written) => written,
+            // Nothing has run yet, which is not a failure.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(self.failing(&self.at, e)),
+        };
+        Ok(written
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .filter_map(|line| serde_json::from_str::<Entry>(line).ok())
+            .map(held)
+            .collect())
+    }
+}
+
+/// What the file holds, as the core takes it.
+fn held(entry: Entry) -> Run {
+    Run {
+        task: as_text(entry.task),
+        session: as_optional(entry.session),
+        model: as_optional(entry.model),
+        started_at: as_text(entry.started_at),
+        ended_at: as_text(entry.ended_at),
+        outcome: as_text(entry.outcome),
+        reason: as_optional(entry.reason),
+        spent: entry.spent.map(spending),
+        unreadable: as_optional(entry.unreadable),
+        limit_before: as_optional(entry.limit_before),
+        limit_after: as_optional(entry.limit_after),
+    }
+}
+
+fn spending(counted: Counted) -> StoredConsumption {
+    StoredConsumption {
+        input: as_text(counted.input),
+        output: as_text(counted.output),
+        cache_written: as_text(counted.cache_written),
+        cache_read: as_text(counted.cache_read),
+        cost: as_text(counted.cost),
     }
 }
 
@@ -278,5 +320,47 @@ mod tests {
         assert!(!runs.at.exists());
         runs.append(a_run("1")).unwrap();
         assert!(runs.at.exists());
+    }
+
+    /// What went in comes back, in the order it went in.
+    #[test]
+    fn every_run_comes_back_oldest_first() {
+        let (_dir, runs) = in_a_temporary_directory();
+        runs.append(a_run("1")).unwrap();
+        runs.append(a_run("2")).unwrap();
+
+        let held = runs.read().unwrap();
+        assert_eq!(
+            held.iter().map(|run| run.task.as_str()).collect::<Vec<_>>(),
+            ["1", "2"]
+        );
+        assert_eq!(held[0], a_run("1"));
+    }
+
+    /// Nothing has run yet, which is not a failure.
+    #[test]
+    fn a_ledger_nobody_has_written_reads_as_nothing() {
+        let (_dir, runs) = in_a_temporary_directory();
+        assert_eq!(runs.read().unwrap(), Vec::new());
+    }
+
+    /// The file is appended to by a process that can be killed part way through a line.
+    /// One line nobody can read is not a reason to lose the rest.
+    #[test]
+    fn a_line_that_cannot_be_read_is_left_out_rather_than_losing_the_others() {
+        let (_dir, runs) = in_a_temporary_directory();
+        runs.append(a_run("1")).unwrap();
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&runs.at)
+            .and_then(|mut held| writeln!(held, "{{\"task\": \"2\", \"ende"))
+            .unwrap();
+        runs.append(a_run("3")).unwrap();
+
+        let held = runs.read().unwrap();
+        assert_eq!(
+            held.iter().map(|run| run.task.as_str()).collect::<Vec<_>>(),
+            ["1", "3"]
+        );
     }
 }

@@ -49,4 +49,11 @@ pub struct Run {
 pub trait Runs: Sync {
     /// Puts one run at the end.
     fn append(&self, run: Run) -> Result<(), Unavailable>;
+
+    /// Every run there has been, oldest first.
+    ///
+    /// A line that cannot be read is left out rather than failing the whole. The file is
+    /// appended to by a process that can be killed part way through a line, and one bad line
+    /// is not a reason to stop working out what a task costs.
+    fn read(&self) -> Result<Vec<Run>, Unavailable>;
 }
