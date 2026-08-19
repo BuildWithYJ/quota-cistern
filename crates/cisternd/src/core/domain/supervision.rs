@@ -117,6 +117,21 @@ fn allow(standing: &Standing) -> Vec<Allowance> {
             }
             break;
         };
+        // A task that cannot finish before the session's time runs out is one the hardlock
+        // would stop part way through, which spends what it spends and leaves nothing. Held to
+        // the same quantile as a ceiling and for the same reason: not starting costs idle time,
+        // and starting something that is stopped costs the work.
+        //
+        // Taken in the order they wait, so a task that does not fit ends the round rather than
+        // letting a shorter one behind it go first. That is how a budget that does not stretch
+        // to the next task is treated too.
+        if standing
+            .lasting
+            .model(model.as_deref())
+            .is_some_and(|lasts| lasts.estimate > standing.time_left)
+        {
+            break;
+        }
         let want = sizing.estimate.max(1);
         let ceiling = if free >= want {
             want
@@ -340,6 +355,10 @@ pub struct Standing {
     pub booked: u64,
     /// What runs have cost, by the model that ran them.
     pub sizings: Sizings,
+    /// How long runs have taken, by the model that ran them, in seconds.
+    pub lasting: Sizings,
+    /// How long the session has before the time it declared runs out, in seconds.
+    pub time_left: u64,
     /// The tasks that may start, in the order they would be taken, each with the model it
     /// named.
     ///
@@ -417,6 +436,10 @@ mod tests {
             left: 1_000,
             booked: 0,
             sizings: Sizings::of([Ran::finished(Some("opus"), 100)]),
+            // Nothing has been timed, so the clock lets everything start. The tests that are
+            // about the clock say what runs have taken.
+            lasting: Sizings::default(),
+            time_left: 8 * 60 * 60,
             pending: vec![
                 (task(1), Some("opus".to_owned())),
                 (task(2), Some("opus".to_owned())),
@@ -618,6 +641,62 @@ mod tests {
                 ..standing()
             }),
             Decision::Stop(StoppedReason::BudgetHardlock)
+        );
+    }
+
+    /// The hardlock stops a session part way through whatever it has going, so a task started
+    /// with less time than a run of its model takes is one that will be stopped like that,
+    /// having spent what it spent and left nothing.
+    #[test]
+    fn a_task_that_cannot_finish_in_the_time_left_does_not_start() {
+        assert_eq!(
+            decide(&Standing {
+                lasting: Sizings::of([Ran::finished(Some("opus"), 900)]),
+                time_left: 600,
+                ..standing()
+            }),
+            Decision::Start(Vec::new())
+        );
+    }
+
+    #[test]
+    fn a_task_that_fits_the_time_left_starts() {
+        assert_eq!(
+            ceilings(decide(&Standing {
+                lasting: Sizings::of([Ran::finished(Some("opus"), 900)]),
+                time_left: 3_600,
+                ..standing()
+            })),
+            [100, 100]
+        );
+    }
+
+    /// Waiting out the clock with tasks that may not start is not carrying on, and starting one
+    /// of them would spend on work the hardlock takes away again.
+    #[test]
+    fn a_session_with_nothing_running_and_no_time_for_another_run_stops() {
+        assert_eq!(
+            decide(&Standing {
+                running: 0,
+                lasting: Sizings::of([Ran::finished(Some("opus"), 900)]),
+                time_left: 600,
+                ..standing()
+            }),
+            Decision::Stop(StoppedReason::BudgetHardlock)
+        );
+    }
+
+    /// A model nothing has been timed on is not held to a clock it has no figure for. The first
+    /// run of it is the first sample, as it is for what a run costs.
+    #[test]
+    fn a_model_nothing_has_been_timed_on_starts_whatever_the_time_left() {
+        assert_eq!(
+            ceilings(decide(&Standing {
+                lasting: Sizings::of([Ran::finished(Some("haiku"), 900)]),
+                time_left: 1,
+                ..standing()
+            })),
+            [100, 100]
         );
     }
 

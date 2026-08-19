@@ -16,7 +16,7 @@ use crate::core::{
     port::{
         inbound::Refusal,
         outbound::{
-            Agent, BacklogStore, Clock, Limit, Runs, SessionStore, StoredConsumption, Traces,
+            Agent, BacklogStore, Clock, Limit, Run, Runs, SessionStore, StoredConsumption, Traces,
             Worktrees,
         },
     },
@@ -144,9 +144,10 @@ impl Supervisor<'_> {
             (Usage::Tokens(_), _) => None,
         };
 
-        // What runs have cost, in the unit this session declared. A file read rather than a
-        // vendor one, and taken before the hold like the vendor reading was.
+        // What runs have cost, in the unit this session declared, and how long they took. File
+        // reads rather than vendor ones, and taken before the hold like the vendor reading was.
         let sizings = self.sizings(held.budget().usage)?;
+        let lasting = self.lasting()?;
 
         let now = self.outside.clock.now();
         let settled = backlog::change(self.outside.tasks, |tasks| {
@@ -155,7 +156,15 @@ impl Supervisor<'_> {
                 None => Spending::Tokens(Consumption::total(tasks.counted_in(session)).tokens()),
             };
             Ok(
-                match decide(&standing(tasks, &held, spent, &sizings, self.at_once, now)) {
+                match decide(&standing(
+                    tasks,
+                    &held,
+                    spent,
+                    &sizings,
+                    &lasting,
+                    self.at_once,
+                    now,
+                )) {
                     // Stopping takes this store again and the sessions store with it, so it happens
                     // once this hold is given up rather than under it.
                     Decision::Stop(why) => Settled::Stop(spent, why),
@@ -236,14 +245,7 @@ impl Supervisor<'_> {
     fn sizings(&self, usage: Usage) -> Result<Sizings, Refusal> {
         let held = self.outside.runs.read()?;
         Ok(Sizings::of(held.into_iter().filter_map(|run| {
-            let ran = match (
-                TaskState::parse(&run.outcome)?,
-                run.reason.as_deref() == Some(AT_CEILING),
-            ) {
-                (TaskState::Completed, _) => Ran::finished,
-                (TaskState::Interrupted, true) => Ran::stopped,
-                _ => return None,
-            };
+            let ran = sampled(&run)?;
             let cost = match usage {
                 Usage::Tokens(_) => spending_of(&run.spent?).map(|counted| counted.tokens()),
                 // What the run moved the vendor's limit by, which is what a share is measured
@@ -256,6 +258,20 @@ impl Supervisor<'_> {
                 }
             }?;
             Some(ran(run.model.as_deref(), cost))
+        })))
+    }
+
+    /// How long a run of each model has taken, from the ledger, in seconds.
+    ///
+    /// Told apart the same way as what runs cost: a run stopped part way through took less
+    /// time than its task needs, for the same reason it spent less.
+    fn lasting(&self) -> Result<Sizings, Refusal> {
+        let held = self.outside.runs.read()?;
+        Ok(Sizings::of(held.into_iter().filter_map(|run| {
+            let ran = sampled(&run)?;
+            let started = run.started_at.parse::<u64>().ok()?;
+            let ended = run.ended_at.parse::<u64>().ok()?;
+            Some(ran(run.model.as_deref(), ended.checked_sub(started)?))
         })))
     }
 
@@ -452,12 +468,28 @@ fn spending_of(spent: &StoredConsumption) -> Option<Consumption> {
     })
 }
 
+/// Which kind of sample a run is, or nothing where it is neither.
+///
+/// A run that finished says what its task takes. A run stopped at its ceiling says where it was
+/// stopped. A run that failed or that the vendor turned away says neither.
+fn sampled(run: &Run) -> Option<fn(Option<&str>, u64) -> Ran> {
+    match (
+        TaskState::parse(&run.outcome)?,
+        run.reason.as_deref() == Some(AT_CEILING),
+    ) {
+        (TaskState::Completed, _) => Some(Ran::finished),
+        (TaskState::Interrupted, true) => Some(Ran::stopped),
+        _ => None,
+    }
+}
+
 /// is holding the store for the ninety seconds the reading takes.
 fn standing(
     tasks: &Backlog,
     held: &Session,
     spent: Spending,
     sizings: &Sizings,
+    lasting: &Sizings,
     at_once: usize,
     now: u64,
 ) -> Standing {
@@ -466,6 +498,8 @@ fn standing(
         left: held.budget().left(spent),
         booked: tasks.booked_in(session),
         sizings: sizings.clone(),
+        lasting: lasting.clone(),
+        time_left: held.time_left(now),
         pending: tasks.waiting(),
         blocked: tasks.blocked(),
         running: tasks.running_in(session),
