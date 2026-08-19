@@ -15,7 +15,10 @@ use crate::core::{
     },
     port::{
         inbound::Refusal,
-        outbound::{Agent, BacklogStore, Clock, Limit, Runs, SessionStore, Traces, Worktrees},
+        outbound::{
+            Agent, BacklogStore, Clock, Limit, Runs, SessionStore, StoredConsumption, Traces,
+            Worktrees,
+        },
     },
 };
 
@@ -228,19 +231,7 @@ impl Supervisor<'_> {
         let held = self.outside.runs.read()?;
         Ok(Sizings::of(held.into_iter().filter_map(|run| {
             let cost = match usage {
-                Usage::Tokens(_) => {
-                    let spent = run.spent?;
-                    Some(
-                        Consumption {
-                            input: spent.input.parse().ok()?,
-                            output: spent.output.parse().ok()?,
-                            cache_written: spent.cache_written.parse().ok()?,
-                            cache_read: spent.cache_read.parse().ok()?,
-                            cost: spent.cost.parse().ok()?,
-                        }
-                        .tokens(),
-                    )
-                }
+                Usage::Tokens(_) => spending_of(&run.spent?).map(|counted| counted.tokens()),
                 // What the run moved the vendor's limit by, which is what a share is measured
                 // in. A limit that read lower afterwards is a window that began again, and
                 // what the run spent before it turned over is in no reading at all.
@@ -252,6 +243,57 @@ impl Supervisor<'_> {
             }?;
             Some((run.model, cost))
         })))
+    }
+
+    /// What a session declared its budget in, or nothing where it is no longer there.
+    pub(super) fn declared(&self, session: SessionId) -> Result<Option<Usage>, Refusal> {
+        Ok(sessions::read(self.outside.sessions)?
+            .sessions()
+            .iter()
+            .find(|held| held.id() == session)
+            .map(|held| held.budget().usage))
+    }
+
+    /// What an amount in the unit a session declared is worth in the vendor's own.
+    ///
+    /// A ceiling is worked out in the unit the budget was declared in, and the vendor is told
+    /// one in the unit it prices runs at. Nothing says what a token or a point of the limit is
+    /// worth in that unit: it differs between subscriptions and the vendor is the one who
+    /// decides. So it is not converted by a figure this ships, it is read off what runs here
+    /// have already cost -- every run in the ledger reports both.
+    ///
+    /// Nothing where no run has reported both, which is where a session starts. The vendor is
+    /// then told the figure its definition carries, which is a guard against a run that goes
+    /// nowhere rather than this session's budget.
+    pub(super) fn priced(&self, usage: Usage, amount: u64) -> Result<Option<u64>, Refusal> {
+        let held = self.outside.runs.read()?;
+        let (mut cost, mut over) = (0u64, 0u64);
+        for run in held {
+            let Some(spent) = run.spent else { continue };
+            let Ok(priced) = spent.cost.parse::<u64>() else {
+                continue;
+            };
+            let took = match usage {
+                Usage::Tokens(_) => spending_of(&spent).map(|counted| counted.tokens()),
+                Usage::Share(_) => match (run.limit_before, run.limit_after) {
+                    (Some(before), Some(after)) => before
+                        .parse::<u64>()
+                        .ok()
+                        .zip(after.parse::<u64>().ok())
+                        .and_then(|(before, after)| after.checked_sub(before)),
+                    _ => None,
+                },
+            };
+            if let Some(took) = took.filter(|took| *took > 0) {
+                cost = cost.saturating_add(priced);
+                over = over.saturating_add(took);
+            }
+        }
+        if over == 0 || cost == 0 {
+            return Ok(None);
+        }
+        // Multiplied first, so that a ceiling smaller than what one unit costs is not nothing.
+        Ok(Some(amount.saturating_mul(cost) / over))
     }
 
     /// How far the vendor's limit was spent when this session last looked.
@@ -355,6 +397,17 @@ impl Settled {
 /// beside a count of what ended that is read under it. A task ending between the two is
 /// counted as having ended without what it spent being in the figure, so the cost of a task
 /// reads low and `room_for` reads high. It is the wrong way to be wrong, and the alternative
+/// What a store kept, as the core takes it.
+fn spending_of(spent: &StoredConsumption) -> Option<Consumption> {
+    Some(Consumption {
+        input: spent.input.parse().ok()?,
+        output: spent.output.parse().ok()?,
+        cache_written: spent.cache_written.parse().ok()?,
+        cache_read: spent.cache_read.parse().ok()?,
+        cost: spent.cost.parse().ok()?,
+    })
+}
+
 /// is holding the store for the ninety seconds the reading takes.
 fn standing(
     tasks: &Backlog,

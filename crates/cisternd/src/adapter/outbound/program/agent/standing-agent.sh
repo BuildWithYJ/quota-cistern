@@ -10,7 +10,10 @@
 # The prompt leads with the goal and the instruction follows a blank line, so
 # the last line is what a test asked for. Where the prompt is written is
 # {prompt}, filled the way claude.json's places are, since a test cannot see
-# the arguments a child was given any other way.
+# the arguments a child was given any other way. Every argument is written
+# beside it, one to a line, for the tests that are about those.
+
+printf '%s\n' "$@" > '{prompt}.args'
 
 while [ $# -gt 0 ]; do
   if [ "$1" = -p ]; then

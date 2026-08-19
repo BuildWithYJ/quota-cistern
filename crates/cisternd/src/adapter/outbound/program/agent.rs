@@ -92,6 +92,17 @@ impl ProgramAgent {
     }
 }
 
+/// A ceiling in the unit prices are kept in, said the way the vendor takes one.
+///
+/// The core keeps a price as a whole number so that a fraction added a hundred times over a
+/// session is still the figure it started as; the vendor is told the fraction. Rounded up, so
+/// that a ceiling smaller than the smallest figure the vendor takes is not no ceiling at all.
+fn priced(ceiling: &str, scale: f64) -> String {
+    let held: f64 = ceiling.parse().unwrap_or_default();
+    let scale = if scale > 0.0 { scale } else { 1.0 };
+    format!("{:.2}", ((held / scale) * 100.0).ceil() / 100.0)
+}
+
 /// One argument with `{name}` replaced by what was given for it.
 ///
 /// One pass, so that what is written stands. Filling each name in turn over the whole string
@@ -131,6 +142,17 @@ impl Agent for ProgramAgent {
         let mut filling = self.its_own().to_vec();
         filling.push(("instruction", work.instruction));
         filling.push(("model", work.model.unwrap_or_default()));
+
+        // What the session allowed this run, said the way the definition asks for a spend
+        // ceiling. Without one the definition's own figure stands, which is a guard against a
+        // run that goes nowhere rather than this session's budget.
+        let allowed = work
+            .ceiling
+            .map(|ceiling| priced(ceiling, self.definition.answer.cost_scale));
+        if let Some(allowed) = allowed.as_deref() {
+            filling.retain(|(name, _)| *name != "spend");
+            filling.push(("spend", allowed));
+        }
 
         let mut running = Command::new(program);
         running
