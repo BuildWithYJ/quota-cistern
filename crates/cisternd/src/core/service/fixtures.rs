@@ -1,0 +1,365 @@
+//! What the service tests run against.
+//!
+//! One set of stand-ins rather than one per service, since the three of them decide, run, and
+//! report over the same session. A test that reaches for a different stand-in would be testing
+//! a different session.
+
+/// The hands the composition root gives the core, fixed here.
+pub(super) const AT_ONCE: usize = 4;
+
+use std::sync::{Mutex, PoisonError};
+
+use crate::core::{
+    port::inbound::Declaration,
+    port::outbound::{
+        Agent, BacklogStore, Clock, Cut, Ended, Keeping, Limit, Observed, Outcome, Reading,
+        SessionStore, Spent, StoredBacklog, StoredSessions, StoredTask, Traces, Unavailable, Work,
+        Worktrees,
+    },
+};
+
+/// Sessions held in memory, so the steps can be checked without a file.
+pub(super) struct Remembered {
+    pub(super) stored: Mutex<StoredSessions>,
+}
+
+impl Remembered {
+    pub(super) fn empty() -> Self {
+        Remembered::holding(StoredSessions {
+            next_id: "1".to_owned(),
+            sessions: Vec::new(),
+        })
+    }
+
+    pub(super) fn holding(stored: StoredSessions) -> Self {
+        Remembered {
+            stored: Mutex::new(stored),
+        }
+    }
+
+    pub(super) fn load(&self) -> StoredSessions {
+        self.stored.lock().unwrap().clone()
+    }
+}
+
+impl SessionStore for Remembered {
+    fn update(
+        &self,
+        change: &mut dyn FnMut(&mut StoredSessions) -> bool,
+    ) -> Result<(), Unavailable> {
+        // Held across the read and the write, as the port promises.
+        // A fake that let go would allow what the real store prevents.
+        let mut held = self.stored.lock().unwrap();
+        let mut sessions = held.clone();
+        if change(&mut sessions) {
+            *held = sessions;
+        }
+        Ok(())
+    }
+}
+
+/// A backlog held in memory.
+pub(super) struct Tasks {
+    pub(super) stored: Mutex<StoredBacklog>,
+}
+
+impl Tasks {
+    pub(super) fn holding(tasks: Vec<StoredTask>) -> Self {
+        Tasks {
+            stored: Mutex::new(StoredBacklog {
+                next_id: (tasks.len() + 1).to_string(),
+                tasks,
+            }),
+        }
+    }
+
+    pub(super) fn first(&self) -> StoredTask {
+        self.stored.lock().unwrap().tasks[0].clone()
+    }
+}
+
+impl BacklogStore for Tasks {
+    fn load(&self) -> Result<StoredBacklog, Unavailable> {
+        Ok(self.stored.lock().unwrap().clone())
+    }
+
+    fn update(
+        &self,
+        change: &mut dyn FnMut(&mut StoredBacklog) -> bool,
+    ) -> Result<(), Unavailable> {
+        let mut held = self.stored.lock().unwrap();
+        let mut tasks = held.clone();
+        if change(&mut tasks) {
+            *held = tasks;
+        }
+        Ok(())
+    }
+}
+
+pub(super) fn a_second_task() -> StoredTask {
+    a_task_numbered("2")
+}
+
+pub(super) fn a_task_numbered(id: &str) -> StoredTask {
+    StoredTask {
+        id: id.to_owned(),
+        title: format!("tidy up, again ({id})"),
+        ..a_pending_task()
+    }
+}
+
+pub(super) fn a_pending_task() -> StoredTask {
+    StoredTask {
+        id: "1".to_owned(),
+        title: "tidy up".to_owned(),
+        instruction: "tidy up src/utils".to_owned(),
+        branch: None,
+        after: None,
+        model: None,
+        repository: "/work/api".to_owned(),
+        state: "Pending".to_owned(),
+        session: None,
+        worktree: None,
+        started_at: None,
+        ended_at: None,
+        reason: None,
+        consumed: None,
+        unreadable: None,
+        disposition: None,
+    }
+}
+
+/// Work areas that are only remembered, so no repository is needed.
+#[derive(Default)]
+pub(super) struct Areas {
+    pub(super) cut: Mutex<Vec<(String, String, String)>>,
+    pub(super) refuse: bool,
+}
+
+impl Worktrees for Areas {
+    fn prepare(&self, cut: Cut<'_>) -> Result<String, Unavailable> {
+        if self.refuse {
+            return Err(Unavailable::new("no such base branch"));
+        }
+        self.cut.lock().unwrap().push((
+            cut.repository.to_owned(),
+            cut.base.to_owned(),
+            cut.branch.to_owned(),
+        ));
+        Ok(format!("/areas/{}", cut.task))
+    }
+}
+
+/// A trace store nothing looks at.
+pub(super) struct Kept;
+
+impl Traces for Kept {
+    fn keeping(&self, _task: &str) -> Result<Keeping, Unavailable> {
+        Ok(Box::new(|_line: &str| {}))
+    }
+
+    fn read(
+        &self,
+        _task: &str,
+        _from: &str,
+    ) -> Result<crate::core::port::outbound::Read, Unavailable> {
+        Ok(crate::core::port::outbound::Read {
+            events: Vec::new(),
+            cursor: "000000000000".to_owned(),
+        })
+    }
+}
+
+pub(super) static NOTHING_KEPT: Kept = Kept;
+
+/// A clock that does not move, for the tests that do not care.
+pub(super) struct Frozen(pub(super) u64);
+
+impl Clock for Frozen {
+    fn now(&self) -> u64 {
+        self.0
+    }
+}
+
+pub(super) static STILL: Frozen = Frozen(1_000);
+
+/// A vendor limit that stands where a test put it.
+pub(super) struct AtPercent {
+    /// Hundredths of a percent, as the port carries it.
+    pub(super) used: Mutex<u64>,
+    pub(super) refuse: Mutex<bool>,
+}
+
+impl AtPercent {
+    /// A limit that reads, until a test says it stops reading.
+    pub(super) fn at(used: u64) -> Self {
+        AtPercent {
+            used: Mutex::new(used),
+            refuse: Mutex::new(false),
+        }
+    }
+
+    pub(super) fn refuse(&self) {
+        *self.refuse.lock().unwrap_or_else(PoisonError::into_inner) = true;
+    }
+}
+
+impl Limit for AtPercent {
+    fn read(&self) -> Result<Reading, Unavailable> {
+        if *self.refuse.lock().unwrap_or_else(PoisonError::into_inner) {
+            return Err(Unavailable::new("the status line said nothing"));
+        }
+        Ok(Reading {
+            used: self
+                .used
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .to_string(),
+            resets_at: "1786285800".to_owned(),
+        })
+    }
+}
+
+/// A vendor limit that moves every time it is read.
+///
+/// A session declared as a share is measured against a figure that grows while its tasks run.
+/// Nothing else here makes it grow.
+pub(super) struct Advancing {
+    pub(super) used: Mutex<u64>,
+    pub(super) step: u64,
+}
+
+impl Limit for Advancing {
+    fn read(&self) -> Result<Reading, Unavailable> {
+        let mut used = self.used.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = *used;
+        *used += self.step;
+        Ok(Reading {
+            used: now.to_string(),
+            resets_at: "1786285800".to_owned(),
+        })
+    }
+}
+
+/// A vendor limit that reads off a list, so a test says what each look finds.
+///
+/// This is how a window that begins again is put in front of the core: a reading lower than
+/// the one before it. The last entry stands once the list runs out, so a test writes only
+/// the looks it cares about.
+///
+/// The window is left unnamed, since a reading that fell is only a window turning over
+/// where there is no name to tell one from the next. A vendor that names them says so, and
+/// a fallen reading from a window it just named is a look that arrived late.
+pub(super) struct Turning {
+    pub(super) left: Mutex<Vec<u64>>,
+}
+
+impl Turning {
+    pub(super) fn over(readings: &[u64]) -> Self {
+        Turning {
+            left: Mutex::new(readings.to_vec()),
+        }
+    }
+}
+
+impl Limit for Turning {
+    fn read(&self) -> Result<Reading, Unavailable> {
+        let mut left = self.left.lock().unwrap_or_else(PoisonError::into_inner);
+        let used = match left.len() {
+            0 => 0,
+            1 => left[0],
+            _ => left.remove(0),
+        };
+        Ok(Reading {
+            used: used.to_string(),
+            resets_at: String::new(),
+        })
+    }
+}
+
+/// A limit nothing asks for, since the session was declared in tokens.
+pub(super) static UNTOUCHED: AtPercent = AtPercent {
+    used: Mutex::new(0),
+    refuse: Mutex::new(false),
+};
+
+/// What an agent that answered with a count it could read reports.
+pub(super) fn spending() -> Observed {
+    Observed::Spent(Spent {
+        input: "77".to_owned(),
+        output: "3377".to_owned(),
+        cache_written: "28879".to_owned(),
+        cache_read: "263483".to_owned(),
+        cost: "92170".to_owned(),
+    })
+}
+
+/// An agent that answers as told, and remembers what it was asked.
+pub(super) struct Answering {
+    pub(super) ended: Ended,
+    pub(super) asked: Mutex<Vec<(String, String, Option<String>)>>,
+    /// The tasks whose runs were asked to end.
+    pub(super) stopped: Mutex<Vec<String>>,
+}
+
+impl Answering {
+    pub(super) fn ending(ended: Ended) -> Self {
+        Answering {
+            ended,
+            asked: Mutex::new(Vec::new()),
+            stopped: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub(super) fn finishing() -> Self {
+        Answering::ending(Ended {
+            outcome: Outcome::Finished,
+            reason: None,
+            observed: spending(),
+        })
+    }
+}
+
+impl Agent for Answering {
+    fn stop(&self, task: &str) {
+        self.stopped
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(task.to_owned());
+    }
+
+    fn work(&self, work: Work<'_>) -> Result<Ended, Unavailable> {
+        self.asked.lock().unwrap().push((
+            work.at.to_owned(),
+            work.instruction.to_owned(),
+            work.model.map(str::to_owned),
+        ));
+        Ok(self.ended.clone())
+    }
+}
+
+pub(super) fn declaring<'a>(usage: &'a str, time: &'a str) -> Declaration<'a> {
+    Declaration {
+        usage,
+        time,
+        model: None,
+    }
+}
+
+pub(super) fn a_second_pending_task() -> StoredTask {
+    StoredTask {
+        id: "2".to_owned(),
+        ..a_pending_task()
+    }
+}
+
+/// How many of a store's tasks are running.
+pub(super) fn running_in(tasks: &Tasks) -> usize {
+    tasks
+        .load()
+        .unwrap()
+        .tasks
+        .iter()
+        .filter(|task| task.state == "Running")
+        .count()
+}

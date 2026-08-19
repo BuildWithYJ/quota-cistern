@@ -21,7 +21,10 @@ use core::{
         Carrying, Declaration, ExecutionUseCase, NotCarried, Page, Refusal, Report, Started,
         Stopped, Trail,
     },
-    service::{BacklogService, ConfigurationService, ExecutionService, Outside, ReviewService},
+    service::{
+        BacklogService, ConfigurationService, ExecutionService, Outside, ReviewService, Supervisor,
+        WorkService,
+    },
 };
 use platform::work::Queue;
 
@@ -84,7 +87,9 @@ fn main() -> ExitCode {
     let configuration = ConfigurationService::new(&configuration_store, known);
     let backlog = BacklogService::new(&backlog_store, &roots, &results);
     let review = ReviewService::new(&backlog_store, &results);
-    let execution = ExecutionService::new(
+    // One judgement, held by the commands that ask for a decision and by the workers that
+    // carry out what one assigned.
+    let supervisor = Supervisor::new(
         Outside {
             sessions: &session_store,
             tasks: &backlog_store,
@@ -96,6 +101,8 @@ fn main() -> ExitCode {
         },
         AT_ONCE,
     );
+    let execution = ExecutionService::new(&supervisor);
+    let work = WorkService::new(&supervisor);
 
     let server = match exchange::listen() {
         Ok(server) => server,
@@ -106,7 +113,11 @@ fn main() -> ExitCode {
     // The core says what one task is, and this arranges when it happens.
     let queued = Queue::default();
     let execution = Queueing {
-        execution: &execution,
+        service: &execution,
+        queued: &queued,
+    };
+    let work = Queueing {
+        service: &work,
         queued: &queued,
     };
 
@@ -116,7 +127,7 @@ fn main() -> ExitCode {
             threads.spawn(|| {
                 loop {
                     let task = queued.take();
-                    if let Err(e) = execution.carry_on(&task) {
+                    if let Err(e) = work.carry_on(&task) {
                         eprintln!("cisternd: {task} was not carried on: {}", why(&e));
                     }
                 }
@@ -138,14 +149,14 @@ fn main() -> ExitCode {
 /// The core's own execution, with what it assigned put on the queue.
 ///
 /// It stands between the adapter and the service so that neither has to know there are threads.
-struct Queueing<'a, U> {
-    execution: &'a U,
+struct Queueing<'a, S> {
+    service: &'a S,
     queued: &'a Queue,
 }
 
-impl<U: ExecutionUseCase> ExecutionUseCase for Queueing<'_, U> {
+impl<S: ExecutionUseCase> ExecutionUseCase for Queueing<'_, S> {
     fn run(&self, declared: Declaration<'_>) -> Result<Started, Refusal> {
-        let started = self.execution.run(declared)?;
+        let started = self.service.run(declared)?;
         for task in &started.assigned {
             self.queued.add(task.clone());
         }
@@ -153,25 +164,25 @@ impl<U: ExecutionUseCase> ExecutionUseCase for Queueing<'_, U> {
     }
 
     fn sessions(&self, page: Option<&str>, limit: Option<&str>) -> Result<Page, Refusal> {
-        self.execution.sessions(page, limit)
+        self.service.sessions(page, limit)
     }
 
     fn session(&self, id: &str) -> Result<Report, Refusal> {
-        self.execution.session(id)
+        self.service.session(id)
     }
 
     fn trace(&self, id: &str, since: Option<&str>) -> Result<Trail, Refusal> {
-        self.execution.trace(id, since)
+        self.service.trace(id, since)
     }
 
     fn interrupt(&self) -> Result<Stopped, Refusal> {
-        self.execution.interrupt()
+        self.service.interrupt()
     }
 }
 
-impl<U: Carrying> Carrying for Queueing<'_, U> {
+impl<S: Carrying> Carrying for Queueing<'_, S> {
     fn carry_on(&self, task: &str) -> Result<Vec<String>, NotCarried> {
-        let assigned = self.execution.carry_on(task)?;
+        let assigned = self.service.carry_on(task)?;
         for task in &assigned {
             self.queued.add(task.clone());
         }

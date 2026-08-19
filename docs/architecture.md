@@ -20,6 +20,8 @@ One outside, one place. An outside that holds several conversations is a directo
 
 `domain` holds the entities and the rules over them. `service` drives them: one service per command group, holding the outbound ports its own commands use and implementing the inbound trait those commands are declared as.
 
+One thing in `service` answers no command. Whether a session carries on and with what is a single decision, and the commands over sessions and the workers that carry tasks on both arrive at it; `service::supervision` is that decision, held by both rather than owned by either. A rule about spending is added there.
+
 `domain` is a private module, so nothing outside `core` names an entity. It is given values it can already take, never the text a store kept them as. Reading what a store hands back is `service`'s work, and so is writing it out again.
 
 ## Adapters
