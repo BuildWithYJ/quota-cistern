@@ -26,6 +26,15 @@ pub struct Run {
     ///
     /// Both this and `spent` are absent for a run that reported nothing at all.
     pub unreadable: Option<String>,
+    /// What the session allowed this run, in the unit the budget was declared in.
+    ///
+    /// What decided it is worth keeping beside what came of it. Whether a run was stopped is in
+    /// `reason`, and what it spent is beside that, but neither says how much room a run that
+    /// finished had left: a session whose ceilings are all nearly binding and one whose ceilings
+    /// are never near look the same without this.
+    ///
+    /// Nothing for a run that was allowed nothing, which is the first run of a model.
+    pub ceiling: Option<String>,
     /// How far the vendor's limit was spent when the run started and when it stopped, in
     /// hundredths of a percent.
     ///

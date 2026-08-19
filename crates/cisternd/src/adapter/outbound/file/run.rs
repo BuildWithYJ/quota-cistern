@@ -47,6 +47,9 @@ struct Entry {
     spent: Option<Counted>,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     unreadable: Value,
+    /// What the session allowed this run, in the unit the budget was declared in.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    ceiling: Value,
     /// How far the vendor's limit was spent when the run started and when it stopped.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     limit_before: Value,
@@ -135,6 +138,7 @@ fn held(entry: Entry) -> Run {
         reason: as_optional(entry.reason),
         spent: entry.spent.map(spending),
         unreadable: as_optional(entry.unreadable),
+        ceiling: as_optional(entry.ceiling),
         limit_before: as_optional(entry.limit_before),
         limit_after: as_optional(entry.limit_after),
     }
@@ -162,6 +166,7 @@ fn written(run: Run) -> Entry {
         reason: as_value(run.reason),
         spent: run.spent.map(counted),
         unreadable: as_value(run.unreadable),
+        ceiling: run.ceiling.as_deref().map_or(Value::Null, as_number),
         limit_before: run.limit_before.as_deref().map_or(Value::Null, as_number),
         limit_after: run.limit_after.as_deref().map_or(Value::Null, as_number),
     }
@@ -206,6 +211,7 @@ mod tests {
                 cost: "50".to_owned(),
             }),
             unreadable: None,
+            ceiling: Some("900".to_owned()),
             limit_before: Some("1100".to_owned()),
             limit_after: Some("1400".to_owned()),
         }
@@ -232,6 +238,7 @@ mod tests {
                 "model": "opus",
                 "started_at": 1_786_349_931u64,
                 "ended_at": 1_786_350_090u64,
+                "ceiling": 900,
                 "outcome": "completed",
                 "spent": {
                     "input": 10, "output": 20,

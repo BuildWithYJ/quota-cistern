@@ -282,6 +282,7 @@ fn ran(held: &Task, now: u64, over: (Option<u64>, Option<u64>)) -> Run {
             Observation::Unreadable { why } => Some(why.clone()),
             _ => None,
         },
+        ceiling: held.ceiling().map(|at| at.to_string()),
         limit_before: over.0.map(|at| at.to_string()),
         limit_after: over.1.map(|at| at.to_string()),
     }
