@@ -135,6 +135,7 @@ pub(super) fn a_pending_task() -> StoredTask {
         started_at: None,
         ended_at: None,
         reason: None,
+        attempts: None,
         ceiling: None,
         consumed: None,
         unreadable: None,

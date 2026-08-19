@@ -3,7 +3,9 @@
 use crate::core::{
     domain::{Backlog, DisposalRefused, Disposition, Task, TaskId},
     port::{
-        inbound::{Awaiting, Changed, Difference, Dropped, Queue, Refusal, ReviewUseCase, Taken},
+        inbound::{
+            Awaiting, Changed, Difference, Dropped, Queue, Refusal, Requeued, ReviewUseCase, Taken,
+        },
         outbound::{BacklogStore, Between, Changes, NotApplied, Results, Touched},
     },
 };
@@ -172,6 +174,30 @@ impl ReviewUseCase for ReviewService<'_> {
             })
         })
     }
+
+    fn retry(&self, id: &str) -> Result<Requeued, Refusal> {
+        let wanted = identifier(id)?;
+
+        change(self.tasks, |backlog| {
+            let task = held(backlog, wanted)?;
+            let branch = ended(task, wanted)?;
+            let attempts = task.attempts();
+
+            backlog.try_again(wanted).map_err(|refused| match refused {
+                DisposalRefused::NoSuchTask => Refusal::NoSuchTask {
+                    id: wanted.labelled(),
+                },
+                DisposalRefused::NotEnded => Refusal::NotEnded {
+                    id: wanted.labelled(),
+                },
+            })?;
+            Ok(Requeued {
+                task: wanted.labelled(),
+                branch,
+                attempts: attempts.to_string(),
+            })
+        })
+    }
 }
 
 /// The branch a task's result is on, for a task whose run is over.
@@ -288,6 +314,7 @@ mod tests {
             started_at: None,
             ended_at: None,
             reason: None,
+            attempts: None,
             ceiling: None,
             consumed: None,
             unreadable: None,

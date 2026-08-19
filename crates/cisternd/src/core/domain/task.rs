@@ -69,6 +69,12 @@ pub struct Task {
     ended_at: Option<u64>,
     /// Why it ended as it did, for a task that did not simply finish.
     reason: Option<String>,
+    /// How many times it has been assigned.
+    ///
+    /// Assignments rather than failures. A run cut off at a ceiling leaves no record of its
+    /// own, and a run the vendor turned away leaves none either, so counting what went wrong
+    /// counts less than what was tried.
+    attempts: u32,
     /// What the run going now is allowed to consume, in the unit its session declared.
     ///
     /// Held against that session's budget until the run ends, so that runs starting together
@@ -99,6 +105,7 @@ pub struct Restored {
     pub started_at: Option<u64>,
     pub ended_at: Option<u64>,
     pub reason: Option<String>,
+    pub attempts: u32,
     pub ceiling: Option<u64>,
     pub consumed: Observation,
     pub disposition: Option<Disposition>,
@@ -299,6 +306,11 @@ impl Task {
         self.ceiling
     }
 
+    /// How many times it has been assigned.
+    pub fn attempts(&self) -> u32 {
+        self.attempts
+    }
+
     pub fn reason(&self) -> Option<&str> {
         self.reason.as_deref()
     }
@@ -373,6 +385,7 @@ impl Backlog {
             started_at: None,
             ended_at: None,
             reason: None,
+            attempts: 0,
             ceiling: None,
             consumed: Observation::NotYet,
             disposition: None,
@@ -417,6 +430,7 @@ impl Backlog {
         held.state = TaskState::Running;
         held.session = Some(to);
         held.ceiling = Some(ceiling);
+        held.attempts += 1;
         // A task the vendor turned away is assigned again, and the run that
         // starts now is the one these two describe.
         held.started_at = Some(now);
@@ -516,6 +530,29 @@ impl Backlog {
         Ok(())
     }
 
+    /// Puts a task that ended back where it started.
+    ///
+    /// A ceiling cuts runs off, and a task cut off ends `Interrupted` with whatever it did on
+    /// its branch. Nothing else moves it back: `dispose` takes it off the review queue and
+    /// leaves the state where it was, so a task left there is one nothing will pick up and one
+    /// whose successors wait forever.
+    ///
+    /// The branch stays. What the cut-off run wrote is on it, and a run that starts again
+    /// starts from it.
+    pub fn try_again(&mut self, id: TaskId) -> Result<(), DisposalRefused> {
+        let Some(task) = self.tasks.iter_mut().find(|task| task.id == id) else {
+            return Err(DisposalRefused::NoSuchTask);
+        };
+        if !task.state.ended() {
+            return Err(DisposalRefused::NotEnded);
+        }
+        task.state = TaskState::Pending;
+        task.reason = None;
+        task.ceiling = None;
+        task.disposition = None;
+        Ok(())
+    }
+
     /// Every task waiting to be disposed of, in the order they were registered.
     ///
     /// Across sessions rather than within one: what is waiting for the user is waiting whichever run left it.
@@ -563,6 +600,19 @@ impl Backlog {
                 task.ended_at = Some(now);
             }
         }
+    }
+
+    /// Whether tasks are left that none of them may start.
+    ///
+    /// A task waits on one that did not complete, and nothing will complete it while the
+    /// session runs. Telling this from an empty backlog is what keeps a session from reporting
+    /// that everything is done while tasks are still waiting.
+    pub fn blocked(&self) -> bool {
+        self.waiting().is_empty()
+            && self
+                .tasks
+                .iter()
+                .any(|task| task.state == TaskState::Pending)
     }
 
     /// How many of a session's tasks are still running.
@@ -653,6 +703,7 @@ impl Backlog {
                 started_at: held.started_at,
                 ended_at: held.ended_at,
                 reason: held.reason,
+                attempts: held.attempts,
                 ceiling: held.ceiling,
                 consumed: held.consumed,
                 disposition: held.disposition,
@@ -720,6 +771,7 @@ mod tests {
             started_at: None,
             ended_at: None,
             reason: None,
+            attempts: 0,
             ceiling: None,
             consumed: Observation::NotYet,
             disposition: None,
@@ -1201,5 +1253,81 @@ mod tests {
             ])
             .is_ok()
         );
+    }
+
+    /// A task cut off at a ceiling ends `Interrupted`, and nothing else moves it back.
+    /// `dispose` takes it off the review queue and leaves the state where it was.
+    #[test]
+    fn a_task_that_ended_can_wait_again() {
+        let mut backlog = Backlog::default();
+        let session = a_session();
+        let id = assigned(&mut backlog, session);
+        backlog.finish(
+            id,
+            TaskState::Interrupted,
+            Some("task ceiling".to_owned()),
+            AT + 60,
+        );
+
+        backlog.try_again(id).unwrap();
+
+        let held = backlog.find(id).unwrap();
+        assert_eq!(held.state(), TaskState::Pending);
+        assert_eq!(held.reason(), None);
+        assert_eq!(held.ceiling(), None);
+        // And it is what the next decision would take.
+        assert_eq!(backlog.next_to_assign(), Some(id));
+    }
+
+    /// A run that is still going is not one to start again.
+    #[test]
+    fn a_task_still_running_cannot_wait_again() {
+        let mut backlog = Backlog::default();
+        let id = assigned(&mut backlog, a_session());
+
+        assert_eq!(backlog.try_again(id), Err(DisposalRefused::NotEnded));
+    }
+
+    /// Assignments rather than failures. A run cut off at a ceiling leaves no record of its
+    /// own, so counting what went wrong counts less than what was tried.
+    #[test]
+    fn every_assignment_is_counted() {
+        let mut backlog = Backlog::default();
+        let session = a_session();
+        let id = assigned(&mut backlog, session);
+        assert_eq!(backlog.find(id).unwrap().attempts(), 1);
+
+        backlog.finish(id, TaskState::Interrupted, None, AT + 60);
+        backlog.try_again(id).unwrap();
+        backlog.assign(id, session, 0, AT + 120);
+
+        assert_eq!(backlog.find(id).unwrap().attempts(), 2);
+    }
+
+    /// Every task left waits on one that did not complete.
+    #[test]
+    fn a_backlog_whose_successors_all_wait_on_a_task_that_did_not_complete_is_blocked() {
+        let mut backlog = Backlog::default();
+        let first = registered(&mut backlog, None, None);
+        let second = registered(&mut backlog, None, Some(first));
+        let session = a_session();
+        backlog.assign(first, session, 0, AT);
+        backlog.finish(first, TaskState::Interrupted, None, AT + 60);
+
+        assert_eq!(backlog.next_to_assign(), None);
+        assert!(
+            backlog.blocked(),
+            "{second:?} waits on one that did not complete"
+        );
+    }
+
+    /// An empty backlog is not blocked, it is done.
+    #[test]
+    fn a_backlog_with_nothing_left_is_not_blocked() {
+        let mut backlog = Backlog::default();
+        let id = assigned(&mut backlog, a_session());
+        backlog.finish(id, TaskState::Completed, None, AT + 60);
+
+        assert!(!backlog.blocked());
     }
 }

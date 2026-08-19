@@ -78,7 +78,7 @@
 | `stopped` | 종료됨        |
 
 
-`stopped_reason`: `budget hardlock` · `vendor limit` · `observation unreadable` · `interrupted` · `all done`(편성분 전부 종료) · `error`.
+`stopped_reason`: `budget hardlock` · `vendor limit` · `observation unreadable` · `interrupted` · `all done`(편성분 전부 종료) · `blocked` · `error`.
 
 `budget hardlock`은 선언한 예산이 소진된 것이고, `vendor limit`은 벤더가 한도로 실행을 막은 것이며, `observation unreadable`은 소비량을 읽을 수 없어 멈춘 것이다.
 
@@ -603,6 +603,33 @@ $ cistern diff 1 --stat
 
 `review ls`가 처분을 기다리는 작업을 나열하고 `apply`와 `discard`가 처분하며, 어느 쪽도 브랜치를
 바꾸지 않는다.
+
+#### `cistern retry`
+
+끝난 작업을 백로그로 되돌려 다음 세션이 다시 가져갈 수 있게 한다.
+
+```
+cistern retry <작업>
+```
+
+상한에 걸려 잘린 작업이나 실패한 작업을 위한 것이다. 마지막 실행이 남긴 브랜치는 그대로 두고, 다음 실행이 그 브랜치에서 시작한다. 다시 대기하는 작업은 검토 목록에서 빠지고 백로그로 돌아가며, 그 작업을 기다리던 작업들이 그제야 돌 수 있게 된다.
+
+**출력**
+
+| 필드 | 타입 | 설명 |
+| --- | --- | --- |
+| `task` | string | 다시 대기하게 된 작업 |
+| `branch` | string | 마지막 실행이 남긴 브랜치. 그대로 둔다 |
+| `attempts` | string | 지금까지 배정된 횟수 |
+
+**종료 코드**
+
+| 코드 | 조건 |
+| --- | --- |
+| 0 | 성공 |
+| 3 | 그런 작업이 없음 |
+| 4 | 작업이 끝나지 않음 |
+| 5 | 코어 오류 |
 
 #### `cistern review ls`
 

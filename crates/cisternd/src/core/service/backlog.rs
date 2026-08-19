@@ -296,6 +296,12 @@ fn restored_from(held: StoredTask) -> Result<Restored, Refusal> {
             .map(|at| stored_count("ended_at", at))
             .transpose()?,
         reason: held.reason,
+        attempts: held
+            .attempts
+            .as_deref()
+            .map(|at| stored_count("attempts", at))
+            .transpose()?
+            .unwrap_or_default() as u32,
         ceiling: held
             .ceiling
             .as_deref()
@@ -331,6 +337,10 @@ fn written(backlog: &Backlog) -> StoredBacklog {
                 started_at: task.started_at().map(|at| at.to_string()),
                 ended_at: task.ended_at().map(|at| at.to_string()),
                 reason: task.reason().map(str::to_owned),
+                attempts: match task.attempts() {
+                    0 => None,
+                    tried => Some(tried.to_string()),
+                },
                 ceiling: task.ceiling().map(|at| at.to_string()),
                 consumed: kept(task.consumed()),
                 unreadable: match task.consumed() {
@@ -781,6 +791,7 @@ mod tests {
                 started_at: None,
                 ended_at: None,
                 reason: None,
+                attempts: None,
                 ceiling: None,
                 consumed: None,
                 unreadable: None,
@@ -800,6 +811,7 @@ mod tests {
                 started_at: None,
                 ended_at: None,
                 reason: None,
+                attempts: None,
                 ceiling: None,
                 consumed: None,
                 unreadable: None,
@@ -834,6 +846,7 @@ mod tests {
             started_at: None,
             ended_at: None,
             reason: None,
+            attempts: None,
             ceiling: None,
             consumed: Some(StoredConsumption {
                 input: "77".to_owned(),
@@ -871,6 +884,7 @@ mod tests {
             started_at: None,
             ended_at: None,
             reason: None,
+            attempts: None,
             ceiling: None,
             consumed: Some(StoredConsumption {
                 input: "a lot".to_owned(),

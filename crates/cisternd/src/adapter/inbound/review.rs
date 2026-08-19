@@ -4,7 +4,7 @@ use cistern_contract::{Request, Response};
 use serde_json::Value;
 
 use crate::core::port::inbound::{
-    Changed, Difference, Dropped, Queue, Refusal, ReviewUseCase, Taken,
+    Changed, Difference, Dropped, Queue, Refusal, Requeued, ReviewUseCase, Taken,
 };
 
 use super::{answer, missing, text};
@@ -16,6 +16,7 @@ pub fn respond(review: &impl ReviewUseCase, request: Request) -> Result<Response
         "review_ls" => Ok(list(review, request)),
         "apply" => Ok(about(request, |id| review.apply(id).map(applied))),
         "discard" => Ok(about(request, |id| review.discard(id).map(discarded))),
+        "retry" => Ok(about(request, |id| review.retry(id).map(requeued))),
         _ => Err(request),
     }
 }
@@ -72,6 +73,14 @@ fn applied(taken: Taken) -> Value {
 
 fn discarded(dropped: Dropped) -> Value {
     serde_json::json!({ "task": dropped.task, "branch": dropped.branch })
+}
+
+fn requeued(waiting: Requeued) -> Value {
+    serde_json::json!({
+        "task": waiting.task,
+        "branch": waiting.branch,
+        "attempts": waiting.attempts,
+    })
 }
 
 fn files(changed: Vec<Changed>) -> Vec<Value> {
@@ -160,6 +169,14 @@ mod tests {
             self.refused().unwrap_or(Ok(Dropped {
                 task: id.to_owned(),
                 branch: "cistern/5".to_owned(),
+            }))
+        }
+
+        fn retry(&self, id: &str) -> Result<Requeued, Refusal> {
+            self.refused().unwrap_or(Ok(Requeued {
+                task: id.to_owned(),
+                branch: "cistern/5".to_owned(),
+                attempts: "2".to_owned(),
             }))
         }
     }

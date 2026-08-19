@@ -453,6 +453,7 @@ fn standing(
         booked: tasks.booked_in(session),
         sizings: sizings.clone(),
         pending: tasks.waiting(),
+        blocked: tasks.blocked(),
         running: tasks.running_in(session),
         out_of_time: held.out_of_time(now),
         unreadable: matches!(tasks.consumed_by(session), Observation::Unreadable { .. }),

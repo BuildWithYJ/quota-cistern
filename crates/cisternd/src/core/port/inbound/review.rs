@@ -77,4 +77,17 @@ pub trait ReviewUseCase {
 
     /// Takes a result out of the queue and leaves it where it is.
     fn discard(&self, id: &str) -> Result<Dropped, Refusal>;
+
+    /// Puts a task that ended back where it started, so a session may take it again.
+    fn retry(&self, id: &str) -> Result<Requeued, Refusal>;
+}
+
+/// A task that ended and is waiting again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Requeued {
+    pub task: String,
+    /// The branch its last run left, which stays.
+    pub branch: String,
+    /// How many times it has been assigned so far.
+    pub attempts: String,
 }

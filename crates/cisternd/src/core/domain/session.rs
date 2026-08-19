@@ -28,6 +28,12 @@ pub enum StoppedReason {
     ObservationUnreadable,
     Interrupted,
     AllDone,
+    /// Every task left waits on one that did not complete.
+    ///
+    /// Apart from `AllDone`, which used to cover it and said the opposite of what happened.
+    /// A ceiling makes this ordinary rather than rare: a task cut off at one ends
+    /// `Interrupted`, and a task that waits on it may never start.
+    Blocked,
     Error,
 }
 
@@ -191,6 +197,7 @@ impl StoppedReason {
             "observation unreadable" => Some(StoppedReason::ObservationUnreadable),
             "interrupted" => Some(StoppedReason::Interrupted),
             "all done" => Some(StoppedReason::AllDone),
+            "blocked" => Some(StoppedReason::Blocked),
             "error" => Some(StoppedReason::Error),
             _ => None,
         }
@@ -205,6 +212,7 @@ impl Display for StoppedReason {
             StoppedReason::ObservationUnreadable => "observation unreadable",
             StoppedReason::Interrupted => "interrupted",
             StoppedReason::AllDone => "all done",
+            StoppedReason::Blocked => "blocked",
             StoppedReason::Error => "error",
         })
     }

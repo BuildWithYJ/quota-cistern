@@ -252,6 +252,8 @@ pub struct Standing {
     pub pending: Vec<(TaskId, Option<String>)>,
     /// How many of its tasks are running.
     pub running: usize,
+    /// Whether tasks are left that none of them may start.
+    pub blocked: bool,
     /// Whether the time it declared has run out.
     pub out_of_time: bool,
     /// Whether what it consumed could no longer be read.
@@ -285,10 +287,12 @@ pub fn decide(standing: &Standing) -> Decision {
     // Nothing more fits and nothing is running that would make room.
     // Waiting for a task that will never start is not carrying on.
     if standing.running == 0 && starting.is_empty() {
-        return Decision::Stop(if standing.pending.is_empty() {
-            StoppedReason::AllDone
-        } else {
-            StoppedReason::BudgetHardlock
+        return Decision::Stop(match (standing.pending.is_empty(), standing.blocked) {
+            // Tasks that may start and nothing to start them with.
+            (false, _) => StoppedReason::BudgetHardlock,
+            // Tasks left, and every one of them waits on one that did not complete.
+            (true, true) => StoppedReason::Blocked,
+            (true, false) => StoppedReason::AllDone,
         });
     }
     Decision::Start(starting)
@@ -322,6 +326,7 @@ mod tests {
                 (task(2), Some("opus".to_owned())),
             ],
             running: 1,
+            blocked: false,
             out_of_time: false,
             unreadable: false,
             at_once: 4,
@@ -651,5 +656,23 @@ mod tests {
     fn spending_more_of_a_share_than_was_declared_leaves_nothing() {
         let budget = declaring(Usage::Share(1));
         assert_eq!(budget.left(Spending::Share(4_000)), 0);
+    }
+
+    /// Tasks are left and every one of them waits on one that did not complete.
+    ///
+    /// A ceiling makes this ordinary: a task cut off at one ends `Interrupted`, and a task
+    /// that waits on it may never start. Reporting it as everything being done says the
+    /// opposite of what happened.
+    #[test]
+    fn tasks_left_that_none_may_start_is_not_everything_being_done() {
+        assert_eq!(
+            decide(&Standing {
+                running: 0,
+                pending: Vec::new(),
+                blocked: true,
+                ..standing()
+            }),
+            Decision::Stop(StoppedReason::Blocked)
+        );
     }
 }

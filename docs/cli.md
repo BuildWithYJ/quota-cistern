@@ -70,9 +70,9 @@ Session states:
 | `running` | The unattended loop is executing |
 | `stopped` | Ended |
 
-`stopped_reason`: `budget hardlock` · `vendor limit` · `observation unreadable` · `interrupted` · `all done` (every assigned task ended) · `error`.
+`stopped_reason`: `budget hardlock` · `vendor limit` · `observation unreadable` · `interrupted` · `all done` (every assigned task ended) · `blocked` · `error`.
 
-`budget hardlock` means the declared budget was spent, `vendor limit` means the vendor blocked execution at its own limit, and `observation unreadable` means usage could no longer be read.
+`budget hardlock` means the declared budget was spent or the declared time ran out, `vendor limit` means the vendor blocked execution at its own limit, and `observation unreadable` means usage could no longer be read. `blocked` means tasks were left and every one of them waited on a task that did not complete; `retry` is what puts one of those back.
 
 The tool never deletes or moves result branches. Pushing, merging, and cleanup are the user's own work.
 
@@ -541,7 +541,34 @@ $ cistern diff 1 --stat
 
 ### 2.4 Review and disposition
 
-`review ls` lists what is waiting to be disposed of, and `apply` and `discard` dispose of it. Neither changes a branch.
+`review ls` lists what is waiting to be disposed of, and `apply`, `discard`, and `retry` dispose of it. None of them changes a branch.
+
+#### `cistern retry`
+
+Puts a task that ended back in the backlog, so the next session may take it again.
+
+```
+cistern retry <task>
+```
+
+For a task cut off at its ceiling, or one that failed. The branch its last run left stays, and the run that starts next starts from it. A task waiting again is out of the review queue and back in the backlog, which is what lets the tasks waiting on it run.
+
+**Output**
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `task` | string | The task now waiting |
+| `branch` | string | The branch its last run left, which stays |
+| `attempts` | string | How many times it has been assigned so far |
+
+**Exit codes**
+
+| Code | Condition |
+| --- | --- |
+| 0 | Success |
+| 3 | No such task |
+| 4 | The task has not ended |
+| 5 | Core error |
 
 #### `cistern review ls`
 

@@ -62,6 +62,10 @@ pub fn discard(task: &str) -> ExitCode {
     send("discard", serde_json::json!({ "task": task }), dropped)
 }
 
+pub fn retry(task: &str) -> ExitCode {
+    send("retry", serde_json::json!({ "task": task }), requeued)
+}
+
 /// Asks the core and hands back what it answered, or the code to exit with.
 fn ask(command: &str, params: Value) -> Result<Value, ExitCode> {
     match daemon::ask(command, params) {
@@ -178,6 +182,19 @@ fn dropped(data: &Value) {
     println!("{task} discarded");
     if let Some(branch) = text(data, "branch") {
         println!("  branch {branch} is kept");
+    }
+}
+
+fn requeued(data: &Value) {
+    let Some(task) = text(data, "task") else {
+        return;
+    };
+    println!("{task} is waiting again");
+    if let Some(branch) = text(data, "branch") {
+        println!("  branch {branch} is kept, and the next run starts from it");
+    }
+    if let Some(attempts) = text(data, "attempts") {
+        println!("  assigned {attempts} time(s) so far");
     }
 }
 

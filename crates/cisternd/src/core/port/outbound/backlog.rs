@@ -33,6 +33,10 @@ pub struct StoredTask {
     pub ended_at: Option<String>,
     /// Why it ended as it did, for a task that did not simply finish.
     pub reason: Option<String>,
+    /// How many times it has been assigned.
+    ///
+    /// Absent for a task a version before this counted, which reads as none.
+    pub attempts: Option<String>,
     /// What the run going now is allowed to consume, in the unit its session declared.
     ///
     /// Absent for a task nothing is running for, and for one a version before this assigned.

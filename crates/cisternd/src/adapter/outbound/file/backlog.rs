@@ -59,6 +59,8 @@ struct Entry {
     #[serde(default, skip_serializing_if = "Value::is_null")]
     reason: Value,
     #[serde(default, skip_serializing_if = "Value::is_null")]
+    attempts: Value,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
     ceiling: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     consumed: Option<Counted>,
@@ -132,6 +134,7 @@ impl FileBacklog {
                     started_at: as_optional(entry.started_at),
                     ended_at: as_optional(entry.ended_at),
                     reason: as_optional(entry.reason),
+                    attempts: as_optional(entry.attempts),
                     ceiling: as_optional(entry.ceiling),
                     consumed: entry.consumed.map(|counted| StoredConsumption {
                         input: as_text(counted.input),
@@ -167,6 +170,7 @@ impl FileBacklog {
                     started_at: task.started_at.as_deref().map_or(Value::Null, as_number),
                     ended_at: task.ended_at.as_deref().map_or(Value::Null, as_number),
                     reason: as_value(task.reason.clone()),
+                    attempts: task.attempts.as_deref().map_or(Value::Null, as_number),
                     ceiling: task.ceiling.as_deref().map_or(Value::Null, as_number),
                     consumed: task.consumed.as_ref().map(|counted| Counted {
                         input: as_number(&counted.input),
@@ -233,6 +237,7 @@ mod tests {
             started_at: None,
             ended_at: None,
             reason: None,
+            attempts: None,
             ceiling: None,
             consumed: None,
             unreadable: None,
