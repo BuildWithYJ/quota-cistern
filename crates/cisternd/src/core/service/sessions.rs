@@ -59,6 +59,11 @@ fn held_from(one: StoredSession) -> Result<Held, Refusal> {
             .as_deref()
             .map(|used| stored_count("limit_at_start", used))
             .transpose()?,
+        limit_last_seen: one
+            .limit_last_seen
+            .as_deref()
+            .map(|used| stored_count("limit_last_seen", used))
+            .transpose()?,
         id: SessionId::parse(&one.id).ok_or_else(|| unreadable("id", &one.id))?,
         state: SessionState::parse(&one.state).ok_or_else(|| unreadable("state", &one.state))?,
         stopped_reason: one
@@ -114,6 +119,7 @@ fn written(sessions: &Sessions) -> StoredSessions {
                 model: session.model().map(str::to_owned),
                 started_at: session.started_at().to_string(),
                 limit_at_start: session.limit_at_start().map(|used| used.to_string()),
+                limit_last_seen: session.limit_last_seen().map(|used| used.to_string()),
                 consumed: counted(session.consumed()).to_string(),
                 updated_at: session.updated_at().to_string(),
                 resets_at: session.resets_at().map(|at| at.to_string()),

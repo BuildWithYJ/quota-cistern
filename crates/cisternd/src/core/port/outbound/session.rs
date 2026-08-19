@@ -31,6 +31,7 @@ pub struct StoredSession {
     /// A share declares what this session may add to that.
     /// Absent for a session declared in tokens.
     pub limit_at_start: Option<String>,
+    pub limit_last_seen: Option<String>,
     /// What it has consumed, in the unit it was declared in.
     ///
     /// Kept rather than worked out again.
