@@ -345,6 +345,39 @@ fn a_run_that_was_cut_off_is_reported_as_a_sentence() {
     );
 }
 
+/// A vendor that turns a prompt away answers as a success that did no work.
+///
+/// Taking that word would store the task as done on a branch with nothing on it. The run
+/// counted nothing, which no run that reached the vendor does.
+#[test]
+fn a_run_that_counted_nothing_did_not_finish() {
+    let held = TempDir::new().unwrap();
+    let said = answering(
+        &held,
+        &answer_with(|answer| {
+            answer["modelUsage"] = json!({
+                "haiku": {
+                    "inputTokens": 0,
+                    "outputTokens": 0,
+                    "cacheCreationInputTokens": 0,
+                    "cacheReadInputTokens": 0,
+                }
+            });
+            answer["total_cost_usd"] = json!(0);
+            answer["result"] = json!("the prompt was not one I take");
+        }),
+    );
+    let ended = standing_in(&held)
+        .work(working(&held.path().display().to_string(), &said))
+        .unwrap();
+
+    assert_eq!(ended.outcome, Outcome::Failed);
+    assert_eq!(
+        ended.reason.as_deref(),
+        Some("the prompt was not one I take")
+    );
+}
+
 /// A line written after the answer is not the answer.
 ///
 /// A hook of the user's outlives a run that ends sooner than the hook does, and its response

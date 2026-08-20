@@ -181,14 +181,17 @@ impl Agent for ProgramAgent {
         // One of them failing must not lose the other.
         let answer = serde_json::from_slice::<Value>(&stdout).ok();
 
-        let outcome = self.outcome_of(status.success(), answer.as_ref());
+        // What the run consumed is read before how it ended, since a run that consumed
+        // nothing did not do the work whatever it exited with.
+        let observed = self.observed(answer.as_ref());
+        let outcome = self.outcome_of(status.success(), answer.as_ref(), &observed);
         Ok(Ended {
             outcome,
             reason: match outcome {
                 Outcome::Finished => None,
                 _ => Some(self.said(&status, &stderr, answer.as_ref())),
             },
-            observed: self.observed(answer.as_ref()),
+            observed,
         })
     }
 
@@ -205,9 +208,16 @@ impl ProgramAgent {
     ///
     /// The name the program gives for stopping is what tells a ceiling from a failure, and
     /// which names mean a ceiling is the definition's to say.
-    fn outcome_of(&self, finished: bool, answer: Option<&Value>) -> Outcome {
+    ///
+    /// A run that exited well but counted nothing is not one that finished. A vendor turns
+    /// away a prompt it will not take by answering as a success that did no work, and taking
+    /// that word leaves a task stored as done on a branch with nothing on it.
+    fn outcome_of(&self, finished: bool, answer: Option<&Value>, observed: &Observed) -> Outcome {
         if finished {
-            return Outcome::Finished;
+            return match observed {
+                Observed::Spent(spent) if counted_nothing(spent) => Outcome::Failed,
+                _ => Outcome::Finished,
+            };
         }
         match self.stopping_word(answer) {
             Some(word) if self.definition.answer.at_ceiling.contains_key(&word) => {
@@ -289,6 +299,25 @@ impl ProgramAgent {
             cost: whole(Some(cost * held.cost_scale)).to_string(),
         })
     }
+}
+
+/// Whether the run counted nothing at all.
+///
+/// Not a run that was cheap. A call that left no message still reads what it was given, so a
+/// run that reached the vendor counted something under one of these. All of them at nothing
+/// is a run that never reached it.
+///
+/// A figure this cannot read is not a figure of nothing, and leaves the run counted as having
+/// done something rather than as having done none.
+fn counted_nothing(spent: &Spent) -> bool {
+    [
+        &spent.input,
+        &spent.output,
+        &spent.cache_written,
+        &spent.cache_read,
+    ]
+    .iter()
+    .all(|counted| counted.parse::<u64>().is_ok_and(|figure| figure == 0))
 }
 
 fn unreadable(why: &str) -> Observed {
