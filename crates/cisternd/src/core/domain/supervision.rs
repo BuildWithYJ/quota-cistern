@@ -171,6 +171,11 @@ const ESTIMATE: u64 = 95;
 /// The middle, in whole percent.
 const MIDDLE: u64 = 50;
 
+/// How far a stopped run lifts the estimate above where it was stopped.
+///
+/// Twice, which is how a backfilling scheduler grows a prediction its job has already outlived.
+const LIFT: u64 = 2;
+
 /// How far an estimate is widened for how little it was worked out from.
 ///
 /// One, so an estimate from a single run allows twice it and one from four allows a quarter
@@ -192,6 +197,10 @@ pub struct Rule {
     pub middle: u64,
     /// How far the estimate is widened: `estimate x (1 + widen/over)`.
     pub widen: u64,
+    /// How far a run that was stopped lifts the estimate above what it spent.
+    ///
+    /// Nothing to leave a stopped run out of the estimate altogether.
+    pub lift: u64,
 }
 
 impl Default for Rule {
@@ -200,6 +209,7 @@ impl Default for Rule {
             estimate: ESTIMATE,
             middle: MIDDLE,
             widen: WIDEN,
+            lift: LIFT,
         }
     }
 }
@@ -334,7 +344,7 @@ impl Sizings {
             }
             costs.sort_unstable();
             let sizing = Sizing {
-                estimate: at(&costs, rule.estimate).max(floor.saturating_mul(2)),
+                estimate: at(&costs, rule.estimate).max(floor.saturating_mul(rule.lift)),
                 median: at(&costs, rule.middle),
                 over: costs.len(),
                 widen: rule.widen,

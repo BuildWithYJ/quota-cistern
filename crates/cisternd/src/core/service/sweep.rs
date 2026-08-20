@@ -31,17 +31,19 @@ use crate::core::{
 use super::fixtures::*;
 use super::{ExecutionService, Outside, Supervisor, WorkService};
 
-/// How many sessions each rule is read over, per shape.
-const SESSIONS: u64 = 200;
+/// How many sessions each rule is read over, per shape and budget.
+const SESSIONS: u64 = 100;
 
 /// How many tasks wait at the start of one.
 const TASKS: usize = 12;
 
-/// What a session declares, as a multiple of the middle of the shape it draws from.
+/// What a session declares, as multiples of the middle of the shape it draws from.
 ///
-/// Eight, so a session of twelve tasks runs out part way down the list. A budget that covered
-/// every task would end every session the same way and say nothing about the rules.
-const BUDGET: u64 = 8;
+/// Read at three sizes, because which rule is even reached depends on this. A ceiling is the
+/// smaller of what the estimate allows and what is left, so a session whose budget is small
+/// against its tasks is held by what is left every time and never asks the estimate anything.
+/// Two runs out early, thirty-two covers the whole backlog, eight is between.
+const BUDGETS: [u64; 3] = [2, 8, 32];
 
 /// A stream of numbers that is the same stream every time.
 ///
@@ -136,6 +138,13 @@ struct Came {
     declared: u64,
     /// How many of them spent more than that, which is the one thing that must not happen.
     over: u64,
+    /// What the tasks put in front of them would have cost, all told.
+    ///
+    /// Beside the count of tasks finished, because the two disagree. A rule whose ceilings are
+    /// small finishes more tasks and finishes only the cheap ones; whether that is better turns
+    /// on whether a task is worth what it costs or worth the same as any other, which is a
+    /// judgement about the work rather than something a table settles.
+    offered: u64,
 }
 
 impl Came {
@@ -146,15 +155,23 @@ impl Came {
         self.lost += other.lost;
         self.declared += other.declared;
         self.over += other.over;
+        self.offered += other.offered;
         self
     }
 }
 
 /// One session, from the backlog it starts with to the state it ends in.
-fn one_session(rule: Rule, shape: Shape, seed: u64) -> Came {
+///
+/// The ledger is handed in rather than made here, so that the sessions of one reading share
+/// one. A session that began with an empty ledger would be in the cold start for its first
+/// runs every time, and the cold start is not what a rule is being read for: what the daemon
+/// does is keep the ledger between sessions, so a sizing has every run there has ever been
+/// behind it.
+fn one_session(rule: Rule, shape: Shape, budget: u64, seed: u64, runs: &Ledger) -> Came {
     let mut drawn = Drawn::seeded(seed);
     let costs: Vec<u64> = (0..TASKS).map(|_| shape.draws(&mut drawn)).collect();
-    let declared = shape.middle() * BUDGET;
+    let declared = shape.middle() * budget;
+    let offered: u64 = costs.iter().sum();
 
     let sessions = Remembered::empty();
     let held = Tasks::holding(
@@ -166,8 +183,7 @@ fn one_session(rule: Rule, shape: Shape, seed: u64) -> Came {
     // The vendor holds the first run of an empty ledger to what its definition carries,
     // since nothing yet converts the session's figure into the vendor's unit. Set here to what
     // the session declared, so the table is about the rules rather than about that exposure.
-    let agent = Costing::taking(costs).guarded_at(declared);
-    let runs = Ledger::default();
+    let agent = Costing::taking(costs.clone()).guarded_at(declared);
     let outside = Outside {
         sessions: &sessions,
         tasks: &held,
@@ -176,8 +192,10 @@ fn one_session(rule: Rule, shape: Shape, seed: u64) -> Came {
         clock: &STILL,
         limit: &UNTOUCHED,
         traces: &NOTHING_KEPT,
-        runs: &runs,
+        runs,
     };
+    // Only this session's runs are counted, and the ledger already holds those before it.
+    let before = runs.runs().len();
     let supervisor = Supervisor::sizing_by(outside, AT_ONCE, rule);
     let execution = ExecutionService::new(outside, &supervisor);
     let work = WorkService::new(outside, &supervisor);
@@ -196,9 +214,10 @@ fn one_session(rule: Rule, shape: Shape, seed: u64) -> Came {
 
     let mut came = Came {
         declared,
+        offered,
         ..Came::default()
     };
-    for run in runs.runs() {
+    for run in runs.runs().into_iter().skip(before) {
         let spent = run
             .spent
             .as_ref()
@@ -241,34 +260,46 @@ fn sweeping_the_rule() {
                 .into_iter()
                 .map(|middle| (format!("floor {middle}"), Rule { middle, ..shipped })),
         )
+        .chain(
+            [0, 1, 2, 4]
+                .into_iter()
+                .map(|lift| (format!("lift {lift}"), Rule { lift, ..shipped })),
+        )
         .collect();
 
-    println!(
-        "\n{SESSIONS} sessions of {TASKS} tasks each, budget {BUDGET}x the middle of the shape\n"
-    );
+    println!("\n{SESSIONS} sessions of {TASKS} tasks each, one ledger behind each column\n");
     for shape in SHAPES {
-        println!("--- {} (middle {}) ---", shape.named(), shape.middle());
-        println!(
-            "{:<14} {:>8} {:>8} {:>9} {:>9} {:>9} {:>7}",
-            "rule", "finished", "stopped", "cut %", "used %", "lost %", "over"
-        );
-        for (named, rule) in &rules {
-            let came = (0..SESSIONS)
-                .map(|seed| one_session(*rule, shape, seed))
-                .fold(Came::default(), Came::and);
-            let runs = (came.finished + came.stopped).max(1);
-            let spent = came.done + came.lost;
+        for budget in BUDGETS {
             println!(
-                "{:<14} {:>8} {:>8} {:>8.1} {:>8.1} {:>8.1} {:>7}",
-                named,
-                came.finished,
-                came.stopped,
-                100.0 * came.stopped as f64 / runs as f64,
-                100.0 * spent as f64 / came.declared.max(1) as f64,
-                100.0 * came.lost as f64 / spent.max(1) as f64,
-                came.over,
+                "--- {} (middle {}), budget {}x ---",
+                shape.named(),
+                shape.middle(),
+                budget
             );
+            println!(
+                "{:<14} {:>8} {:>8} {:>7} {:>7} {:>7} {:>7} {:>5}",
+                "rule", "finished", "stopped", "cut %", "used %", "lost %", "work %", "over"
+            );
+            for (named, rule) in &rules {
+                let runs = Ledger::default();
+                let came = (0..SESSIONS)
+                    .map(|seed| one_session(*rule, shape, budget, seed, &runs))
+                    .fold(Came::default(), Came::and);
+                let all = (came.finished + came.stopped).max(1);
+                let spent = came.done + came.lost;
+                println!(
+                    "{:<14} {:>8} {:>8} {:>6.1} {:>6.1} {:>6.1} {:>6.1} {:>5}",
+                    named,
+                    came.finished,
+                    came.stopped,
+                    100.0 * came.stopped as f64 / all as f64,
+                    100.0 * spent as f64 / came.declared.max(1) as f64,
+                    100.0 * came.lost as f64 / spent.max(1) as f64,
+                    100.0 * came.done as f64 / came.offered.max(1) as f64,
+                    came.over,
+                );
+            }
+            println!();
         }
-        println!();
     }
 }
