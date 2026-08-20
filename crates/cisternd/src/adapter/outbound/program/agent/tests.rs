@@ -71,6 +71,16 @@ fn prompt(held: &TempDir) -> String {
     fs::read_to_string(held.path().join("prompt")).unwrap()
 }
 
+/// The instruction, as the agent was given it.
+fn told(held: &TempDir) -> String {
+    fs::read_to_string(held.path().join("prompt.system")).unwrap()
+}
+
+/// Every argument the agent was given, one to a line.
+fn given(held: &TempDir) -> String {
+    fs::read_to_string(held.path().join("prompt.args")).unwrap()
+}
+
 fn working<'a>(at: &'a str, instruction: &'a str) -> Work<'a> {
     Work {
         task: "1",
@@ -78,6 +88,7 @@ fn working<'a>(at: &'a str, instruction: &'a str) -> Work<'a> {
         trace: Box::new(|_line: &str| {}),
         instruction,
         model: None,
+        ceiling: None,
     }
 }
 
@@ -297,10 +308,13 @@ fn the_agent_runs_in_the_work_area_it_was_given() {
     assert!(at.join("it-ran-here.txt").exists());
 }
 
-/// The goal has to lead the prompt.
-/// Anywhere else it is read as ordinary text and nothing gates the end of the task.
+/// The goal has to be the whole of the prompt.
+///
+/// It is a command of the vendor's and everything after it is the condition it gates on,
+/// which the vendor holds to a length. An instruction written there would be part of that
+/// condition, and a long one would be turned away for it.
 #[test]
-fn the_prompt_leads_with_the_goal_and_the_instruction_follows_it() {
+fn the_prompt_is_the_goal_and_the_instruction_is_told_apart_from_it() {
     let held = TempDir::new().unwrap();
     standing_in(&held)
         .work(working(&held.path().display().to_string(), "exit 0"))
@@ -308,7 +322,8 @@ fn the_prompt_leads_with_the_goal_and_the_instruction_follows_it() {
 
     let asked = prompt(&held);
     assert!(asked.starts_with("/goal "), "{asked}");
-    assert!(asked.ends_with("\n\nexit 0"), "{asked}");
+    assert!(!asked.contains("exit 0"), "{asked}");
+    assert_eq!(told(&held), "exit 0");
 }
 
 /// A run cut off at a ceiling says nothing of its own.
@@ -475,4 +490,56 @@ fn an_unmatched_brace_is_written_once() {
     assert_eq!(super::fill("{model} {", &filling), "haiku {");
     assert_eq!(super::fill("{", &filling), "{");
     assert_eq!(super::fill("a{b{c", &filling), "a{b{c");
+}
+
+/// The session's own figure, not the definition's, once there is one.
+#[test]
+fn a_run_the_session_put_a_ceiling_on_is_held_to_that() {
+    let held = TempDir::new().unwrap();
+    let agent = standing_in(&held);
+
+    agent
+        .work(Work {
+            ceiling: Some("2500000"),
+            ..working(held.path().to_str().unwrap(), "true")
+        })
+        .unwrap();
+
+    let said = given(&held);
+    assert!(said.contains("--max-budget-usd\n2.50\n"), "{said}");
+    assert!(!said.contains("\n20\n"), "{said}");
+}
+
+/// A session with a large budget does not make the guard stop being true. Its first run
+/// would otherwise be told it may have all of it.
+#[test]
+fn a_ceiling_larger_than_the_definition_allows_is_held_to_the_definition() {
+    let held = TempDir::new().unwrap();
+    let agent = standing_in(&held);
+
+    agent
+        .work(Work {
+            // A hundred dollars, against the twenty the definition carries.
+            ceiling: Some("100000000"),
+            ..working(held.path().to_str().unwrap(), "true")
+        })
+        .unwrap();
+
+    let said = given(&held);
+    assert!(said.contains("--max-budget-usd\n20\n"), "{said}");
+}
+
+/// Without one, the definition's figure stands. That one is a guard against a run that goes
+/// nowhere rather than a session's budget.
+#[test]
+fn a_run_with_no_ceiling_is_held_to_what_the_definition_carries() {
+    let held = TempDir::new().unwrap();
+    let agent = standing_in(&held);
+
+    agent
+        .work(working(held.path().to_str().unwrap(), "true"))
+        .unwrap();
+
+    let said = given(&held);
+    assert!(said.contains("--max-budget-usd\n20\n"), "{said}");
 }
