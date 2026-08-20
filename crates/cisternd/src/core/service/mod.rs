@@ -18,6 +18,8 @@ mod execution;
 mod review;
 mod sessions;
 mod supervision;
+#[cfg(test)]
+mod sweep;
 mod work;
 
 pub use backlog::BacklogService;

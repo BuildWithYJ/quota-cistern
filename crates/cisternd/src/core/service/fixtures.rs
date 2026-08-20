@@ -411,6 +411,13 @@ impl Agent for Answering {
 pub(super) struct Costing {
     /// What each task takes, by the task it belongs to.
     pub(super) takes: BTreeMap<String, u64>,
+    /// What the vendor holds a run to where the session named no ceiling.
+    ///
+    /// A session names none until a run in the ledger has reported both what it cost and what
+    /// it moved, so the first run of an empty ledger reaches the vendor with nothing from the
+    /// session at all. What holds it then is the figure the definition carries. Nothing here
+    /// stands in for that unless a test says so.
+    pub(super) guard: Option<u64>,
 }
 
 impl Costing {
@@ -422,6 +429,15 @@ impl Costing {
                 .enumerate()
                 .map(|(at, takes)| ((at + 1).to_string(), takes))
                 .collect(),
+            guard: None,
+        }
+    }
+
+    /// The same, holding a run the session named no ceiling for to what a definition carries.
+    pub(super) fn guarded_at(self, guard: u64) -> Self {
+        Costing {
+            guard: Some(guard),
+            ..self
         }
     }
 }
@@ -431,7 +447,10 @@ impl Agent for Costing {
 
     fn work(&self, work: Work<'_>) -> Result<Ended, Unavailable> {
         let takes = self.takes.get(work.task).copied().unwrap_or_default();
-        let allowed = work.ceiling.and_then(|at| at.parse::<u64>().ok());
+        let allowed = work
+            .ceiling
+            .and_then(|at| at.parse::<u64>().ok())
+            .or(self.guard);
         let (outcome, spent) = match allowed {
             Some(allowed) if allowed < takes => (Outcome::AtCeiling, allowed),
             _ => (Outcome::Finished, takes),
