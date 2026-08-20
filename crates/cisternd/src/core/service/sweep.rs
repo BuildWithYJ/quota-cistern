@@ -16,9 +16,17 @@
 //! the middle of it, which is its own question. The clock is frozen, so nothing is held back for
 //! want of time. One vendor, one model, one ladder.
 //!
-//! Where the costs come from. Four shapes rather than one, and none of them measured off our own
-//! account: a rule that only holds up under the sizes we happened to run is not one to ship. A
-//! rule worth taking is one that reads well under all four.
+//! Where the costs come from. Two places, and a rule worth taking reads well under both.
+//!
+//! Four shapes nobody measured, so that a rule is not fitted to the sizes we happened to run.
+//! And runs that were actually run, where a file of them is named: those carry the spread and
+//! the model mix that made-up shapes have to guess at, and one account's runs are not every
+//! account's, so they say which rule reads better rather than what any figure should be.
+//!
+//!     CISTERN_OBSERVED=<file> cargo test -p cisternd -- --ignored --nocapture sweeping
+//!
+//! The file is a list of `{"model", "tokens", "seconds"}`, which
+//! `.private/orchestration/analysis/observed.py` writes.
 
 use crate::core::{
     domain::Rule,
@@ -93,6 +101,88 @@ enum Shape {
 }
 
 const SHAPES: [Shape; 4] = [Shape::Alike, Shape::Spread, Shape::Tailed, Shape::Split];
+
+/// One run that was actually run, as the observed file holds it.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct Observed {
+    model: String,
+    tokens: u64,
+    #[allow(dead_code)]
+    seconds: u64,
+}
+
+/// Where a task's cost and model come from.
+#[derive(Debug, Clone)]
+enum Costs {
+    /// A shape nobody measured, so that a rule is not fitted to what we happened to run.
+    Made(Shape),
+    /// Runs that were actually run, drawn from with replacement. These carry the spread and
+    /// the model mix a made-up shape has to guess at.
+    Seen(std::sync::Arc<Vec<Observed>>),
+}
+
+impl Costs {
+    fn named(&self) -> String {
+        match self {
+            Costs::Made(shape) => shape.named().to_owned(),
+            Costs::Seen(seen) => format!("observed({})", seen.len()),
+        }
+    }
+
+    /// One task: what it costs and what model it is of.
+    fn draws(&self, drawn: &mut Drawn) -> (u64, Option<String>) {
+        match self {
+            Costs::Made(shape) => (shape.draws(drawn), None),
+            Costs::Seen(seen) => {
+                let at = (drawn.next() * seen.len() as f64) as usize;
+                let one = &seen[at.min(seen.len() - 1)];
+                (one.tokens, Some(one.model.clone()))
+            }
+        }
+    }
+
+    /// The middle of what a task costs, which a budget is set from.
+    fn middle(&self) -> u64 {
+        match self {
+            Costs::Made(shape) => shape.middle(),
+            Costs::Seen(seen) => {
+                let mut costs: Vec<u64> = seen.iter().map(|one| one.tokens).collect();
+                costs.sort_unstable();
+                costs[costs.len() / 2]
+            }
+        }
+    }
+}
+
+/// Every set of costs to read the rules over.
+///
+/// The made-up shapes always, and the runs that were run where a file of them is named.
+fn over() -> Vec<Costs> {
+    let mut all: Vec<Costs> = SHAPES.iter().copied().map(Costs::Made).collect();
+    let Ok(at) = std::env::var("CISTERN_OBSERVED") else {
+        println!("CISTERN_OBSERVED is unset, so only made-up shapes are read\n");
+        return all;
+    };
+    // Said rather than shrugged at. A sweep that quietly read only the made-up shapes would
+    // look like a sweep that read both. A test runs from its own crate, so a path written
+    // against the workspace is one of the ways this goes wrong.
+    let held = match std::fs::read_to_string(&at) {
+        Ok(held) => held,
+        Err(e) => {
+            println!("{at} could not be read: {e}\n");
+            return all;
+        }
+    };
+    match serde_json::from_str::<Vec<Observed>>(&held) {
+        Ok(seen) if !seen.is_empty() => {
+            println!("{at} holds {} runs that were run\n", seen.len());
+            all.push(Costs::Seen(std::sync::Arc::new(seen)));
+        }
+        Ok(_) => println!("{at} holds no runs\n"),
+        Err(e) => println!("{at} is not a list of runs this reads: {e}\n"),
+    }
+    all
+}
 
 impl Shape {
     fn named(self) -> &'static str {
@@ -175,28 +265,35 @@ impl Came {
 /// behind it.
 fn one_session(
     rule: Rule,
-    shape: Shape,
+    costs: &Costs,
     budget: u64,
     guard: u64,
     seed: u64,
     runs: &Ledger,
 ) -> Came {
     let mut drawn = Drawn::seeded(seed);
-    let costs: Vec<u64> = (0..TASKS).map(|_| shape.draws(&mut drawn)).collect();
-    let declared = shape.middle() * budget;
+    let drawing: Vec<(u64, Option<String>)> = (0..TASKS).map(|_| costs.draws(&mut drawn)).collect();
+    let middle = costs.middle();
+    let costs: Vec<u64> = drawing.iter().map(|(cost, _)| *cost).collect();
+    let declared = middle * budget;
     let offered: u64 = costs.iter().sum();
 
     let sessions = Remembered::empty();
     let held = Tasks::holding(
-        (1..=TASKS)
-            .map(|at| a_task_numbered(&at.to_string()))
+        drawing
+            .iter()
+            .enumerate()
+            .map(|(at, (_, model))| StoredTask {
+                model: model.clone(),
+                ..a_task_numbered(&(at + 1).to_string())
+            })
             .collect::<Vec<StoredTask>>(),
     );
     let areas = Areas::default();
     // Every run is held to the guard the definition carries, which a person set and which does
     // not move with the budget. Four times the middle of the shape, which is about where the
     // twenty dollars that ships sits against the runs a real session has had.
-    let agent = Costing::taking(costs.clone()).guarded_at(shape.middle() * guard);
+    let agent = Costing::taking(costs.clone()).guarded_at(middle * guard);
     let outside = Outside {
         sessions: &sessions,
         tasks: &held,
@@ -285,12 +382,12 @@ fn sweeping_the_rule() {
         .collect();
 
     println!("\n{SESSIONS} sessions of {TASKS} tasks each, one ledger behind each column\n");
-    for shape in SHAPES {
+    for costs in over() {
         for budget in BUDGETS {
             println!(
                 "--- {} (middle {}), budget {}x ---",
-                shape.named(),
-                shape.middle(),
+                costs.named(),
+                costs.middle(),
                 budget
             );
             println!(
@@ -300,7 +397,7 @@ fn sweeping_the_rule() {
             for (named, rule) in &rules {
                 let runs = Ledger::default();
                 let came = (0..SESSIONS)
-                    .map(|seed| one_session(*rule, shape, budget, GUARD, seed, &runs))
+                    .map(|seed| one_session(*rule, &costs, budget, GUARD, seed, &runs))
                     .fold(Came::default(), Came::and);
                 let all = (came.finished + came.stopped).max(1);
                 let spent = came.done + came.lost;
