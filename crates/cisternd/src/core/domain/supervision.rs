@@ -135,10 +135,10 @@ fn allow(standing: &Standing) -> Vec<Allowance> {
         let want = sizing.allowing().max(1);
         let ceiling = if free >= want {
             want
-        } else if standing.running == 0 && given.is_empty() && free >= sizing.median.max(1) {
-            // Room for the middle of what this model costs but not for a whole ceiling.
-            // More than half of what might start would finish inside what is left, which is
-            // worth more than stopping a session that still has budget.
+        } else if standing.running == 0 && given.is_empty() && free >= sizing.fallback.max(1) {
+            // Room for most of what this model costs but not for a whole reservation. Most of
+            // what might start would finish inside what is left, which is worth more than
+            // stopping a session that still has budget.
             free
         } else {
             break;
@@ -168,8 +168,13 @@ fn allow(standing: &Standing) -> Vec<Allowance> {
 /// loses its work, which puts it with memory rather than with CPU.
 const ESTIMATE: u64 = 95;
 
-/// The middle, in whole percent.
-const MIDDLE: u64 = 50;
+/// The quantile a session falls back to where what is left will not cover a reservation.
+///
+/// The third quarter rather than the middle. At the middle the trade is a coin flip: half the
+/// runs of a model cost more than it, so half the tasks started that way spend past what the
+/// session declared. A quantile above the middle is what makes the fallback a fallback rather
+/// than a gamble taken once at the end of every session.
+const FALLBACK: u64 = 75;
 
 /// How far a stopped run lifts the estimate above where it was stopped.
 ///
@@ -193,8 +198,8 @@ const WIDEN: u64 = 1;
 pub struct Rule {
     /// Which quantile of what a model's runs have cost a run is sized at.
     pub estimate: u64,
-    /// The quantile a session falls back to where what is left will not cover a whole ceiling.
-    pub middle: u64,
+    /// The quantile a session falls back to where what is left will not cover a reservation.
+    pub fallback: u64,
     /// How far the estimate is widened: `estimate x (1 + widen/over)`.
     pub widen: u64,
     /// How far a run that was stopped lifts the estimate above what it spent.
@@ -207,7 +212,7 @@ impl Default for Rule {
     fn default() -> Self {
         Rule {
             estimate: ESTIMATE,
-            middle: MIDDLE,
+            fallback: FALLBACK,
             widen: WIDEN,
             lift: LIFT,
         }
@@ -229,11 +234,11 @@ pub struct Sizing {
     /// having learnt nothing. Doubling is how a backfilling scheduler grows a prediction its
     /// job has already outlived, and it climbs to what the work takes in a few runs.
     pub estimate: u64,
-    /// Half of them cost this or less.
+    /// What a session falls back to, at the quantile its rule names.
     ///
-    /// A session with nothing running lowers its bar to this rather than starting nothing,
-    /// since more than half of what it might start would fit.
-    pub median: u64,
+    /// A session with nothing running lowers its bar to this rather than starting nothing.
+    /// Above the middle, so that most of what it might start would fit rather than half.
+    pub fallback: u64,
     /// How many runs these were worked out from.
     ///
     /// Runs that finished. A run that was stopped says where it was stopped rather than what
@@ -345,7 +350,7 @@ impl Sizings {
             costs.sort_unstable();
             let sizing = Sizing {
                 estimate: at(&costs, rule.estimate).max(floor.saturating_mul(rule.lift)),
-                median: at(&costs, rule.middle),
+                fallback: at(&costs, rule.fallback),
                 over: costs.len(),
                 widen: rule.widen,
             };

@@ -213,10 +213,11 @@ fn with_nothing_to_go_on_and_one_running_nothing_starts() {
 /// More than half of what might start would finish inside what is left, which is worth
 /// more than stopping a session that still has budget.
 #[test]
-fn a_session_with_nothing_running_lowers_its_bar_to_the_middle() {
+fn a_session_with_nothing_running_lowers_its_bar_to_what_most_runs_cost() {
     assert_eq!(
         ceilings(decide(&Standing {
-            left: 80,
+            // Under a whole reservation, over what three runs in four of this model cost.
+            left: 110,
             running: 0,
             sizings: Sizings::under(
                 Rule::default(),
@@ -227,13 +228,13 @@ fn a_session_with_nothing_running_lowers_its_bar_to_the_middle() {
             ),
             ..standing()
         })),
-        [80]
+        [110]
     );
 }
 
-/// Not even the middle of it fits, and nothing is running that would make room.
+/// Not even what most runs of it cost fits, and nothing is running that would make room.
 #[test]
-fn a_session_that_cannot_cover_the_middle_stops() {
+fn a_session_that_cannot_cover_what_most_runs_cost_stops() {
     assert_eq!(
         decide(&Standing {
             left: 40,
@@ -383,8 +384,8 @@ fn runs_that_named_no_model_are_their_own() {
 /// The kth of n sorted runs sits at k/(n+1) of what they were drawn from, so the nearer
 /// rank answers a question it was not asked: four runs asked for their 75th return the
 /// third, which is the 60th, and a ceiling there stops two runs in five rather than one in
-/// four. Four runs asked for their 95th have nothing above the largest to offer, and their
-/// middle falls between the second and the third.
+/// four. Four runs asked for their 95th have nothing above the largest to offer, and the one
+/// they fall back to falls between the third and the fourth.
 #[test]
 fn the_figures_are_read_between_the_runs() {
     let sizings = Sizings::under(
@@ -398,7 +399,10 @@ fn the_figures_are_read_between_the_runs() {
     );
     let sizing = sizings.model(Some("opus")).unwrap();
 
-    assert_eq!((sizing.estimate, sizing.median, sizing.over), (400, 250, 4));
+    assert_eq!(
+        (sizing.estimate, sizing.fallback, sizing.over),
+        (400, 358, 4)
+    );
 }
 
 /// Until there are runs enough for a figure to sit under the largest of them, the estimate
@@ -459,7 +463,10 @@ fn a_run_that_was_stopped_is_not_counted_as_what_its_task_costs() {
     );
     let sizing = sizings.model(Some("opus")).unwrap();
 
-    assert_eq!((sizing.estimate, sizing.median, sizing.over), (400, 350, 2));
+    assert_eq!(
+        (sizing.estimate, sizing.fallback, sizing.over),
+        (400, 400, 2)
+    );
 }
 
 /// It was still working when it was stopped, so its task takes more than that. Holding the
@@ -493,7 +500,7 @@ fn one_run_is_both_figures() {
     let sizings = Sizings::under(Rule::default(), [Ran::finished(Some("opus"), 42)]);
     let sizing = sizings.model(Some("opus")).unwrap();
 
-    assert_eq!((sizing.estimate, sizing.median, sizing.over), (42, 42, 1));
+    assert_eq!((sizing.estimate, sizing.fallback, sizing.over), (42, 42, 1));
 }
 
 // the budget itself
