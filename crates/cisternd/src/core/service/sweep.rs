@@ -269,7 +269,7 @@ fn sweeping_the_rule() {
             )
         }))
         .chain(
-            [0, 25, 50]
+            [0, 25, 50, 75, 90, 100]
                 .into_iter()
                 .map(|middle| (format!("floor {middle}"), Rule { middle, ..shipped })),
         )
