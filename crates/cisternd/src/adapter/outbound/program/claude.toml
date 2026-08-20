@@ -18,10 +18,15 @@ program = "claude"
 # A turned-away run answers as a success that did nothing, which is worse than a failure.
 goal = "/goal The task described in the instructions is finished, its result is committed on the current branch, and git status reports a clean tree."
 
-# How far one run may go before it is cut off. A guard against one run going nowhere rather
-# than a session's budget: a session works its own ceiling out from what runs here have cost
-# and the smaller of the two is what the run is held to. Raise these where a session's runs
-# are meant to be larger than any run so far.
+# How far one run may go before it is cut off.
+#
+# A guard against one run going nowhere. Not a session's budget, and nothing a session works
+# out reaches here: a session measures itself against a meter that reads in whole percent and
+# carries usage the session did not cause, and a figure like that is not one to end a task
+# with. What ends a run is one of these, or a person.
+#
+# So these are what every run is held to, whatever a session declared. Raise them where runs
+# are meant to be larger.
 turns = "200"
 spend = "20"
 

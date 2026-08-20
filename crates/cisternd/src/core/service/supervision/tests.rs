@@ -126,11 +126,17 @@ fn a_session_carries_tasks_that_take_more_than_the_ones_before_them() {
     assert_eq!(states(&tasks), ["Completed"; 5]);
 }
 
-/// Widening is not enough where the next task takes several times the last, and then the
-/// run that was stopped is what raises the figure. Nothing else does: the tasks after it
-/// are the ones that climb the ladder, so a session with none left ends where it stopped.
+/// What a cut run says about its task, and what it does not.
+///
+/// A run held to a ceiling spent what it was stopped at, which says its task takes at least
+/// that much and nothing about how much more. Counting it as what the task costs would pull
+/// the figure down towards a ceiling rather than up towards the work, so it lifts the figure
+/// past where it stopped instead of joining the runs that finished.
+///
+/// It does not decide whether the next run is cut. That is the guard the definition carries,
+/// which is fixed and does not move with what we learn.
 #[test]
-fn a_run_that_was_stopped_is_what_lets_the_next_one_through() {
+fn a_run_that_was_cut_leaves_a_floor_under_what_its_kind_is_sized_at() {
     let sessions = Remembered::empty();
     let tasks = Tasks::holding(vec![
         a_pending_task(),
@@ -138,7 +144,8 @@ fn a_run_that_was_stopped_is_what_lets_the_next_one_through() {
         a_task_numbered("3"),
     ]);
     let areas = Areas::default();
-    let agent = Costing::taking([100, 400, 400]);
+    // Every run is held to the guard the definition carries, which is what cuts the second.
+    let agent = Costing::taking([100, 400, 400]).guarded_at(200);
     let runs = Ledger::default();
     let outside = Outside {
         sessions: &sessions,
@@ -157,9 +164,18 @@ fn a_run_that_was_stopped_is_what_lets_the_next_one_through() {
     execution.run(declaring("100000", "8h")).unwrap();
     carry_them_all(&work, &tasks);
 
-    // 100 finishes, 400 is stopped at twice 100, and the third goes through on the floor
-    // that stopping left behind.
-    assert_eq!(states(&tasks), ["Completed", "Interrupted", "Completed"]);
+    // 100 finishes and the other two are cut at the guard, which is fixed and does not move
+    // with what we learn. What being cut changes is the figure, not the cutting: a run held
+    // to a ceiling says its task takes more than that, so it lifts the estimate past where it
+    // stopped rather than pulling it down to the 100 that did finish.
+    assert_eq!(states(&tasks), ["Completed", "Interrupted", "Interrupted"]);
+    assert!(
+        runs.runs()
+            .iter()
+            .filter(|run| run.outcome == "Interrupted")
+            .count()
+            == 2
+    );
 }
 
 /// The other half of the hardlock: a session that has spent the tokens it declared stops.

@@ -342,57 +342,6 @@ impl Supervisor<'_> {
         self.stop(session, StoppedReason::BudgetHardlock)
     }
 
-    /// What a session declared its budget in, or nothing where it is no longer there.
-    pub(super) fn declared(&self, session: SessionId) -> Result<Option<Usage>, Refusal> {
-        Ok(sessions::read(self.outside.sessions)?
-            .sessions()
-            .iter()
-            .find(|held| held.id() == session)
-            .map(|held| held.budget().usage))
-    }
-
-    /// What an amount in the unit a session declared is worth in the vendor's own.
-    ///
-    /// A ceiling is worked out in the unit the budget was declared in, and the vendor is told
-    /// one in the unit it prices runs at. Nothing says what a token or a point of the limit is
-    /// worth in that unit: it differs between subscriptions and the vendor is the one who
-    /// decides. So it is not converted by a figure this ships, it is read off what runs here
-    /// have already cost -- every run in the ledger reports both.
-    ///
-    /// Nothing where no run has reported both, which is where a session starts. The vendor is
-    /// then told the figure its definition carries, which is a guard against a run that goes
-    /// nowhere rather than this session's budget.
-    pub(super) fn priced(&self, usage: Usage, amount: u64) -> Result<Option<u64>, Refusal> {
-        let held = self.outside.runs.read()?;
-        let (mut cost, mut over) = (0u64, 0u64);
-        for run in held {
-            let Some(spent) = run.spent else { continue };
-            let Ok(priced) = spent.cost.parse::<u64>() else {
-                continue;
-            };
-            let took = match usage {
-                Usage::Tokens(_) => spending_of(&spent).map(|counted| counted.tokens()),
-                Usage::Share(_) => match (run.limit_before, run.limit_after) {
-                    (Some(before), Some(after)) => before
-                        .parse::<u64>()
-                        .ok()
-                        .zip(after.parse::<u64>().ok())
-                        .and_then(|(before, after)| after.checked_sub(before)),
-                    _ => None,
-                },
-            };
-            if let Some(took) = took.filter(|took| *took > 0) {
-                cost = cost.saturating_add(priced);
-                over = over.saturating_add(took);
-            }
-        }
-        if over == 0 || cost == 0 {
-            return Ok(None);
-        }
-        // Multiplied first, so that a ceiling smaller than what one unit costs is not nothing.
-        Ok(Some(amount.saturating_mul(cost) / over))
-    }
-
     /// How far the vendor's limit was spent when this session last looked.
     ///
     /// A store read rather than a vendor one, so it costs nothing. Nothing for a session

@@ -88,7 +88,6 @@ fn working<'a>(at: &'a str, instruction: &'a str) -> Work<'a> {
         trace: Box::new(|_line: &str| {}),
         instruction,
         model: None,
-        ceiling: None,
     }
 }
 
@@ -550,47 +549,13 @@ fn an_unmatched_brace_is_written_once() {
     assert_eq!(super::fill("a{b{c", &filling), "a{b{c");
 }
 
-/// The session's own figure, not the definition's, once there is one.
+/// Every run is held to what the definition carries.
+///
+/// A guard against a run going nowhere rather than a session's budget: a session's own
+/// figure is worked out from a meter that reads in whole percent and carries usage the
+/// session did not cause, and a figure like that is not one to end a task with.
 #[test]
-fn a_run_the_session_put_a_ceiling_on_is_held_to_that() {
-    let held = TempDir::new().unwrap();
-    let agent = standing_in(&held);
-
-    agent
-        .work(Work {
-            ceiling: Some("2500000"),
-            ..working(held.path().to_str().unwrap(), "true")
-        })
-        .unwrap();
-
-    let said = given(&held);
-    assert!(said.contains("--max-budget-usd\n2.50\n"), "{said}");
-    assert!(!said.contains("\n20\n"), "{said}");
-}
-
-/// A session with a large budget does not make the guard stop being true. Its first run
-/// would otherwise be told it may have all of it.
-#[test]
-fn a_ceiling_larger_than_the_definition_allows_is_held_to_the_definition() {
-    let held = TempDir::new().unwrap();
-    let agent = standing_in(&held);
-
-    agent
-        .work(Work {
-            // A hundred dollars, against the twenty the definition carries.
-            ceiling: Some("100000000"),
-            ..working(held.path().to_str().unwrap(), "true")
-        })
-        .unwrap();
-
-    let said = given(&held);
-    assert!(said.contains("--max-budget-usd\n20\n"), "{said}");
-}
-
-/// Without one, the definition's figure stands. That one is a guard against a run that goes
-/// nowhere rather than a session's budget.
-#[test]
-fn a_run_with_no_ceiling_is_held_to_what_the_definition_carries() {
+fn every_run_is_held_to_what_the_definition_carries() {
     let held = TempDir::new().unwrap();
     let agent = standing_in(&held);
 

@@ -15,12 +15,6 @@ pub struct Work<'a> {
     pub instruction: &'a str,
     /// The model to run, when the task or the session named one.
     pub model: Option<&'a str>,
-    /// What this run may cost, in the unit the vendor prices runs at.
-    ///
-    /// The session works its budget out in the unit it was declared in and hands the figure
-    /// over in the vendor's, since the vendor is what stops the run. Nothing where no run here
-    /// has yet reported both, and the vendor is then held to whatever its definition carries.
-    pub ceiling: Option<&'a str>,
 }
 
 /// What a run consumed, in the core's own words.

@@ -93,7 +93,7 @@ impl WorkService<'_> {
             value: task.to_owned(),
         })?;
 
-        let (repository, base, branch, instruction, model, ceiling, usage) = {
+        let (repository, base, branch, instruction, model) = {
             let tasks = backlog::read(self.outside.tasks)?;
             let held = tasks
                 .find(id)
@@ -110,20 +110,8 @@ impl WorkService<'_> {
                 held.result_branch().unwrap_or_default(),
                 held.instruction().to_owned(),
                 held.model().map(str::to_owned),
-                held.ceiling(),
-                held.session(),
             )
         };
-
-        // What the decision allowed this run, said in the unit the vendor prices runs at.
-        let ceiling = match (
-            ceiling,
-            usage.map(|id| self.supervising.declared(id)).transpose()?,
-        ) {
-            (Some(ceiling), Some(Some(usage))) => self.supervising.priced(usage, ceiling)?,
-            _ => None,
-        }
-        .map(|priced| priced.to_string());
 
         let at = match self.outside.worktrees.prepare(Cut {
             repository: &repository,
@@ -154,7 +142,6 @@ impl WorkService<'_> {
             trace,
             instruction: &instruction,
             model: model.as_deref(),
-            ceiling: ceiling.as_deref(),
         });
         match ended {
             Ok(ended) => {

@@ -96,31 +96,6 @@ impl ProgramAgent {
     }
 }
 
-/// A ceiling in the unit prices are kept in, said the way the vendor takes one.
-///
-/// The core keeps a price as a whole number so that a fraction added a hundred times over a
-/// session is still the figure it started as; the vendor is told the fraction. Rounded up, so
-/// that a ceiling smaller than the smallest figure the vendor takes is not no ceiling at all.
-fn priced(ceiling: &str, scale: f64) -> String {
-    let held: f64 = ceiling.parse().unwrap_or_default();
-    let scale = if scale > 0.0 { scale } else { 1.0 };
-    format!("{:.2}", ((held / scale) * 100.0).ceil() / 100.0)
-}
-
-/// The lesser of two figures the vendor takes, as text.
-///
-/// Text rather than a number, since both sides of this are what a definition and a session
-/// wrote and either could be something this does not read. One it cannot read loses.
-fn smaller<'a>(one: &'a str, other: &'a str) -> String {
-    match (one.parse::<f64>(), other.parse::<f64>()) {
-        (Ok(one), Ok(other)) if other < one => format!("{other}"),
-        (Ok(_), Ok(_)) | (Ok(_), Err(_)) => one.to_owned(),
-        (Err(_), _) => other.to_owned(),
-    }
-}
-
-/// One argument with `{name}` replaced by what was given for it.
-///
 /// One pass, so that what is written stands. Filling each name in turn over the whole string
 /// would leave a value written for one name open to the names that follow, and a task's
 /// instruction goes in among them: an instruction holding the text `{model}` would come out
@@ -158,23 +133,6 @@ impl Agent for ProgramAgent {
         let mut filling = self.its_own().to_vec();
         filling.push(("instruction", work.instruction));
         filling.push(("model", work.model.unwrap_or_default()));
-
-        // What the session allowed this run, said the way the definition asks for a spend
-        // ceiling, or what the definition allows any run, whichever is smaller.
-        //
-        // The definition's figure is a guard against one run going nowhere, and a session with
-        // a large budget does not make that stop being true: a session that declared enough
-        // for twenty runs would otherwise tell the vendor its first run may have all of it.
-        // Raising the guard is a line in a definition file, which is where a figure nobody
-        // measured belongs.
-        let allowed = work
-            .ceiling
-            .map(|ceiling| priced(ceiling, self.definition.answer.cost_scale))
-            .map(|allowed| smaller(&allowed, &self.definition.spend));
-        if let Some(allowed) = allowed.as_deref() {
-            filling.retain(|(name, _)| *name != "spend");
-            filling.push(("spend", allowed));
-        }
 
         let mut running = Command::new(program);
         running
