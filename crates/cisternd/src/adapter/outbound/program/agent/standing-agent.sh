@@ -11,10 +11,6 @@
 # are written out where a test can read them: {prompt} for the prompt and
 # {prompt}.system for the instruction, filled the way claude.toml's places
 # are, since a test cannot see the arguments a child was given any other way.
-# Every argument is written beside them, one to a line, for the tests that are
-# about those.
-
-printf '%s\n' "$@" > '{prompt}.args'
 
 asked=
 told=
