@@ -19,7 +19,17 @@ pub struct Run {
     /// The state the run left the task in.
     pub outcome: String,
     /// Why it ended as it did, for a run that did not simply finish.
+    ///
+    /// The core's own word, which is what the task is left with and what a figure worked out
+    /// from runs reads.
     pub reason: Option<String>,
+    /// What the vendor said about how it ended, where it said anything.
+    ///
+    /// Beside `reason` rather than in it. A task cut off at a ceiling is left with one word
+    /// for it whatever ceiling it was, since that is the state `docs/cli.md` gives it; but a
+    /// run held back by its turns and a run held back by what it may spend say different
+    /// things about the task, and one word for both loses that.
+    pub said: Option<String>,
     /// What it consumed, once its answer said.
     pub spent: Option<StoredConsumption>,
     /// Why what it consumed could not be read, when it could not.

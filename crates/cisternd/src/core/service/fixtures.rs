@@ -45,6 +45,7 @@ pub(super) fn a_run_costing(task: &str, tokens: u64, cost: u64, over: (&str, &st
         ended_at: "1100".to_owned(),
         outcome: "Completed".to_owned(),
         reason: None,
+        said: None,
         spent: Some(StoredConsumption {
             input: "0".to_owned(),
             output: tokens.to_string(),

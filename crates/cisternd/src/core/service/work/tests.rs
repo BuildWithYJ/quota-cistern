@@ -438,6 +438,51 @@ fn a_work_area_that_could_not_be_made_leaves_the_task_in_error() {
 }
 
 /// The backlog keeps one run to a task, so what a budget is worked out from is kept apart.
+/// One word tells a person a run hit a ceiling. Which ceiling it was goes to the ledger.
+///
+/// A run held back by its turns and one held back by what it may spend say different things
+/// about the task, and a figure worked out from runs cannot tell them apart from one word.
+#[test]
+fn a_run_cut_off_at_a_ceiling_tells_the_ledger_which_one() {
+    let sessions = Remembered::empty();
+    let tasks = Tasks::holding(vec![a_pending_task()]);
+    let areas = Areas::default();
+    let agent = Answering::ending(Ended {
+        outcome: Outcome::AtCeiling,
+        reason: Some("the agent was cut off after 200 turns".to_owned()),
+        observed: spending(),
+    });
+    let runs = Ledger::default();
+    let outside = Outside {
+        sessions: &sessions,
+        tasks: &tasks,
+        worktrees: &areas,
+        agent: &agent,
+        clock: &STILL,
+        limit: &UNTOUCHED,
+        traces: &NOTHING_KEPT,
+        runs: &runs,
+    };
+    let supervisor = Supervisor::new(outside, AT_ONCE);
+    ExecutionService::new(outside, &supervisor)
+        .run(declaring("2M", "8h"))
+        .unwrap();
+    WorkService::new(outside, &supervisor)
+        .carry_on("task:1")
+        .unwrap();
+
+    // The task is left with the one word section 1 gives it.
+    assert_eq!(tasks.first().reason.as_deref(), Some("task ceiling"));
+
+    let written = runs.runs();
+    assert_eq!(written.len(), 1);
+    assert_eq!(written[0].reason.as_deref(), Some("task ceiling"));
+    assert_eq!(
+        written[0].said.as_deref(),
+        Some("the agent was cut off after 200 turns")
+    );
+}
+
 #[test]
 fn a_run_that_ended_is_written_to_the_ledger() {
     let sessions = Remembered::empty();

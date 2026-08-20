@@ -25,6 +25,34 @@ use super::{
 /// stopped rather than what its task takes, which is not a figure to size the next one from.
 pub(super) const AT_CEILING: &str = "task ceiling";
 
+/// How a run came to an end, in the two places that have to hear it.
+///
+/// A person is told one word for a ceiling whatever ceiling it was, since that is the state
+/// `docs/cli.md` gives the task. The ledger is told what the vendor said, since a figure
+/// worked out from runs has to know which ceiling stopped each of them.
+#[derive(Debug, Clone, Default)]
+struct Ended {
+    /// What the task is left with, which a person reads.
+    told: Option<String>,
+    /// What the vendor said, which the ledger keeps.
+    said: Option<String>,
+}
+
+impl Ended {
+    /// A run that ended without either being said.
+    fn nothing() -> Self {
+        Ended::default()
+    }
+
+    /// A run whose own words are what both are told.
+    fn of(said: Option<String>) -> Self {
+        Ended {
+            told: said.clone(),
+            said,
+        }
+    }
+}
+
 /// Carrying tasks on for the sessions the supervisor decides for.
 pub struct WorkService<'a> {
     outside: Outside<'a>,
@@ -105,7 +133,14 @@ impl WorkService<'_> {
         }) {
             Ok(at) => at,
             // A task with nowhere to work has ended, and nothing ran, so there is nothing to have consumed.
-            Err(e) => return self.ended(id, TaskState::Error, Some(e.reason), Observation::NotYet),
+            Err(e) => {
+                return self.ended(
+                    id,
+                    TaskState::Error,
+                    Ended::of(Some(e.reason)),
+                    Observation::NotYet,
+                );
+            }
         };
         backlog::change(self.outside.tasks, |tasks| {
             tasks.work_area(id, at.clone());
@@ -125,23 +160,40 @@ impl WorkService<'_> {
             Ok(ended) => {
                 let consumed = observed(ended.observed);
                 match ended.outcome {
-                    Outcome::Finished => self.ended(id, TaskState::Completed, None, consumed),
+                    Outcome::Finished => {
+                        self.ended(id, TaskState::Completed, Ended::nothing(), consumed)
+                    }
                     // Section 1 gives a run stopped at its ceiling a reason of its own.
                     // It also says the session carries on.
+                    //
+                    // One word for the task, whatever ceiling it was, since that is what a
+                    // person is told. The vendor's own sentence goes to the ledger beside it:
+                    // a run held back by its turns and a run held back by what it may spend
+                    // say different things about the task, and one word for both loses that.
                     Outcome::AtCeiling => self.ended(
                         id,
                         TaskState::Interrupted,
-                        Some(AT_CEILING.to_owned()),
+                        Ended {
+                            told: Some(AT_CEILING.to_owned()),
+                            said: ended.reason,
+                        },
                         consumed,
                     ),
                     // Only the vendor's limit tells a run it would not take from one that went wrong.
                     Outcome::Failed => match self.supervising.at_its_limit() {
                         true => self.turned_away(id, consumed),
-                        false => self.ended(id, TaskState::Error, ended.reason, consumed),
+                        false => {
+                            self.ended(id, TaskState::Error, Ended::of(ended.reason), consumed)
+                        }
                     },
                 }
             }
-            Err(e) => self.ended(id, TaskState::Error, Some(e.reason), Observation::NotYet),
+            Err(e) => self.ended(
+                id,
+                TaskState::Error,
+                Ended::of(Some(e.reason)),
+                Observation::NotYet,
+            ),
         }
     }
 
@@ -164,7 +216,9 @@ impl WorkService<'_> {
             let session = held.and_then(Task::session);
             // The vendor turned this run away, so the session stops rather than deciding
             // again, and the reading it is holding is the last there will be.
-            let run = held.map(|held| ran(held, now, (None, None)));
+            // Nothing was said about how it ended: the vendor would not take it, which is
+            // the session's state rather than anything about this task.
+            let run = held.map(|held| ran(held, &Ended::nothing(), now, (None, None)));
             tasks.wait_again(id, now);
             Ok((session, run))
         })?;
@@ -189,19 +243,23 @@ impl WorkService<'_> {
         &self,
         id: TaskId,
         state: TaskState,
-        reason: Option<String>,
+        why: Ended,
         consumed: Observation,
     ) -> Result<Vec<String>, Refusal> {
         let now = self.outside.clock.now();
         let (session, ended) = backlog::change(self.outside.tasks, |tasks| {
-            tasks.finish(id, state, reason.clone(), now);
+            tasks.finish(id, state, why.told.clone(), now);
             tasks.record(id, consumed.clone());
             let held = tasks.find(id);
             Ok((held.and_then(Task::session), held.cloned()))
         })?;
 
         let Some(session) = session else {
-            self.remember(ended.as_ref().map(|held| ran(held, now, (None, None))))?;
+            self.remember(
+                ended
+                    .as_ref()
+                    .map(|held| ran(held, &why, now, (None, None))),
+            )?;
             return Ok(Vec::new());
         };
 
@@ -215,7 +273,11 @@ impl WorkService<'_> {
         let before = self.supervising.limit_last_seen(session)?;
         let read = self.supervising.measured(session)?;
         let after = self.supervising.limit_last_seen(session)?;
-        self.remember(ended.as_ref().map(|held| ran(held, now, (before, after))))?;
+        self.remember(
+            ended
+                .as_ref()
+                .map(|held| ran(held, &why, now, (before, after))),
+        )?;
 
         self.supervising.settle(session, read).map(labelled)
     }
@@ -268,7 +330,7 @@ fn not_carried(why: Refusal) -> NotCarried {
 ///
 /// `over` is how far the vendor's limit was spent before the run and after it. Both are
 /// readings the session already took, so they are handed in rather than asked for.
-fn ran(held: &Task, now: u64, over: (Option<u64>, Option<u64>)) -> Run {
+fn ran(held: &Task, why: &Ended, now: u64, over: (Option<u64>, Option<u64>)) -> Run {
     Run {
         task: held.id().to_string(),
         session: held.session().map(|session| session.to_string()),
@@ -277,6 +339,7 @@ fn ran(held: &Task, now: u64, over: (Option<u64>, Option<u64>)) -> Run {
         ended_at: held.ended_at().unwrap_or(now).to_string(),
         outcome: held.state().to_string(),
         reason: held.reason().map(str::to_owned),
+        said: why.said.clone(),
         spent: backlog::kept(held.consumed()),
         unreadable: match held.consumed() {
             Observation::Unreadable { why } => Some(why.clone()),
