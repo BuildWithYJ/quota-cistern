@@ -123,6 +123,15 @@ pub struct Answer {
     /// A name rather than a description, because reading a shape is code. A shape nobody
     /// has written yet is the one thing here that a file cannot add.
     pub reader: Reader,
+    /// Which of the lines the answer is on, for a shape that writes more than one.
+    ///
+    /// The last line is not always it. A hook of the user's outlives a run that ends sooner
+    /// than the hook does, and its response is written after the answer. Reading that line
+    /// as the answer leaves a run that finished looking like one that reported nothing, and
+    /// a session with no figure for what a run consumed stops.
+    ///
+    /// Left out, the last line is the answer, which is what a vendor writing one line needs.
+    pub marks: Option<Marks>,
     /// Where the word for how the run ended is.
     pub outcome: String,
     /// The words that mean the run hit a ceiling, and what to report for each.
@@ -140,6 +149,17 @@ pub struct Answer {
     pub output: String,
     pub cache_written: String,
     pub cache_read: String,
+}
+
+/// How a line says whether it is the answer.
+///
+/// Two halves of one question, so a definition naming one has to name the other.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Marks {
+    /// Where a line says what it is.
+    pub at: String,
+    /// What a line says there when it is the answer.
+    pub is: String,
 }
 
 /// The shapes an answer arrives in.

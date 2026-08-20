@@ -23,7 +23,11 @@ use crate::core::port::outbound::{
     Agent, Ended, Keeping, Observed, Outcome, Spent, Unavailable, Work,
 };
 
-use super::{Definition, definition::Reader, path};
+use super::{
+    Definition,
+    definition::{Marks, Reader},
+    path,
+};
 
 /// How long a run has to end on its own before it is made to.
 ///
@@ -157,6 +161,7 @@ impl Agent for ProgramAgent {
             child.stdout.take(),
             work.trace,
             self.definition.answer.reader,
+            self.definition.answer.marks.clone(),
         );
         let stderr = reading(child.stderr.take());
 
@@ -331,6 +336,7 @@ fn keeping<R: std::io::Read + Send + 'static>(
     held: Option<R>,
     mut into: Keeping,
     reader: Reader,
+    marks: Option<Marks>,
 ) -> thread::JoinHandle<Vec<u8>> {
     use std::io::{BufRead, BufReader};
 
@@ -346,11 +352,26 @@ fn keeping<R: std::io::Read + Send + 'static>(
             }
             into(&line);
             match reader {
-                Reader::LastJsonLine => answer = line,
+                Reader::LastJsonLine if marked(&line, marks.as_ref()) => answer = line,
+                Reader::LastJsonLine => {}
             }
         }
         answer.into_bytes()
     })
+}
+
+/// Whether this line is the one the answer is on.
+///
+/// A definition that does not say takes every line, so the last one written is the answer.
+/// One that says takes only the lines saying so, and a line this cannot read says nothing.
+fn marked(line: &str, marks: Option<&Marks>) -> bool {
+    let Some(marks) = marks else {
+        return true;
+    };
+    serde_json::from_str::<Value>(line)
+        .ok()
+        .and_then(|one| path::text(&one, &marks.at))
+        .is_some_and(|says| says == marks.is)
 }
 
 /// Reads one of the run's pipes on a thread of its own.
