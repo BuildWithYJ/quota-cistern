@@ -71,6 +71,11 @@ fn prompt(held: &TempDir) -> String {
     fs::read_to_string(held.path().join("prompt")).unwrap()
 }
 
+/// The instruction, as the agent was given it.
+fn told(held: &TempDir) -> String {
+    fs::read_to_string(held.path().join("prompt.system")).unwrap()
+}
+
 /// Every argument the agent was given, one to a line.
 fn given(held: &TempDir) -> String {
     fs::read_to_string(held.path().join("prompt.args")).unwrap()
@@ -303,10 +308,13 @@ fn the_agent_runs_in_the_work_area_it_was_given() {
     assert!(at.join("it-ran-here.txt").exists());
 }
 
-/// The goal has to lead the prompt.
-/// Anywhere else it is read as ordinary text and nothing gates the end of the task.
+/// The goal has to be the whole of the prompt.
+///
+/// It is a command of the vendor's and everything after it is the condition it gates on,
+/// which the vendor holds to a length. An instruction written there would be part of that
+/// condition, and a long one would be turned away for it.
 #[test]
-fn the_prompt_leads_with_the_goal_and_the_instruction_follows_it() {
+fn the_prompt_is_the_goal_and_the_instruction_is_told_apart_from_it() {
     let held = TempDir::new().unwrap();
     standing_in(&held)
         .work(working(&held.path().display().to_string(), "exit 0"))
@@ -314,7 +322,8 @@ fn the_prompt_leads_with_the_goal_and_the_instruction_follows_it() {
 
     let asked = prompt(&held);
     assert!(asked.starts_with("/goal "), "{asked}");
-    assert!(asked.ends_with("\n\nexit 0"), "{asked}");
+    assert!(!asked.contains("exit 0"), "{asked}");
+    assert_eq!(told(&held), "exit 0");
 }
 
 /// A run cut off at a ceiling says nothing of its own.

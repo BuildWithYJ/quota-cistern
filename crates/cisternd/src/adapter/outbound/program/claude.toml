@@ -9,10 +9,14 @@
 
 program = "claude"
 
-# The goal leads the prompt. After the instruction the command is read as ordinary text
-# and gates nothing, which is why the order is fixed in `args` rather than left to
-# whoever composes the two.
-goal = "/goal The task described below is finished, its result is committed on the current branch, and git status reports a clean tree."
+# The goal is a command of the vendor's, and everything written after it is the condition it
+# gates on. The vendor holds that condition to 4000 characters.
+#
+# So the instruction is not written after it. It goes in as a system prompt instead, which
+# nothing holds to a length: an instruction of four thousand characters is an ordinary task
+# description, and one written after the goal would be a condition the vendor turns away.
+# A turned-away run answers as a success that did nothing, which is worse than a failure.
+goal = "/goal The task described in the instructions is finished, its result is committed on the current branch, and git status reports a clean tree."
 
 # How far one run may go before it is cut off. A guard against one run going nowhere rather
 # than a session's budget: a session works its own ceiling out from what runs here have cost
@@ -34,7 +38,8 @@ args = [
   ["--max-turns", "{turns}"],
   ["--max-budget-usd", "{spend}"],
   ["--model", "{model}"],
-  ["-p", "{goal}\n\n{instruction}"],
+  ["--append-system-prompt", "{instruction}"],
+  ["-p", "{goal}"],
   ["--output-format", "stream-json", "--verbose"],
 ]
 
