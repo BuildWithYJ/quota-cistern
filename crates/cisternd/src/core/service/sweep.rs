@@ -25,8 +25,10 @@
 //!
 //!     CISTERN_OBSERVED=<file> cargo test -p cisternd -- --ignored --nocapture sweeping
 //!
-//! The file is a list of `{"model", "tokens", "seconds"}`, which
-//! `.private/orchestration/analysis/observed.py` writes.
+//! The file is a list of `{"model", "tokens", "seconds", "began"}`, which
+//! `.private/orchestration/analysis/observed.py` writes. A run there is a goal run: one
+//! prompt handed to the vendor that went to the end without a person in it, which is what
+//! this runs. A turn of somebody's conversation is not one and is left out.
 
 use crate::core::{
     domain::Rule,
@@ -107,8 +109,12 @@ const SHAPES: [Shape; 4] = [Shape::Alike, Shape::Spread, Shape::Tailed, Shape::S
 struct Observed {
     model: String,
     tokens: u64,
+    /// How long it took, which a clock that moves would hold a session to.
     #[allow(dead_code)]
     seconds: u64,
+    /// When it began, which says how runs like these overlapped.
+    #[allow(dead_code)]
+    began: u64,
 }
 
 /// Where a task's cost and model come from.
