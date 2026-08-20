@@ -46,6 +46,7 @@ pub(super) fn a_run_costing(task: &str, tokens: u64, cost: u64, over: (&str, &st
         outcome: "Completed".to_owned(),
         reason: None,
         said: None,
+        turns: None,
         spent: Some(StoredConsumption {
             input: "0".to_owned(),
             output: tokens.to_string(),
@@ -379,6 +380,7 @@ impl Answering {
             outcome: Outcome::Finished,
             reason: None,
             conversation: None,
+            turns: None,
             observed: spending(),
         })
     }
@@ -458,6 +460,7 @@ impl Agent for Costing {
             outcome,
             reason: None,
             conversation: None,
+            turns: None,
             observed: Observed::Spent(Spent {
                 input: "0".to_owned(),
                 output: spent.to_string(),

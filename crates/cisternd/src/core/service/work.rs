@@ -38,6 +38,8 @@ struct Ended {
     said: Option<String>,
     /// The conversation the run was in, which the task keeps so a later run may carry it on.
     conversation: Option<String>,
+    /// How many turns it took, which the ledger keeps.
+    turns: Option<String>,
 }
 
 impl Ended {
@@ -52,12 +54,19 @@ impl Ended {
             told: said.clone(),
             said,
             conversation: None,
+            turns: None,
         }
     }
 
     /// The same, in a conversation a later run may carry on.
     fn conversing(mut self, conversation: Option<String>) -> Self {
         self.conversation = conversation;
+        self
+    }
+
+    /// The same, having taken this many turns.
+    fn taking(mut self, turns: Option<String>) -> Self {
+        self.turns = turns;
         self
     }
 }
@@ -160,9 +169,12 @@ impl WorkService<'_> {
                 match ended.outcome {
                     // A task that finished has nothing left to say, so no conversation is
                     // kept for it.
-                    Outcome::Finished => {
-                        self.ended(id, TaskState::Completed, Ended::nothing(), consumed)
-                    }
+                    Outcome::Finished => self.ended(
+                        id,
+                        TaskState::Completed,
+                        Ended::nothing().taking(ended.turns),
+                        consumed,
+                    ),
                     // Section 1 gives a run stopped at its ceiling a reason of its own.
                     // It also says the session carries on.
                     //
@@ -177,6 +189,7 @@ impl WorkService<'_> {
                             told: Some(AT_CEILING.to_owned()),
                             said: ended.reason,
                             conversation: ended.conversation,
+                            turns: ended.turns,
                         },
                         consumed,
                     ),
@@ -186,7 +199,9 @@ impl WorkService<'_> {
                         false => self.ended(
                             id,
                             TaskState::Error,
-                            Ended::of(ended.reason).conversing(ended.conversation),
+                            Ended::of(ended.reason)
+                                .conversing(ended.conversation)
+                                .taking(ended.turns),
                             consumed,
                         ),
                     },
@@ -345,6 +360,7 @@ fn ran(held: &Task, why: &Ended, now: u64, over: (Option<u64>, Option<u64>)) -> 
         outcome: held.state().to_string(),
         reason: held.reason().map(str::to_owned),
         said: why.said.clone(),
+        turns: why.turns.clone(),
         spent: backlog::kept(held.consumed()),
         unreadable: match held.consumed() {
             Observation::Unreadable { why } => Some(why.clone()),

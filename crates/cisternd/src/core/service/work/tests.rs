@@ -139,6 +139,7 @@ fn a_figure_that_does_not_read_as_a_number_is_not_a_count() {
         outcome: Outcome::Finished,
         reason: None,
         conversation: None,
+        turns: None,
         observed: Observed::Spent(Spent {
             input: "a lot".to_owned(),
             output: "3377".to_owned(),
@@ -178,6 +179,7 @@ fn an_agent_that_failed_leaves_the_task_in_error_with_what_it_said() {
         outcome: Outcome::Failed,
         reason: Some("it went wrong".to_owned()),
         conversation: None,
+        turns: None,
         observed: spending(),
     });
     let runs = Ledger::default();
@@ -213,6 +215,7 @@ fn a_task_stopped_at_its_ceiling_says_so_and_the_session_carries_on() {
         outcome: Outcome::AtCeiling,
         reason: Some("the agent was cut off after 200 turns".to_owned()),
         conversation: None,
+        turns: None,
         observed: spending(),
     });
     let runs = Ledger::default();
@@ -249,6 +252,7 @@ fn a_task_the_vendor_would_not_run_waits_again_and_the_session_stops() {
         outcome: Outcome::Failed,
         reason: Some("it stopped".to_owned()),
         conversation: None,
+        turns: None,
         observed: spending(),
     });
     let full = AtPercent {
@@ -295,6 +299,7 @@ fn a_task_that_failed_with_room_left_is_an_error() {
         outcome: Outcome::Failed,
         reason: Some("it went wrong".to_owned()),
         conversation: None,
+        turns: None,
         observed: spending(),
     });
     let room = AtPercent {
@@ -335,6 +340,7 @@ fn a_task_that_failed_with_no_reading_to_be_had_is_an_error() {
         outcome: Outcome::Failed,
         reason: Some("it went wrong".to_owned()),
         conversation: None,
+        turns: None,
         observed: spending(),
     });
     let silent = AtPercent {
@@ -456,6 +462,7 @@ fn a_run_leaves_its_conversation_on_the_task_unless_it_finished() {
             outcome,
             reason: None,
             conversation: Some("a-conversation".to_owned()),
+            turns: None,
             observed: spending(),
         });
         let runs = Ledger::default();
@@ -496,6 +503,7 @@ fn a_run_cut_off_at_a_ceiling_tells_the_ledger_which_one() {
         outcome: Outcome::AtCeiling,
         reason: Some("the agent was cut off after 200 turns".to_owned()),
         conversation: None,
+        turns: None,
         observed: spending(),
     });
     let runs = Ledger::default();
@@ -575,6 +583,7 @@ fn a_run_the_vendor_refused_is_written_to_the_ledger_with_its_session() {
         outcome: Outcome::Failed,
         reason: Some("it stopped".to_owned()),
         conversation: None,
+        turns: None,
         observed: spending(),
     });
     let full = AtPercent {
@@ -619,6 +628,7 @@ fn a_run_nobody_could_read_is_written_to_the_ledger_as_unreadable() {
         outcome: Outcome::Finished,
         reason: None,
         conversation: None,
+        turns: None,
         observed: Observed::Unreadable {
             why: "no last line".to_owned(),
         },

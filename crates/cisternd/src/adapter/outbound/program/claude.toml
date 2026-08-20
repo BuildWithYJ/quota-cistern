@@ -66,6 +66,15 @@ said = "result"
 # carry it on rather than read all of it again.
 conversation = "session_id"
 
+# How many turns it took.
+#
+# Worth having beside the tokens for two reasons. It is what this vendor is told to hold a run
+# to, so it crosses without being converted; and across the runs of a real history the count of
+# turns says what a run cost to within a hair -- the log correlation is 0.99 and the relation is
+# tokens = 19,600 x turns^1.31. Neither is true of the tokens, which have to be turned into a
+# share of a limit by a meter that reads in whole percent.
+turns = "num_turns"
+
 # The price, and what to multiply it by to reach millionths of the currency.
 cost = "total_cost_usd"
 cost_scale = 1000000.0

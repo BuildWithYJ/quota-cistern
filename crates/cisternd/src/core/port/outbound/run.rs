@@ -30,6 +30,13 @@ pub struct Run {
     /// run held back by its turns and a run held back by what it may spend say different
     /// things about the task, and one word for both loses that.
     pub said: Option<String>,
+    /// How many turns it took, where the vendor counted them.
+    ///
+    /// The one figure about a run that crosses to the vendor without being converted. A
+    /// ceiling in tokens or in a share of a limit has to be turned into what the vendor
+    /// prices runs at, and what does the turning is a meter that reads in whole percent and
+    /// carries usage we did not cause. A turn is a turn.
+    pub turns: Option<String>,
     /// What it consumed, once its answer said.
     pub spent: Option<StoredConsumption>,
     /// Why what it consumed could not be read, when it could not.

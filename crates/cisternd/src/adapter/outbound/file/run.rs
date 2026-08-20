@@ -46,6 +46,9 @@ struct Entry {
     /// What the vendor said about how it ended, where it said anything.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     said: Value,
+    /// How many turns it took, where the vendor counted them.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    turns: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     spent: Option<Counted>,
     #[serde(default, skip_serializing_if = "Value::is_null")]
@@ -140,6 +143,7 @@ fn held(entry: Entry) -> Run {
         outcome: as_text(entry.outcome),
         reason: as_optional(entry.reason),
         said: as_optional(entry.said),
+        turns: as_optional(entry.turns),
         spent: entry.spent.map(spending),
         unreadable: as_optional(entry.unreadable),
         ceiling: as_optional(entry.ceiling),
@@ -169,6 +173,7 @@ fn written(run: Run) -> Entry {
         outcome: Value::String(run.outcome),
         reason: as_value(run.reason),
         said: as_value(run.said),
+        turns: run.turns.as_deref().map_or(Value::Null, as_number),
         spent: run.spent.map(counted),
         unreadable: as_value(run.unreadable),
         ceiling: run.ceiling.as_deref().map_or(Value::Null, as_number),
@@ -209,6 +214,7 @@ mod tests {
             outcome: "completed".to_owned(),
             reason: None,
             said: None,
+            turns: None,
             spent: Some(StoredConsumption {
                 input: "10".to_owned(),
                 output: "20".to_owned(),
@@ -316,6 +322,7 @@ mod tests {
             outcome: "error".to_owned(),
             reason: Some("the agent was killed".to_owned()),
             said: None,
+            turns: None,
             spent: None,
             unreadable: Some("no last line".to_owned()),
             ..a_run("3")

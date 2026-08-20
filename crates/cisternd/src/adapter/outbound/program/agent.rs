@@ -194,6 +194,7 @@ impl Agent for ProgramAgent {
             },
             observed,
             conversation: self.conversation(answer.as_ref()),
+            turns: self.turns(answer.as_ref()),
         })
     }
 
@@ -233,6 +234,12 @@ impl ProgramAgent {
     fn conversation(&self, answer: Option<&Value>) -> Option<String> {
         let at = self.definition.answer.conversation.as_deref()?;
         path::text(answer?, at).filter(|named| !named.trim().is_empty())
+    }
+
+    /// How many turns the run took, where the definition says where to find the count.
+    fn turns(&self, answer: Option<&Value>) -> Option<String> {
+        let at = self.definition.answer.turns.as_deref()?;
+        path::total(answer?, at).map(|counted| whole(counted).to_string())
     }
 
     fn stopping_word(&self, answer: Option<&Value>) -> Option<String> {
@@ -326,6 +333,11 @@ fn counted_nothing(spent: &Spent) -> bool {
     ]
     .iter()
     .all(|counted| counted.parse::<u64>().is_ok_and(|figure| figure == 0))
+}
+
+/// A figure the vendor wrote as a number, as a count.
+fn whole(of: f64) -> u64 {
+    of.round().max(0.0) as u64
 }
 
 fn unreadable(why: &str) -> Observed {

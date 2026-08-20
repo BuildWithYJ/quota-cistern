@@ -71,6 +71,12 @@ pub struct Ended {
     /// A task that is carried on is carried on in this. Nothing where the vendor names none,
     /// which is a vendor whose runs cannot be carried on.
     pub conversation: Option<String>,
+    /// How many turns it took, where the vendor counted them.
+    ///
+    /// Apart from what it consumed rather than inside it. A vendor may count turns and not
+    /// tokens or the other way about, and one figure being absent is not the other being
+    /// absent.
+    pub turns: Option<String>,
     /// What the run consumed.
     pub observed: Observed,
 }

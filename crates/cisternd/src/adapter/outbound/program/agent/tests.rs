@@ -345,6 +345,24 @@ fn a_run_that_was_cut_off_is_reported_as_a_sentence() {
     );
 }
 
+/// How many turns a run took comes back from the answer.
+///
+/// It is what this vendor is told to hold a run to, so a session that sizes a run in turns
+/// tells the vendor that figure without converting it into anything.
+#[test]
+fn how_many_turns_a_run_took_is_read_from_its_answer() {
+    let held = TempDir::new().unwrap();
+    let said = answering(
+        &held,
+        &answer_with(|answer| answer["num_turns"] = json!(38)),
+    );
+    let ended = standing_in(&held)
+        .work(working(&held.path().display().to_string(), &said))
+        .unwrap();
+
+    assert_eq!(ended.turns.as_deref(), Some("38"));
+}
+
 /// The conversation a run was in comes back from the answer, so a later run may name it.
 #[test]
 fn the_conversation_a_run_was_in_is_read_from_its_answer() {

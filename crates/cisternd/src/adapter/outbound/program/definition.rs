@@ -149,7 +149,13 @@ pub struct Answer {
     /// over rather than anything failing.
     #[serde(default)]
     pub conversation: Option<String>,
-    /// Where the price is, and what to multiply it by to reach millionths.
+    /// Where the count of turns is, for a vendor that counts them.
+    ///
+    /// Worth having beside the tokens. A turn is what the vendor is told to hold a run to, so
+    /// it needs no converting; and in what runs here have done, the count of turns says what a
+    /// run cost to within a hair. Left out by a vendor that does not count them.
+    #[serde(default)]
+    pub turns: Option<String>,
     pub cost: String,
     pub cost_scale: f64,
     pub input: String,

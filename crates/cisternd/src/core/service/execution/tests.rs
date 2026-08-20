@@ -688,6 +688,7 @@ fn a_session_the_vendor_turned_away_says_when_the_limit_starts_over() {
         outcome: Outcome::Failed,
         reason: Some("it stopped".to_owned()),
         conversation: None,
+        turns: None,
         observed: spending(),
     });
     let full = AtPercent {
@@ -728,6 +729,7 @@ fn what_the_agent_says_afterwards_does_not_undo_the_interruption() {
         outcome: Outcome::Failed,
         reason: Some("it was killed".to_owned()),
         conversation: None,
+        turns: None,
         observed: spending(),
     });
     let runs = Ledger::default();
