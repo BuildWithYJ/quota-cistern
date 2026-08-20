@@ -54,7 +54,7 @@ Task states:
 | `Pending` | In the backlog, not yet assigned |
 | `Running` | Assigned to a session and executing |
 | `Completed` | Finished. Result kept on the branch |
-| `Interrupted` | Ended by budget hardlock or by the user. Partial work kept on the branch |
+| `Interrupted` | Ended at the ceiling on one run, or by the user. Partial work kept on the branch |
 | `Error` | Failed during execution. Partial work, if any, kept on the branch |
 
 Terminal states (`Completed`, `Interrupted`, `Error`) all leave a branch and enter the review queue. The disposition is recorded in `disposition`, separately from the task state.
@@ -72,7 +72,7 @@ Session states:
 
 `stopped_reason`: `budget hardlock` · `vendor limit` · `observation unreadable` · `interrupted` · `all done` (every assigned task ended) · `blocked` · `error`.
 
-`budget hardlock` means the declared budget was spent or the declared time ran out, `vendor limit` means the vendor blocked execution at its own limit, and `observation unreadable` means usage could no longer be read. `blocked` means tasks were left and every one of them waited on a task that did not complete; `retry` is what puts one of those back.
+`budget hardlock` means the declared budget was spent or the declared time ran out. Neither ends a run that is going: the declared time is a deadline for taking work on rather than for finishing it, and a session in that state stops once what it had going has ended.  `vendor limit` means the vendor blocked execution at its own limit, and `observation unreadable` means usage could no longer be read. `blocked` means tasks were left and every one of them waited on a task that did not complete; `retry` is what puts one of those back.
 
 The tool never deletes or moves result branches. Pushing, merging, and cleanup are the user's own work.
 

@@ -315,12 +315,18 @@ impl Supervisor<'_> {
 
     /// Stops the running session where it has had the time it declared.
     ///
-    /// The other half of the budget. A usage ceiling bounds what a run spends, not how long it
-    /// takes, and a decision is only reached when a task ends, so a session with one long run
-    /// going would pass the time it declared and nobody would be looking. This is what looks.
+    /// Stops a session that has had the time it declared and has nothing left going.
     ///
-    /// Nothing where none is running or where time is left, so whoever calls it may call it
-    /// whenever and this is what decides.
+    /// A decision is only reached when a task ends, so a session whose last task ended before
+    /// its time did would sit open until the time ran out with nobody looking. This is what
+    /// looks.
+    ///
+    /// It does not end a run that is still going. The time a session declared is a deadline
+    /// for taking work on rather than for finishing it: a run past that time is one whose
+    /// length we guessed short, and ending it spends everything it spent for nothing. What
+    /// ends a run is its own turn ceiling, or a person.
+    ///
+    /// So a session with a run going stops at the decision that run's ending reaches.
     pub fn stop_if_out_of_time(&self) -> Result<(), Refusal> {
         let now = self.outside.clock.now();
         let Some(session) = sessions::read(self.outside.sessions)?
@@ -330,6 +336,9 @@ impl Supervisor<'_> {
         else {
             return Ok(());
         };
+        if backlog::read(self.outside.tasks)?.running_in(session) > 0 {
+            return Ok(());
+        }
         self.stop(session, StoppedReason::BudgetHardlock)
     }
 

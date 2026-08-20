@@ -61,11 +61,28 @@ fn a_consumption_nobody_could_read_stops_it() {
 }
 
 /// Time is the other half of the budget, and it runs out with money left.
+///
+/// What it stops is taking more work on. A run already going is one whose length we guessed
+/// short, and ending it there spends everything it spent for nothing.
 #[test]
-fn a_session_out_of_time_stops_with_budget_left() {
+fn a_session_out_of_time_takes_nothing_more_on() {
     assert_eq!(
         decide(&Standing {
             out_of_time: true,
+            running: 1,
+            ..standing()
+        }),
+        Decision::Start(Vec::new())
+    );
+}
+
+/// And it stops once what it had going has ended.
+#[test]
+fn a_session_out_of_time_with_nothing_going_stops_with_budget_left() {
+    assert_eq!(
+        decide(&Standing {
+            out_of_time: true,
+            running: 0,
             ..standing()
         }),
         Decision::Stop(StoppedReason::BudgetHardlock)

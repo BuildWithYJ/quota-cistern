@@ -59,7 +59,7 @@
 | `Pending`     | 백로그에 등록됨. 편성 전                      |
 | `Running`     | 세션에 편성되어 실행 중                       |
 | `Completed`   | 완수. 결과를 브랜치에 보존                     |
-| `Interrupted` | 예산 하드락 또는 사용자 중단으로 종료. 진행분을 브랜치에 보존 |
+| `Interrupted` | 실행 하나의 상한에 걸리거나 사용자가 중단해 종료. 진행분을 브랜치에 보존 |
 | `Error`       | 실행 중 실패. 진행분이 있으면 브랜치에 보존           |
 
 
@@ -80,7 +80,7 @@
 
 `stopped_reason`: `budget hardlock` · `vendor limit` · `observation unreadable` · `interrupted` · `all done`(편성분 전부 종료) · `blocked` · `error`.
 
-`budget hardlock`은 선언한 예산이 소진된 것이고, `vendor limit`은 벤더가 한도로 실행을 막은 것이며, `observation unreadable`은 소비량을 읽을 수 없어 멈춘 것이다.
+`budget hardlock`은 선언한 예산이 소진됐거나 선언한 시간이 지난 것이다. 둘 다 진행 중인 실행을 끊지 않는다 — 선언한 시간은 일을 새로 맡는 마감이지 끝내는 마감이 아니므로, 그 상태의 세션은 진행 중이던 것이 끝나야 멈춘다.  `vendor limit`은 벤더가 한도로 실행을 막은 것이며, `observation unreadable`은 소비량을 읽을 수 없어 멈춘 것이다.
 
 결과 브랜치는 도구가 지우거나 옮기지 않으며 push·병합·정리는 사용자가 수행한다.
 

@@ -632,7 +632,7 @@ fn stopping_a_session_ends_the_runs_it_still_had_going() {
 /// A decision is reached when a task ends, so a session with one long run going would pass
 /// the time it declared with nobody looking.
 #[test]
-fn a_session_past_the_time_it_declared_is_stopped_without_anything_ending() {
+fn a_session_past_the_time_it_declared_takes_nothing_more_on_and_ends_nothing() {
     let sessions = Remembered::empty();
     let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
     let areas = Areas::default();
@@ -665,11 +665,28 @@ fn a_session_past_the_time_it_declared_is_stopped_without_anything_ending() {
     assert_eq!(now.time_left().unwrap(), Some(0));
     now.stop_if_out_of_time().unwrap();
 
+    // Left alone, since a run is still going. The time declared is a deadline for taking work
+    // on, and ending a run past it spends everything it spent for nothing.
+    let session = sessions.load().sessions[0].clone();
+    assert_eq!(session.state, "running");
+    assert_eq!(agent.stopped.lock().unwrap().len(), 0);
+
+    // It stops once that run has ended, at the decision the ending reaches.
+    let work = WorkService::new(
+        Outside {
+            clock: &late,
+            ..opened
+        },
+        &now,
+    );
+    let running = tasks.running()[0].clone();
+    work.carry_on(&format!("task:{running}")).unwrap();
+
     let session = sessions.load().sessions[0].clone();
     assert_eq!(session.state, "stopped");
     assert_eq!(session.stopped_reason.as_deref(), Some("budget hardlock"));
-    // And what it had going was ended with it.
-    assert_eq!(agent.stopped.lock().unwrap().len(), 1);
+    // And nothing was ended to get there.
+    assert_eq!(agent.stopped.lock().unwrap().len(), 0);
 }
 
 /// Whoever waits on it may call it whenever, and this is what decides.

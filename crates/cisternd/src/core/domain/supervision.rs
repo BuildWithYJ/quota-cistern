@@ -468,13 +468,20 @@ pub fn decide(standing: &Standing) -> Decision {
     if standing.unreadable {
         return Decision::Stop(StoppedReason::ObservationUnreadable);
     }
-    if standing.out_of_time {
-        return Decision::Stop(StoppedReason::BudgetHardlock);
-    }
-    let starting = allow(standing);
+    // Out of time starts nothing more. It does not end what is going: the time a session
+    // declared is a deadline for taking work on, and a run that is past it is a run whose
+    // length we guessed short. Ending it there spends everything it spent and leaves nothing,
+    // and the guess was ours rather than anything the task did.
+    let starting = match standing.out_of_time {
+        true => Vec::new(),
+        false => allow(standing),
+    };
     // Nothing more fits and nothing is running that would make room.
     // Waiting for a task that will never start is not carrying on.
     if standing.running == 0 && starting.is_empty() {
+        if standing.out_of_time {
+            return Decision::Stop(StoppedReason::BudgetHardlock);
+        }
         return Decision::Stop(match (standing.pending.is_empty(), standing.blocked) {
             // Tasks that may start and nothing to start them with.
             (false, _) => StoppedReason::BudgetHardlock,
