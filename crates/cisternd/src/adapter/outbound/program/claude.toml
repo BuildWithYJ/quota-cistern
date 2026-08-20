@@ -44,7 +44,7 @@ args = [
 ]
 
 [answer]
-# One object per line, the last of which is the answer and the rest the trace.
+# One object per line, one of which is the answer and the rest the trace.
 reader = "last-json-line"
 
 # The name the vendor gives for stopping is what tells a ceiling from a failure.
@@ -65,6 +65,16 @@ input = "modelUsage.*.inputTokens"
 output = "modelUsage.*.outputTokens"
 cache_written = "modelUsage.*.cacheCreationInputTokens"
 cache_read = "modelUsage.*.cacheReadInputTokens"
+
+# Which line the answer is on.
+#
+# The last one written is not always it. A hook of the user's that outlives the run has its
+# response written after the answer, which happens whenever the run ends sooner than the hook
+# does. Reading the hook's line leaves a run that finished looking like one that reported
+# nothing, and the session stops for want of a figure.
+[answer.marks]
+at = "type"
+is = "result"
 
 # A run cut off at a ceiling answers with no text of its own. The word it gives instead
 # is all there is to report, so each word carries the sentence to report for it. The

@@ -334,7 +334,7 @@ fn a_run_that_was_cut_off_is_reported_as_a_sentence() {
     let ended = standing_in(&held)
         .work(working(
             &held.path().display().to_string(),
-            r#"echo '{"is_error":true,"subtype":"error_max_turns","result":null}'; exit 1"#,
+            r#"echo '{"type":"result","is_error":true,"subtype":"error_max_turns","result":null}'; exit 1"#,
         ))
         .unwrap();
 
@@ -345,6 +345,31 @@ fn a_run_that_was_cut_off_is_reported_as_a_sentence() {
     );
 }
 
+/// A line written after the answer is not the answer.
+///
+/// A hook of the user's outlives a run that ends sooner than the hook does, and its response
+/// is written after. Taking the last line would leave a run that finished looking like one
+/// that reported nothing, and the session would stop for want of a figure.
+#[test]
+fn a_line_written_after_the_answer_is_not_read_as_one() {
+    let held = TempDir::new().unwrap();
+    let said = answering(&held, &answer_with(|_| {}));
+    let ended = standing_in(&held)
+        .work(working(
+            &held.path().display().to_string(),
+            // `answering` writes no newline of its own, so one is put between the two.
+            &format!(r#"{said}; echo; echo '{{"type":"system","subtype":"hook_response"}}'"#),
+        ))
+        .unwrap();
+
+    assert_eq!(ended.outcome, Outcome::Finished);
+    assert!(
+        matches!(ended.observed, Observed::Spent(_)),
+        "{:?}",
+        ended.observed
+    );
+}
+
 /// A run that failed with something to say says it, rather than handing back the object it was written in.
 #[test]
 fn a_run_that_answered_is_reported_in_its_own_words() {
@@ -352,7 +377,7 @@ fn a_run_that_answered_is_reported_in_its_own_words() {
     let ended = standing_in(&held)
         .work(working(
             &held.path().display().to_string(),
-            r#"echo '{"is_error":true,"subtype":"success","result":"I could not build it"}'; exit 1"#,
+            r#"echo '{"type":"result","is_error":true,"subtype":"success","result":"I could not build it"}'; exit 1"#,
         ))
         .unwrap();
 
