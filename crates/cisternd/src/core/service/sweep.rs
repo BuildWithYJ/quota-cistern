@@ -45,6 +45,12 @@ const TASKS: usize = 12;
 /// Two runs out early, thirty-two covers the whole backlog, eight is between.
 const BUDGETS: [u64; 3] = [2, 8, 32];
 
+/// What the definition's guard is, as a multiple of the middle of the shape.
+///
+/// Fixed, and not a share of anything a session declared. A person raises it where runs are
+/// meant to be larger.
+const GUARD: u64 = 4;
+
 /// A stream of numbers that is the same stream every time.
 ///
 /// A rule is read against the sessions another rule was read against, so the draws have to
@@ -167,7 +173,14 @@ impl Came {
 /// runs every time, and the cold start is not what a rule is being read for: what the daemon
 /// does is keep the ledger between sessions, so a sizing has every run there has ever been
 /// behind it.
-fn one_session(rule: Rule, shape: Shape, budget: u64, seed: u64, runs: &Ledger) -> Came {
+fn one_session(
+    rule: Rule,
+    shape: Shape,
+    budget: u64,
+    guard: u64,
+    seed: u64,
+    runs: &Ledger,
+) -> Came {
     let mut drawn = Drawn::seeded(seed);
     let costs: Vec<u64> = (0..TASKS).map(|_| shape.draws(&mut drawn)).collect();
     let declared = shape.middle() * budget;
@@ -180,10 +193,10 @@ fn one_session(rule: Rule, shape: Shape, budget: u64, seed: u64, runs: &Ledger) 
             .collect::<Vec<StoredTask>>(),
     );
     let areas = Areas::default();
-    // The vendor holds the first run of an empty ledger to what its definition carries,
-    // since nothing yet converts the session's figure into the vendor's unit. Set here to what
-    // the session declared, so the table is about the rules rather than about that exposure.
-    let agent = Costing::taking(costs.clone()).guarded_at(declared);
+    // Every run is held to the guard the definition carries, which a person set and which does
+    // not move with the budget. Four times the middle of the shape, which is about where the
+    // twenty dollars that ships sits against the runs a real session has had.
+    let agent = Costing::taking(costs.clone()).guarded_at(shape.middle() * guard);
     let outside = Outside {
         sessions: &sessions,
         tasks: &held,
@@ -246,7 +259,7 @@ fn sweeping_the_rule() {
     let rules: Vec<(String, Rule)> = [0, 1, 2, 3, 4]
         .into_iter()
         .map(|widen| (format!("widen {widen}"), Rule { widen, ..shipped }))
-        .chain([80, 90, 95, 99].into_iter().map(|estimate| {
+        .chain([80, 90, 95, 99, 100].into_iter().map(|estimate| {
             (
                 format!("quantile {estimate}"),
                 Rule {
@@ -283,7 +296,7 @@ fn sweeping_the_rule() {
             for (named, rule) in &rules {
                 let runs = Ledger::default();
                 let came = (0..SESSIONS)
-                    .map(|seed| one_session(*rule, shape, budget, seed, &runs))
+                    .map(|seed| one_session(*rule, shape, budget, GUARD, seed, &runs))
                     .fold(Came::default(), Came::and);
                 let all = (came.finished + came.stopped).max(1);
                 let spent = came.done + came.lost;
