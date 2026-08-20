@@ -28,6 +28,8 @@ pub struct StoredTask {
     pub session: Option<String>,
     /// Where it is being worked on, once a work area was made.
     pub worktree: Option<String>,
+    /// The conversation its last run was in, for a run that may be carried on.
+    pub conversation: Option<String>,
     /// When its most recent run started and when that run stopped, in seconds since the epoch.
     pub started_at: Option<String>,
     pub ended_at: Option<String>,

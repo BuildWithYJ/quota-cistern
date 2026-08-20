@@ -71,8 +71,10 @@ pub enum Command {
     Apply { task: String },
     /// Takes a task out of the review queue, leaving its branch alone.
     Discard { task: String },
-    /// Puts a task that ended back in the backlog, so a session may take it again.
+    /// Puts a task that ended back in the backlog, so a session may do it over.
     Retry { task: String },
+    /// The same, carrying on the conversation the task's last run was in.
+    Resume { task: String },
     /// Takes away the work areas of tasks that have been disposed of.
     Tidy,
     /// Declares a budget and starts the session's unattended loop.

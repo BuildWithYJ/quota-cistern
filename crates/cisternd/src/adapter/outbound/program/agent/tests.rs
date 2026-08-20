@@ -88,6 +88,7 @@ fn working<'a>(at: &'a str, instruction: &'a str) -> Work<'a> {
         trace: Box::new(|_line: &str| {}),
         instruction,
         model: None,
+        conversation: None,
     }
 }
 
@@ -342,6 +343,47 @@ fn a_run_that_was_cut_off_is_reported_as_a_sentence() {
         ended.reason.as_deref(),
         Some("the agent was cut off after 200 turns")
     );
+}
+
+/// The conversation a run was in comes back from the answer, so a later run may name it.
+#[test]
+fn the_conversation_a_run_was_in_is_read_from_its_answer() {
+    let held = TempDir::new().unwrap();
+    let said = answering(
+        &held,
+        &answer_with(|answer| answer["session_id"] = json!("472ca4e9-f15a-4ce6-9100-baeb617c174b")),
+    );
+    let ended = standing_in(&held)
+        .work(working(&held.path().display().to_string(), &said))
+        .unwrap();
+
+    assert_eq!(
+        ended.conversation.as_deref(),
+        Some("472ca4e9-f15a-4ce6-9100-baeb617c174b")
+    );
+}
+
+/// A run given one to carry on is told to carry it on, and one given none is not told
+/// anything: the group holding the place is dropped whole.
+#[test]
+fn a_run_carrying_a_conversation_on_names_it_and_one_starting_names_none() {
+    let held = TempDir::new().unwrap();
+    let agent = standing_in(&held);
+
+    agent
+        .work(Work {
+            conversation: Some("a-conversation"),
+            ..working(held.path().to_str().unwrap(), "true")
+        })
+        .unwrap();
+    let carried = given(&held);
+    assert!(carried.contains("--resume\na-conversation\n"), "{carried}");
+
+    agent
+        .work(working(held.path().to_str().unwrap(), "true"))
+        .unwrap();
+    let afresh = given(&held);
+    assert!(!afresh.contains("--resume"), "{afresh}");
 }
 
 /// A vendor that turns a prompt away answers as a success that did no work.

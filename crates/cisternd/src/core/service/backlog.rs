@@ -166,6 +166,7 @@ impl BacklogUseCase for BacklogService<'_> {
             branch: task.result_branch(),
             reason: task.reason().map(str::to_owned),
             worktree: task.worktree().map(str::to_owned),
+            conversation: task.conversation().map(str::to_owned),
             disposition: task.disposition().map(|it| it.to_string()),
             commits,
             base_ahead,
@@ -285,6 +286,7 @@ fn restored_from(held: StoredTask) -> Result<Restored, Refusal> {
             .map(|id| SessionId::parse(id).ok_or_else(|| unreadable("session", id)))
             .transpose()?,
         worktree: held.worktree,
+        conversation: held.conversation,
         started_at: held
             .started_at
             .as_deref()
@@ -334,6 +336,7 @@ fn written(backlog: &Backlog) -> StoredBacklog {
                 state: task.state().to_string(),
                 session: task.session().map(|id| id.to_string()),
                 worktree: task.worktree().map(str::to_owned),
+                conversation: task.conversation().map(str::to_owned),
                 started_at: task.started_at().map(|at| at.to_string()),
                 ended_at: task.ended_at().map(|at| at.to_string()),
                 reason: task.reason().map(str::to_owned),

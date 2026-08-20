@@ -93,6 +93,7 @@ fn detailed(detail: Detail) -> Value {
         "branch": detail.branch,
         "reason": detail.reason,
         "worktree": detail.worktree,
+        "conversation": detail.conversation,
         "disposition": detail.disposition,
         "commits": detail.commits.map(|made| made.into_iter().map(|one| serde_json::json!({
             "sha": one.sha,
@@ -189,6 +190,7 @@ mod tests {
                 branch: None,
                 reason: None,
                 worktree: None,
+                conversation: None,
                 disposition: None,
                 commits: None,
                 base_ahead: None,
@@ -260,6 +262,7 @@ mod tests {
             "branch",
             "reason",
             "worktree",
+            "conversation",
             "disposition",
         ] {
             assert!(data.get(field).is_some(), "{field} is missing");

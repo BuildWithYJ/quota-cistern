@@ -78,8 +78,12 @@ pub trait ReviewUseCase {
     /// Takes a result out of the queue and leaves it where it is.
     fn discard(&self, id: &str) -> Result<Dropped, Refusal>;
 
-    /// Puts a task that ended back where it started, so a session may take it again.
+    /// Puts a task that ended back where it started, so a session may do it over.
     fn retry(&self, id: &str) -> Result<Requeued, Refusal>;
+
+    /// The same, keeping the conversation its last run was in, so the next run carries that
+    /// conversation on rather than starting one.
+    fn resume(&self, id: &str) -> Result<Requeued, Refusal>;
 
     /// Takes away the work areas of tasks that have been disposed of.
     fn tidy(&self) -> Result<Tidying, Refusal>;
@@ -108,4 +112,6 @@ pub struct Requeued {
     pub branch: String,
     /// How many times it has been assigned so far.
     pub attempts: String,
+    /// Whether the next run carries a conversation on, or starts one.
+    pub carries_on: bool,
 }

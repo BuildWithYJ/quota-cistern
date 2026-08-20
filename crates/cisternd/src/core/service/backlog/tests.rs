@@ -359,6 +359,7 @@ fn a_cycle_edited_into_the_store_is_refused_on_reading_it() {
         crate::core::port::outbound::StoredTask {
             session: None,
             worktree: None,
+            conversation: None,
             started_at: None,
             ended_at: None,
             reason: None,
@@ -379,6 +380,7 @@ fn a_cycle_edited_into_the_store_is_refused_on_reading_it() {
         crate::core::port::outbound::StoredTask {
             session: None,
             worktree: None,
+            conversation: None,
             started_at: None,
             ended_at: None,
             reason: None,
@@ -414,6 +416,7 @@ fn a_task_stored_with_both_a_count_and_a_reason_is_refused() {
     held.tasks = vec![crate::core::port::outbound::StoredTask {
         session: None,
         worktree: None,
+        conversation: None,
         started_at: None,
         ended_at: None,
         reason: None,
@@ -452,6 +455,7 @@ fn a_figure_the_store_holds_that_is_not_a_number_fails_as_a_store() {
     held.tasks = vec![crate::core::port::outbound::StoredTask {
         session: None,
         worktree: None,
+        conversation: None,
         started_at: None,
         ended_at: None,
         reason: None,

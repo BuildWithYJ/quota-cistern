@@ -133,6 +133,9 @@ impl Agent for ProgramAgent {
         let mut filling = self.its_own().to_vec();
         filling.push(("instruction", work.instruction));
         filling.push(("model", work.model.unwrap_or_default()));
+        // A group holding a place nobody filled is dropped whole, so a run with no
+        // conversation to carry on loses the argument that would have named one.
+        filling.push(("conversation", work.conversation.unwrap_or_default()));
 
         let mut running = Command::new(program);
         running
@@ -190,6 +193,7 @@ impl Agent for ProgramAgent {
                 _ => Some(self.said(&status, &stderr, answer.as_ref())),
             },
             observed,
+            conversation: self.conversation(answer.as_ref()),
         })
     }
 
@@ -223,6 +227,12 @@ impl ProgramAgent {
             }
             _ => Outcome::Failed,
         }
+    }
+
+    /// The conversation the run was in, where the definition says where to find one.
+    fn conversation(&self, answer: Option<&Value>) -> Option<String> {
+        let at = self.definition.answer.conversation.as_deref()?;
+        path::text(answer?, at).filter(|named| !named.trim().is_empty())
     }
 
     fn stopping_word(&self, answer: Option<&Value>) -> Option<String> {

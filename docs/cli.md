@@ -72,7 +72,7 @@ Session states:
 
 `stopped_reason`: `budget hardlock` · `vendor limit` · `observation unreadable` · `interrupted` · `all done` (every assigned task ended) · `blocked` · `error`.
 
-`budget hardlock` means the declared budget was spent or the declared time ran out. Neither ends a run that is going: the declared time is a deadline for taking work on rather than for finishing it, and a session in that state stops once what it had going has ended.  `vendor limit` means the vendor blocked execution at its own limit, and `observation unreadable` means usage could no longer be read. `blocked` means tasks were left and every one of them waited on a task that did not complete; `retry` is what puts one of those back.
+`budget hardlock` means the declared budget was spent or the declared time ran out. Neither ends a run that is going: the declared time is a deadline for taking work on rather than for finishing it, and a session in that state stops once what it had going has ended.  `vendor limit` means the vendor blocked execution at its own limit, and `observation unreadable` means usage could no longer be read. `blocked` means tasks were left and every one of them waited on a task that did not complete; `retry` and `resume` are what put one of those back.
 
 The tool never deletes or moves result branches. Pushing, merging, and cleanup are the user's own work.
 
@@ -234,6 +234,7 @@ cistern task show <task>
 | `branch` | string | Result branch, or null |
 | `reason` | string | Reason it ended, or null |
 | `worktree` | string | Path of the work area, or null once it has been cleaned up |
+| `conversation` | string | The conversation its last run was in, or null for one that may not be carried on |
 | `disposition` | enum | `applied` · `discarded` · null while undisposed |
 
 **Exit codes**
@@ -541,7 +542,7 @@ $ cistern diff 1 --stat
 
 ### 2.4 Review and disposition
 
-`review ls` lists what is waiting to be disposed of, and `apply`, `discard`, and `retry` dispose of it. None of them changes a branch. `tidy` takes away the work areas of tasks already disposed of.
+`review ls` lists what is waiting to be disposed of, and `apply`, `discard`, `retry`, and `resume` dispose of it. None of them changes a branch. `tidy` takes away the work areas of tasks already disposed of.
 
 #### `cistern retry`
 
@@ -553,6 +554,8 @@ cistern retry <task>
 
 For a task cut off at its ceiling, or one that failed. The branch its last run left stays, and the run that starts next starts from it. A task waiting again is out of the review queue and back in the backlog, which is what lets the tasks waiting on it run.
 
+The work is done over. The conversation the task's last run was in is let go, and the run that starts next starts one of its own. `resume` is the same command without that.
+
 **Output**
 
 | Field | Type | Description |
@@ -560,6 +563,7 @@ For a task cut off at its ceiling, or one that failed. The branch its last run l
 | `task` | string | The task now waiting |
 | `branch` | string | The branch its last run left, which stays |
 | `attempts` | string | How many times it has been assigned so far |
+| `carries_on` | boolean | Whether the next run carries a conversation on, or starts one |
 
 **Exit codes**
 
@@ -570,6 +574,20 @@ For a task cut off at its ceiling, or one that failed. The branch its last run l
 | 4 | The task has not ended |
 | 5 | Core error |
 
+#### `cistern resume`
+
+Puts a task that ended back in the backlog, carrying on the conversation its last run was in.
+
+```
+cistern resume <task>
+```
+
+The same as `retry` but for work continuing rather than being done over. A run of a task that was cut off left three things behind: what it committed on the branch, what it had not committed in the work area, and the conversation it was in. `retry` keeps the first two; this keeps all three, so the run that starts next picks the conversation up instead of reading everything back.
+
+The task carries the conversation until a run of it finishes or somebody disposes of the result. A task whose last run finished has none to carry on, and one asked for it starts a conversation of its own, which is `retry` by another name. So does a task of a vendor that names no conversation in its answers.
+
+**Output** and **exit codes** are `retry`'s.
+
 #### `cistern tidy`
 
 Takes away the work areas of tasks that have been disposed of.
@@ -578,7 +596,7 @@ Takes away the work areas of tasks that have been disposed of.
 cistern tidy
 ```
 
-A task runs in a checkout of its own and nothing removes it, so they accumulate one per task. This removes those a person is finished with: the task has ended, and `apply` or `discard` has taken it out of the review queue. A task still running keeps its work area because a run is in it, and one nobody has disposed of keeps it because that is where a person looks at what was done and where `retry` carries on.
+A task runs in a checkout of its own and nothing removes it, so they accumulate one per task. This removes those a person is finished with: the task has ended, and `apply` or `discard` has taken it out of the review queue. A task still running keeps its work area because a run is in it, and one nobody has disposed of keeps it because that is where a person looks at what was done and where a task waiting again carries on.
 
 The branch is kept whatever happens to the work area, so nothing a run committed goes with it, and `apply` reads from the branch. A work area holding changes nobody committed is left where it is: git refuses to remove it, nothing here forces it, and what git said is reported. Registrations for work areas somebody removed by hand are pruned at the same time.
 

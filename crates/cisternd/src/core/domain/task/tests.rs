@@ -4,6 +4,7 @@ fn held(id: &str, after: Option<&str>, state: &str) -> Restored {
     Restored {
         session: None,
         worktree: None,
+        conversation: None,
         started_at: None,
         ended_at: None,
         reason: None,
@@ -513,6 +514,45 @@ fn a_task_that_ended_can_wait_again() {
     assert_eq!(held.ceiling(), None);
     // And it is what the next decision would take.
     assert_eq!(backlog.next_to_assign(), Some(id));
+}
+
+/// The one thing that tells doing the work over from carrying it on.
+///
+/// Both put the task back where it started and leave the branch and the work area alone.
+/// What differs is the conversation its last run was in: carrying on keeps it, so the next
+/// run picks that conversation up instead of reading everything back.
+#[test]
+fn carrying_on_keeps_the_conversation_and_trying_again_drops_it() {
+    let waiting_again = |carrying_on: bool| {
+        let mut backlog = Backlog::default();
+        let id = assigned(&mut backlog, a_session());
+        backlog.finish(id, TaskState::Interrupted, None, AT + 60);
+        backlog.conversed(id, Some("a-conversation".to_owned()));
+
+        match carrying_on {
+            true => backlog.carries_on(id).unwrap(),
+            false => backlog.try_again(id).unwrap(),
+        }
+        let held = backlog.find(id).unwrap();
+        assert_eq!(held.state(), TaskState::Pending);
+        held.conversation().map(str::to_owned)
+    };
+
+    assert_eq!(waiting_again(true).as_deref(), Some("a-conversation"));
+    assert_eq!(waiting_again(false), None);
+}
+
+/// Nobody carries on a conversation about work that has been decided.
+#[test]
+fn disposing_of_a_result_lets_its_conversation_go() {
+    let mut backlog = Backlog::default();
+    let id = assigned(&mut backlog, a_session());
+    backlog.finish(id, TaskState::Interrupted, None, AT + 60);
+    backlog.conversed(id, Some("a-conversation".to_owned()));
+
+    backlog.dispose(id, Disposition::Discarded).unwrap();
+
+    assert_eq!(backlog.find(id).unwrap().conversation(), None);
 }
 
 /// A run that is still going is not one to start again.

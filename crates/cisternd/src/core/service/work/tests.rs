@@ -138,6 +138,7 @@ fn a_figure_that_does_not_read_as_a_number_is_not_a_count() {
     let agent = Answering::ending(Ended {
         outcome: Outcome::Finished,
         reason: None,
+        conversation: None,
         observed: Observed::Spent(Spent {
             input: "a lot".to_owned(),
             output: "3377".to_owned(),
@@ -176,6 +177,7 @@ fn an_agent_that_failed_leaves_the_task_in_error_with_what_it_said() {
     let agent = Answering::ending(Ended {
         outcome: Outcome::Failed,
         reason: Some("it went wrong".to_owned()),
+        conversation: None,
         observed: spending(),
     });
     let runs = Ledger::default();
@@ -210,6 +212,7 @@ fn a_task_stopped_at_its_ceiling_says_so_and_the_session_carries_on() {
     let agent = Answering::ending(Ended {
         outcome: Outcome::AtCeiling,
         reason: Some("the agent was cut off after 200 turns".to_owned()),
+        conversation: None,
         observed: spending(),
     });
     let runs = Ledger::default();
@@ -245,6 +248,7 @@ fn a_task_the_vendor_would_not_run_waits_again_and_the_session_stops() {
     let agent = Answering::ending(Ended {
         outcome: Outcome::Failed,
         reason: Some("it stopped".to_owned()),
+        conversation: None,
         observed: spending(),
     });
     let full = AtPercent {
@@ -290,6 +294,7 @@ fn a_task_that_failed_with_room_left_is_an_error() {
     let agent = Answering::ending(Ended {
         outcome: Outcome::Failed,
         reason: Some("it went wrong".to_owned()),
+        conversation: None,
         observed: spending(),
     });
     let room = AtPercent {
@@ -329,6 +334,7 @@ fn a_task_that_failed_with_no_reading_to_be_had_is_an_error() {
     let agent = Answering::ending(Ended {
         outcome: Outcome::Failed,
         reason: Some("it went wrong".to_owned()),
+        conversation: None,
         observed: spending(),
     });
     let silent = AtPercent {
@@ -438,6 +444,45 @@ fn a_work_area_that_could_not_be_made_leaves_the_task_in_error() {
 }
 
 /// The backlog keeps one run to a task, so what a budget is worked out from is kept apart.
+/// A run that was cut off leaves the conversation it was in on the task, so a later run may
+/// carry it on. A run that finished leaves none: the work is done and nobody carries it on.
+#[test]
+fn a_run_leaves_its_conversation_on_the_task_unless_it_finished() {
+    let ran = |outcome| {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task()]);
+        let areas = Areas::default();
+        let agent = Answering::ending(Ended {
+            outcome,
+            reason: None,
+            conversation: Some("a-conversation".to_owned()),
+            observed: spending(),
+        });
+        let runs = Ledger::default();
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &UNTOUCHED,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        ExecutionService::new(outside, &supervisor)
+            .run(declaring("2M", "8h"))
+            .unwrap();
+        WorkService::new(outside, &supervisor)
+            .carry_on("task:1")
+            .unwrap();
+        tasks.first().conversation
+    };
+
+    assert_eq!(ran(Outcome::AtCeiling).as_deref(), Some("a-conversation"));
+    assert_eq!(ran(Outcome::Finished), None);
+}
+
 /// One word tells a person a run hit a ceiling. Which ceiling it was goes to the ledger.
 ///
 /// A run held back by its turns and one held back by what it may spend say different things
@@ -450,6 +495,7 @@ fn a_run_cut_off_at_a_ceiling_tells_the_ledger_which_one() {
     let agent = Answering::ending(Ended {
         outcome: Outcome::AtCeiling,
         reason: Some("the agent was cut off after 200 turns".to_owned()),
+        conversation: None,
         observed: spending(),
     });
     let runs = Ledger::default();
@@ -528,6 +574,7 @@ fn a_run_the_vendor_refused_is_written_to_the_ledger_with_its_session() {
     let agent = Answering::ending(Ended {
         outcome: Outcome::Failed,
         reason: Some("it stopped".to_owned()),
+        conversation: None,
         observed: spending(),
     });
     let full = AtPercent {
@@ -571,6 +618,7 @@ fn a_run_nobody_could_read_is_written_to_the_ledger_as_unreadable() {
     let agent = Answering::ending(Ended {
         outcome: Outcome::Finished,
         reason: None,
+        conversation: None,
         observed: Observed::Unreadable {
             why: "no last line".to_owned(),
         },

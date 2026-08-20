@@ -21,6 +21,7 @@ fn a_session_whose_count_could_not_be_read_stops_and_says_so() {
     let agent = Answering::ending(Ended {
         outcome: Outcome::Finished,
         reason: None,
+        conversation: None,
         observed: Observed::Unreadable {
             why: "the answer said nothing about it".to_owned(),
         },

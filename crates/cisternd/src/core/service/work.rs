@@ -36,6 +36,8 @@ struct Ended {
     told: Option<String>,
     /// What the vendor said, which the ledger keeps.
     said: Option<String>,
+    /// The conversation the run was in, which the task keeps so a later run may carry it on.
+    conversation: Option<String>,
 }
 
 impl Ended {
@@ -49,7 +51,14 @@ impl Ended {
         Ended {
             told: said.clone(),
             said,
+            conversation: None,
         }
+    }
+
+    /// The same, in a conversation a later run may carry on.
+    fn conversing(mut self, conversation: Option<String>) -> Self {
+        self.conversation = conversation;
+        self
     }
 }
 
@@ -93,7 +102,7 @@ impl WorkService<'_> {
             value: task.to_owned(),
         })?;
 
-        let (repository, base, branch, instruction, model) = {
+        let (repository, base, branch, instruction, model, conversation) = {
             let tasks = backlog::read(self.outside.tasks)?;
             let held = tasks
                 .find(id)
@@ -110,6 +119,7 @@ impl WorkService<'_> {
                 held.result_branch().unwrap_or_default(),
                 held.instruction().to_owned(),
                 held.model().map(str::to_owned),
+                held.conversation().map(str::to_owned),
             )
         };
 
@@ -142,11 +152,14 @@ impl WorkService<'_> {
             trace,
             instruction: &instruction,
             model: model.as_deref(),
+            conversation: conversation.as_deref(),
         });
         match ended {
             Ok(ended) => {
                 let consumed = observed(ended.observed);
                 match ended.outcome {
+                    // A task that finished has nothing left to say, so no conversation is
+                    // kept for it.
                     Outcome::Finished => {
                         self.ended(id, TaskState::Completed, Ended::nothing(), consumed)
                     }
@@ -163,15 +176,19 @@ impl WorkService<'_> {
                         Ended {
                             told: Some(AT_CEILING.to_owned()),
                             said: ended.reason,
+                            conversation: ended.conversation,
                         },
                         consumed,
                     ),
                     // Only the vendor's limit tells a run it would not take from one that went wrong.
                     Outcome::Failed => match self.supervising.at_its_limit() {
                         true => self.turned_away(id, consumed),
-                        false => {
-                            self.ended(id, TaskState::Error, Ended::of(ended.reason), consumed)
-                        }
+                        false => self.ended(
+                            id,
+                            TaskState::Error,
+                            Ended::of(ended.reason).conversing(ended.conversation),
+                            consumed,
+                        ),
                     },
                 }
             }
@@ -237,6 +254,7 @@ impl WorkService<'_> {
         let (session, ended) = backlog::change(self.outside.tasks, |tasks| {
             tasks.finish(id, state, why.told.clone(), now);
             tasks.record(id, consumed.clone());
+            tasks.conversed(id, why.conversation.clone());
             let held = tasks.find(id);
             Ok((held.and_then(Task::session), held.cloned()))
         })?;

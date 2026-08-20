@@ -43,6 +43,9 @@ args = [
   ["--max-turns", "{turns}"],
   ["--max-budget-usd", "{spend}"],
   ["--model", "{model}"],
+  # A task being carried on rather than done over. The group is dropped whole where nothing
+  # fills the place, which is every run that starts a conversation of its own.
+  ["--resume", "{conversation}"],
   ["--append-system-prompt", "{instruction}"],
   ["-p", "{goal}"],
   ["--output-format", "stream-json", "--verbose"],
@@ -57,6 +60,11 @@ outcome = "subtype"
 
 # What a run that failed said about itself, when it said anything.
 said = "result"
+
+# The conversation the run was in. A run of a task that was cut off left its work in the work
+# area and on the branch and its conversation here; naming it back is what lets the next run
+# carry it on rather than read all of it again.
+conversation = "session_id"
 
 # The price, and what to multiply it by to reach millionths of the currency.
 cost = "total_cost_usd"

@@ -142,6 +142,13 @@ pub struct Answer {
     pub at_ceiling: BTreeMap<String, String>,
     /// Where what the run said about itself is, for a run that failed.
     pub said: String,
+    /// Where the conversation the run was in is, for a vendor that names one.
+    ///
+    /// Left out by a vendor whose runs cannot be carried on. A task of that vendor's that is
+    /// asked to be carried on starts a conversation instead, which is the work being done
+    /// over rather than anything failing.
+    #[serde(default)]
+    pub conversation: Option<String>,
     /// Where the price is, and what to multiply it by to reach millionths.
     pub cost: String,
     pub cost_scale: f64,

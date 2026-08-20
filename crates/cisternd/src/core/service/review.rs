@@ -186,27 +186,11 @@ impl ReviewUseCase for ReviewService<'_> {
     }
 
     fn retry(&self, id: &str) -> Result<Requeued, Refusal> {
-        let wanted = identifier(id)?;
+        self.waits_again(id, Backlog::try_again)
+    }
 
-        change(self.tasks, |backlog| {
-            let task = held(backlog, wanted)?;
-            let branch = ended(task, wanted)?;
-            let attempts = task.attempts();
-
-            backlog.try_again(wanted).map_err(|refused| match refused {
-                DisposalRefused::NoSuchTask => Refusal::NoSuchTask {
-                    id: wanted.labelled(),
-                },
-                DisposalRefused::NotEnded => Refusal::NotEnded {
-                    id: wanted.labelled(),
-                },
-            })?;
-            Ok(Requeued {
-                task: wanted.labelled(),
-                branch,
-                attempts: attempts.to_string(),
-            })
-        })
+    fn resume(&self, id: &str) -> Result<Requeued, Refusal> {
+        self.waits_again(id, Backlog::carries_on)
     }
 
     /// Takes away the work areas of tasks that have been disposed of.
@@ -250,6 +234,42 @@ impl ReviewUseCase for ReviewService<'_> {
             }
             Ok(Tidying {
                 items: tidied.iter().map(|(_, one)| one.clone()).collect(),
+            })
+        })
+    }
+}
+
+impl ReviewService<'_> {
+    /// Puts a task that ended back in the backlog, by the rule the caller names.
+    ///
+    /// The two callers differ by that rule and by nothing else: what is checked, what is
+    /// reported, and what is left alone are the same whether the work is done over or carried
+    /// on.
+    fn waits_again(
+        &self,
+        id: &str,
+        putting: fn(&mut Backlog, TaskId) -> Result<(), DisposalRefused>,
+    ) -> Result<Requeued, Refusal> {
+        let wanted = identifier(id)?;
+
+        change(self.tasks, |backlog| {
+            let task = held(backlog, wanted)?;
+            let branch = ended(task, wanted)?;
+            let attempts = task.attempts();
+
+            putting(backlog, wanted).map_err(|refused| match refused {
+                DisposalRefused::NoSuchTask => Refusal::NoSuchTask {
+                    id: wanted.labelled(),
+                },
+                DisposalRefused::NotEnded => Refusal::NotEnded {
+                    id: wanted.labelled(),
+                },
+            })?;
+            Ok(Requeued {
+                task: wanted.labelled(),
+                branch,
+                attempts: attempts.to_string(),
+                carries_on: held(backlog, wanted)?.conversation().is_some(),
             })
         })
     }

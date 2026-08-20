@@ -15,6 +15,9 @@ pub struct Work<'a> {
     pub instruction: &'a str,
     /// The model to run, when the task or the session named one.
     pub model: Option<&'a str>,
+    /// The conversation to carry on, for a task whose last run left one and who was asked to
+    /// carry it on. Nothing starts one.
+    pub conversation: Option<&'a str>,
 }
 
 /// What a run consumed, in the core's own words.
@@ -63,6 +66,11 @@ pub struct Ended {
     pub outcome: Outcome,
     /// What it said about how it ended, in its own words.
     pub reason: Option<String>,
+    /// The conversation it was in, where the vendor named one.
+    ///
+    /// A task that is carried on is carried on in this. Nothing where the vendor names none,
+    /// which is a vendor whose runs cannot be carried on.
+    pub conversation: Option<String>,
     /// What the run consumed.
     pub observed: Observed,
 }

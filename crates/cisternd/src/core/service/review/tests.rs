@@ -85,6 +85,7 @@ fn a_task(id: &str, state: &str) -> StoredTask {
         state: state.to_owned(),
         session: Some("1".to_owned()),
         worktree: None,
+        conversation: None,
         started_at: None,
         ended_at: None,
         reason: None,
@@ -100,6 +101,7 @@ fn a_task(id: &str, state: &str) -> StoredTask {
 fn a_tidied_task(id: &str) -> StoredTask {
     StoredTask {
         state: "Completed".to_owned(),
+        conversation: None,
         worktree: Some(format!("/areas/{id}")),
         disposition: Some("applied".to_owned()),
         ..a_task(id, "Completed")
@@ -477,6 +479,7 @@ fn tidying_up_takes_away_the_work_areas_of_tasks_that_were_disposed_of() {
 #[test]
 fn a_task_nobody_has_disposed_of_keeps_its_work_area() {
     let tasks = holding(vec![StoredTask {
+        conversation: None,
         worktree: Some("/areas/1".to_owned()),
         ..a_task("1", "Completed")
     }]);
@@ -493,6 +496,7 @@ fn a_task_nobody_has_disposed_of_keeps_its_work_area() {
 #[test]
 fn a_task_still_running_keeps_its_work_area() {
     let tasks = holding(vec![StoredTask {
+        conversation: None,
         worktree: Some("/areas/1".to_owned()),
         disposition: Some("applied".to_owned()),
         ..a_task("1", "Running")

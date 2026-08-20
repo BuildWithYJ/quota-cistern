@@ -66,6 +66,10 @@ pub fn retry(task: &str) -> ExitCode {
     send("retry", serde_json::json!({ "task": task }), requeued)
 }
 
+pub fn resume(task: &str) -> ExitCode {
+    send("resume", serde_json::json!({ "task": task }), requeued)
+}
+
 pub fn tidy() -> ExitCode {
     send("tidy", serde_json::json!({}), tidied)
 }
@@ -224,6 +228,13 @@ fn requeued(data: &Value) {
     if let Some(attempts) = text(data, "attempts") {
         println!("  assigned {attempts} time(s) so far");
     }
+    println!(
+        "  the next run {}",
+        match data.get("carries_on").and_then(Value::as_bool) {
+            Some(true) => "carries on the conversation the last one was in",
+            _ => "starts a conversation of its own",
+        }
+    );
 }
 
 /// How wide the bar beside a file may grow.

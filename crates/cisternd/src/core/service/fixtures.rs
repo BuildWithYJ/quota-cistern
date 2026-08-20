@@ -174,6 +174,7 @@ pub(super) fn a_pending_task() -> StoredTask {
         state: "Pending".to_owned(),
         session: None,
         worktree: None,
+        conversation: None,
         started_at: None,
         ended_at: None,
         reason: None,
@@ -377,6 +378,7 @@ impl Answering {
         Answering::ending(Ended {
             outcome: Outcome::Finished,
             reason: None,
+            conversation: None,
             observed: spending(),
         })
     }
@@ -455,6 +457,7 @@ impl Agent for Costing {
         Ok(Ended {
             outcome,
             reason: None,
+            conversation: None,
             observed: Observed::Spent(Spent {
                 input: "0".to_owned(),
                 output: spent.to_string(),

@@ -17,6 +17,7 @@ pub fn respond(review: &impl ReviewUseCase, request: Request) -> Result<Response
         "apply" => Ok(about(request, |id| review.apply(id).map(applied))),
         "discard" => Ok(about(request, |id| review.discard(id).map(discarded))),
         "retry" => Ok(about(request, |id| review.retry(id).map(requeued))),
+        "resume" => Ok(about(request, |id| review.resume(id).map(requeued))),
         "tidy" => Ok(answer(request.command, review.tidy().map(tidied))),
         _ => Err(request),
     }
@@ -27,7 +28,7 @@ fn list(review: &impl ReviewUseCase, request: Request) -> Response {
     answer(request.command, outcome)
 }
 
-/// The three commands that take a task and nothing else.
+/// The commands that take a task and nothing else.
 fn about(request: Request, ask: impl FnOnce(&str) -> Result<Value, Refusal>) -> Response {
     let Some(id) = text(&request, "task") else {
         return missing(&format!("{} takes a task, as a string", request.command));
@@ -95,6 +96,7 @@ fn requeued(waiting: Requeued) -> Value {
         "task": waiting.task,
         "branch": waiting.branch,
         "attempts": waiting.attempts,
+        "carries_on": waiting.carries_on,
     })
 }
 
@@ -192,6 +194,16 @@ mod tests {
                 task: id.to_owned(),
                 branch: "cistern/5".to_owned(),
                 attempts: "2".to_owned(),
+                carries_on: false,
+            }))
+        }
+
+        fn resume(&self, id: &str) -> Result<Requeued, Refusal> {
+            self.refused().unwrap_or(Ok(Requeued {
+                task: id.to_owned(),
+                branch: "cistern/5".to_owned(),
+                attempts: "2".to_owned(),
+                carries_on: true,
             }))
         }
 

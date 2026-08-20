@@ -27,6 +27,15 @@ pub enum TaskState {
     Error,
 }
 
+/// Whether a task waiting again keeps the conversation its last run was in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Carrying {
+    /// It does, so the next run carries that conversation on.
+    On,
+    /// It does not, so the next run starts one.
+    Afresh,
+}
+
 /// What was decided about a task's result.
 ///
 /// Apart from the state, which says how the run ended rather than what was done about it.
@@ -61,6 +70,8 @@ pub struct Task {
     session: Option<SessionId>,
     /// Where it is being worked on, once a work area was made.
     worktree: Option<String>,
+    /// The conversation its last run was in, for a run that may be carried on.
+    conversation: Option<String>,
     /// When its most recent run started, in seconds since the epoch.
     ///
     /// The most recent rather than the first, since a task the vendor turned away runs again.
@@ -102,6 +113,7 @@ pub struct Restored {
     pub state: TaskState,
     pub session: Option<SessionId>,
     pub worktree: Option<String>,
+    pub conversation: Option<String>,
     pub started_at: Option<u64>,
     pub ended_at: Option<u64>,
     pub reason: Option<String>,
@@ -287,6 +299,20 @@ impl Task {
         self.session
     }
 
+    /// The conversation its last run was in, once one has left one.
+    ///
+    /// A run of a task that was cut off left the work it had done in the work area and on the
+    /// branch, and its conversation nowhere. Reading all of that back is most of what a second
+    /// run of the same task costs. This is what lets the next run carry that conversation on
+    /// instead, and it is the task's rather than the run's because it is the next run that
+    /// needs it and runs do not outlive themselves.
+    ///
+    /// Nothing for a task nobody has run, and nothing again once one has finished: what is
+    /// kept is a conversation somebody may still want to carry on.
+    pub fn conversation(&self) -> Option<&str> {
+        self.conversation.as_deref()
+    }
+
     pub fn worktree(&self) -> Option<&str> {
         self.worktree.as_deref()
     }
@@ -382,6 +408,7 @@ impl Backlog {
             state: TaskState::Pending,
             session: None,
             worktree: None,
+            conversation: None,
             started_at: None,
             ended_at: None,
             reason: None,
@@ -532,6 +559,17 @@ impl Backlog {
     /// Records what running a task consumed.
     ///
     /// Kept apart from [`Backlog::finish`].
+    /// Records the conversation a run left, for a task that may be carried on.
+    ///
+    /// Beside `finish` rather than in it: what a run consumed and what conversation it was in
+    /// are two things a vendor may answer about separately, and one of them being absent is
+    /// not the other being absent.
+    pub fn conversed(&mut self, id: TaskId, conversation: Option<String>) {
+        if let Some(task) = self.tasks.iter_mut().find(|task| task.id == id) {
+            task.conversation = conversation;
+        }
+    }
+
     /// A task can end without ever having run, and what it consumed is then not nothing but unknown.
     pub fn record(&mut self, id: TaskId, consumed: Observation) {
         for task in &mut self.tasks {
@@ -553,6 +591,8 @@ impl Backlog {
             return Err(DisposalRefused::NotEnded);
         }
         task.disposition = Some(disposition);
+        // Nobody carries on a conversation about work that has been decided.
+        task.conversation = None;
         Ok(())
     }
 
@@ -566,6 +606,20 @@ impl Backlog {
     /// The branch stays. What the cut-off run wrote is on it, and a run that starts again
     /// starts from it.
     pub fn try_again(&mut self, id: TaskId) -> Result<(), DisposalRefused> {
+        self.waits_again(id, Carrying::Afresh)
+    }
+
+    /// Puts a task that ended back where it started, keeping the conversation its last run
+    /// was in, so the run that starts next carries that conversation on.
+    ///
+    /// Apart from `try_again` because they are different things to ask for. Trying again is
+    /// doing the work over; carrying on is the same work continuing, and what it saves is
+    /// reading back everything the last run had read.
+    pub fn carries_on(&mut self, id: TaskId) -> Result<(), DisposalRefused> {
+        self.waits_again(id, Carrying::On)
+    }
+
+    fn waits_again(&mut self, id: TaskId, carrying: Carrying) -> Result<(), DisposalRefused> {
         let Some(task) = self.tasks.iter_mut().find(|task| task.id == id) else {
             return Err(DisposalRefused::NoSuchTask);
         };
@@ -576,6 +630,9 @@ impl Backlog {
         task.reason = None;
         task.ceiling = None;
         task.disposition = None;
+        if carrying == Carrying::Afresh {
+            task.conversation = None;
+        }
         Ok(())
     }
 
@@ -726,6 +783,7 @@ impl Backlog {
                 state: held.state,
                 session: held.session,
                 worktree: held.worktree,
+                conversation: held.conversation,
                 started_at: held.started_at,
                 ended_at: held.ended_at,
                 reason: held.reason,

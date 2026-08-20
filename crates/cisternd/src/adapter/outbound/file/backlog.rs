@@ -52,6 +52,9 @@ struct Entry {
     session: Value,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     worktree: Value,
+    /// The conversation its last run was in, for a run that may be carried on.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    conversation: Value,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     started_at: Value,
     #[serde(default, skip_serializing_if = "Value::is_null")]
@@ -131,6 +134,7 @@ impl FileBacklog {
                     state: as_text(entry.state),
                     session: as_optional(entry.session),
                     worktree: as_optional(entry.worktree),
+                    conversation: as_optional(entry.conversation),
                     started_at: as_optional(entry.started_at),
                     ended_at: as_optional(entry.ended_at),
                     reason: as_optional(entry.reason),
@@ -167,6 +171,7 @@ impl FileBacklog {
                     state: Value::String(task.state.clone()),
                     session: task.session.as_deref().map_or(Value::Null, as_number),
                     worktree: as_value(task.worktree.clone()),
+                    conversation: as_value(task.conversation.clone()),
                     started_at: task.started_at.as_deref().map_or(Value::Null, as_number),
                     ended_at: task.ended_at.as_deref().map_or(Value::Null, as_number),
                     reason: as_value(task.reason.clone()),
@@ -234,6 +239,7 @@ mod tests {
             state: "Pending".to_owned(),
             session: None,
             worktree: None,
+            conversation: None,
             started_at: None,
             ended_at: None,
             reason: None,
