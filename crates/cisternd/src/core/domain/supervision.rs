@@ -171,6 +171,39 @@ const ESTIMATE: u64 = 95;
 /// The middle, in whole percent.
 const MIDDLE: u64 = 50;
 
+/// How far an estimate is widened for how little it was worked out from.
+///
+/// One, so an estimate from a single run allows twice it and one from four allows a quarter
+/// more. What this should be is not something four sessions on a real repository could say:
+/// none of their runs came within half of its ceiling, so any figure here would have ended
+/// them the same way. It is a number to sweep rather than one to argue about.
+const WIDEN: u64 = 1;
+
+/// The numbers a run is sized by.
+///
+/// Held together and handed in rather than read from the constants above, so that comparing
+/// two of them is a loop rather than a build each. What ships is [`Rule::default`], and
+/// nothing outside a sweep sets anything else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rule {
+    /// Which quantile of what a model's runs have cost a run is sized at.
+    pub estimate: u64,
+    /// The quantile a session falls back to where what is left will not cover a whole ceiling.
+    pub middle: u64,
+    /// How far the estimate is widened: `estimate x (1 + widen/over)`.
+    pub widen: u64,
+}
+
+impl Default for Rule {
+    fn default() -> Self {
+        Rule {
+            estimate: ESTIMATE,
+            middle: MIDDLE,
+            widen: WIDEN,
+        }
+    }
+}
+
 /// What runs of one model have cost.
 ///
 /// Two figures rather than one. A prediction used as a hard limit kills a run every time the
@@ -196,6 +229,11 @@ pub struct Sizing {
     /// Runs that finished. A run that was stopped says where it was stopped rather than what
     /// its task takes, so it raises the floor under `estimate` without being counted here.
     pub over: usize,
+    /// How far to widen the estimate, from the rule these were worked out under.
+    ///
+    /// Carried here rather than asked for again, so that a sizing answers what it allows
+    /// without whoever holds it having to remember which rule made it.
+    pub widen: u64,
 }
 
 impl Sizing {
@@ -214,8 +252,11 @@ impl Sizing {
     /// make it unlikely: what runs cost is spread far wider than the uncertainty this covers,
     /// and the rest of the tail is not something a multiplier reaches.
     pub fn allowing(&self) -> u64 {
-        self.estimate
-            .saturating_add(self.estimate / self.over.max(1) as u64)
+        self.estimate.saturating_add(
+            self.estimate
+                .saturating_mul(self.widen)
+                .saturating_div(self.over.max(1) as u64),
+        )
     }
 }
 
@@ -277,7 +318,7 @@ impl Sizings {
     ///
     /// A model with nothing but stopped runs has no figure at all. One task then starts with
     /// the whole of what is left, which is more room than any floor would have given it.
-    pub fn of(runs: impl IntoIterator<Item = Ran>) -> Self {
+    pub fn under(rule: Rule, runs: impl IntoIterator<Item = Ran>) -> Self {
         let mut apart: BTreeMap<Option<String>, (Vec<u64>, u64)> = BTreeMap::new();
         for run in runs {
             let (finished, floor) = apart.entry(run.model).or_default();
@@ -293,9 +334,10 @@ impl Sizings {
             }
             costs.sort_unstable();
             let sizing = Sizing {
-                estimate: at(&costs, ESTIMATE).max(floor.saturating_mul(2)),
-                median: at(&costs, MIDDLE),
+                estimate: at(&costs, rule.estimate).max(floor.saturating_mul(2)),
+                median: at(&costs, rule.middle),
                 over: costs.len(),
+                widen: rule.widen,
             };
             match model {
                 Some(model) => {
@@ -456,7 +498,7 @@ mod tests {
         Standing {
             left: 1_000,
             booked: 0,
-            sizings: Sizings::of([Ran::finished(Some("opus"), 100)]),
+            sizings: Sizings::under(Rule::default(), [Ran::finished(Some("opus"), 100)]),
             // Nothing has been timed, so the clock lets everything start. The tests that are
             // about the clock say what runs have taken.
             lasting: Sizings::default(),
@@ -639,10 +681,13 @@ mod tests {
             ceilings(decide(&Standing {
                 left: 80,
                 running: 0,
-                sizings: Sizings::of([
-                    Ran::finished(Some("opus"), 50),
-                    Ran::finished(Some("opus"), 100),
-                ]),
+                sizings: Sizings::under(
+                    Rule::default(),
+                    [
+                        Ran::finished(Some("opus"), 50),
+                        Ran::finished(Some("opus"), 100),
+                    ]
+                ),
                 ..standing()
             })),
             [80]
@@ -656,10 +701,13 @@ mod tests {
             decide(&Standing {
                 left: 40,
                 running: 0,
-                sizings: Sizings::of([
-                    Ran::finished(Some("opus"), 50),
-                    Ran::finished(Some("opus"), 100),
-                ]),
+                sizings: Sizings::under(
+                    Rule::default(),
+                    [
+                        Ran::finished(Some("opus"), 50),
+                        Ran::finished(Some("opus"), 100),
+                    ]
+                ),
                 ..standing()
             }),
             Decision::Stop(StoppedReason::BudgetHardlock)
@@ -673,7 +721,7 @@ mod tests {
     fn a_task_that_cannot_finish_in_the_time_left_does_not_start() {
         assert_eq!(
             decide(&Standing {
-                lasting: Sizings::of([Ran::finished(Some("opus"), 900)]),
+                lasting: Sizings::under(Rule::default(), [Ran::finished(Some("opus"), 900)]),
                 time_left: 600,
                 ..standing()
             }),
@@ -685,7 +733,7 @@ mod tests {
     fn a_task_that_fits_the_time_left_starts() {
         assert_eq!(
             ceilings(decide(&Standing {
-                lasting: Sizings::of([Ran::finished(Some("opus"), 900)]),
+                lasting: Sizings::under(Rule::default(), [Ran::finished(Some("opus"), 900)]),
                 time_left: 3_600,
                 ..standing()
             })),
@@ -700,7 +748,7 @@ mod tests {
         assert_eq!(
             decide(&Standing {
                 running: 0,
-                lasting: Sizings::of([Ran::finished(Some("opus"), 900)]),
+                lasting: Sizings::under(Rule::default(), [Ran::finished(Some("opus"), 900)]),
                 time_left: 600,
                 ..standing()
             }),
@@ -714,7 +762,7 @@ mod tests {
     fn a_model_nothing_has_been_timed_on_starts_whatever_the_time_left() {
         assert_eq!(
             ceilings(decide(&Standing {
-                lasting: Sizings::of([Ran::finished(Some("haiku"), 900)]),
+                lasting: Sizings::under(Rule::default(), [Ran::finished(Some("haiku"), 900)]),
                 time_left: 1,
                 ..standing()
             })),
@@ -729,10 +777,13 @@ mod tests {
         assert_eq!(
             decide(&Standing {
                 left: 60,
-                sizings: Sizings::of([
-                    Ran::finished(Some("opus"), 50),
-                    Ran::finished(Some("opus"), 100),
-                ]),
+                sizings: Sizings::under(
+                    Rule::default(),
+                    [
+                        Ran::finished(Some("opus"), 50),
+                        Ran::finished(Some("opus"), 100),
+                    ]
+                ),
                 ..standing()
             }),
             Decision::Start(Vec::new())
@@ -762,12 +813,15 @@ mod tests {
     /// measured against a size nothing it runs is.
     #[test]
     fn each_model_is_worked_out_from_its_own_runs() {
-        let sizings = Sizings::of([
-            Ran::finished(Some("haiku"), 10),
-            Ran::finished(Some("haiku"), 20),
-            Ran::finished(Some("opus"), 300),
-            Ran::finished(Some("opus"), 400),
-        ]);
+        let sizings = Sizings::under(
+            Rule::default(),
+            [
+                Ran::finished(Some("haiku"), 10),
+                Ran::finished(Some("haiku"), 20),
+                Ran::finished(Some("opus"), 300),
+                Ran::finished(Some("opus"), 400),
+            ],
+        );
 
         assert_eq!(sizings.model(Some("haiku")).unwrap().estimate, 20);
         assert_eq!(sizings.model(Some("opus")).unwrap().estimate, 400);
@@ -778,7 +832,10 @@ mod tests {
     /// its own rather than any of the named ones.
     #[test]
     fn runs_that_named_no_model_are_their_own() {
-        let sizings = Sizings::of([Ran::finished(None, 7), Ran::finished(Some("opus"), 900)]);
+        let sizings = Sizings::under(
+            Rule::default(),
+            [Ran::finished(None, 7), Ran::finished(Some("opus"), 900)],
+        );
 
         assert_eq!(sizings.model(None).unwrap().estimate, 7);
         assert_eq!(sizings.model(Some("opus")).unwrap().estimate, 900);
@@ -793,12 +850,15 @@ mod tests {
     /// middle falls between the second and the third.
     #[test]
     fn the_figures_are_read_between_the_runs() {
-        let sizings = Sizings::of([
-            Ran::finished(Some("opus"), 100),
-            Ran::finished(Some("opus"), 200),
-            Ran::finished(Some("opus"), 300),
-            Ran::finished(Some("opus"), 400),
-        ]);
+        let sizings = Sizings::under(
+            Rule::default(),
+            [
+                Ran::finished(Some("opus"), 100),
+                Ran::finished(Some("opus"), 200),
+                Ran::finished(Some("opus"), 300),
+                Ran::finished(Some("opus"), 400),
+            ],
+        );
         let sizing = sizings.model(Some("opus")).unwrap();
 
         assert_eq!((sizing.estimate, sizing.median, sizing.over), (400, 250, 4));
@@ -810,10 +870,13 @@ mod tests {
     #[test]
     fn the_estimate_only_falls_under_the_dearest_run_once_there_are_runs_enough() {
         let costs = |over: u64| {
-            Sizings::of((1..=over).map(|each| Ran::finished(Some("opus"), each * 100)))
-                .model(Some("opus"))
-                .unwrap()
-                .estimate
+            Sizings::under(
+                Rule::default(),
+                (1..=over).map(|each| Ran::finished(Some("opus"), each * 100)),
+            )
+            .model(Some("opus"))
+            .unwrap()
+            .estimate
         };
 
         assert_eq!((costs(4), costs(8), costs(13)), (400, 800, 1_300));
@@ -823,13 +886,40 @@ mod tests {
     /// A run stopped at its ceiling spent what it was stopped at. Counting that as what the
     /// task costs would pull the estimate down toward the ceiling that stopped it, and the
     /// lower estimate would stop the next run sooner.
+    /// The numbers are the rule's rather than the module's, so a sweep hands in another one
+    /// instead of being built again for each.
+    #[test]
+    fn a_rule_of_someones_own_is_what_a_sizing_is_worked_out_by() {
+        let runs = || (1..=4).map(|each| Ran::finished(Some("opus"), each * 100));
+        let sized = |rule| Sizings::under(rule, runs()).model(Some("opus")).unwrap();
+
+        let shipped = Sizings::under(Rule::default(), runs())
+            .model(Some("opus"))
+            .unwrap();
+        let wider = sized(Rule {
+            widen: 4,
+            ..Rule::default()
+        });
+        let lower = sized(Rule {
+            estimate: 50,
+            ..Rule::default()
+        });
+
+        assert_eq!((shipped.estimate, shipped.allowing()), (400, 500));
+        assert_eq!((wider.estimate, wider.allowing()), (400, 800));
+        assert_eq!((lower.estimate, lower.allowing()), (250, 312));
+    }
+
     #[test]
     fn a_run_that_was_stopped_is_not_counted_as_what_its_task_costs() {
-        let sizings = Sizings::of([
-            Ran::finished(Some("opus"), 300),
-            Ran::finished(Some("opus"), 400),
-            Ran::stopped(Some("opus"), 20),
-        ]);
+        let sizings = Sizings::under(
+            Rule::default(),
+            [
+                Ran::finished(Some("opus"), 300),
+                Ran::finished(Some("opus"), 400),
+                Ran::stopped(Some("opus"), 20),
+            ],
+        );
         let sizing = sizings.model(Some("opus")).unwrap();
 
         assert_eq!((sizing.estimate, sizing.median, sizing.over), (400, 350, 2));
@@ -839,11 +929,14 @@ mod tests {
     /// estimate at where it stopped would stop the next run at the same place and stay there.
     #[test]
     fn a_run_that_was_stopped_lifts_the_estimate_past_where_it_stopped() {
-        let sizings = Sizings::of([
-            Ran::finished(Some("opus"), 300),
-            Ran::finished(Some("opus"), 400),
-            Ran::stopped(Some("opus"), 900),
-        ]);
+        let sizings = Sizings::under(
+            Rule::default(),
+            [
+                Ran::finished(Some("opus"), 300),
+                Ran::finished(Some("opus"), 400),
+                Ran::stopped(Some("opus"), 900),
+            ],
+        );
         let sizing = sizings.model(Some("opus")).unwrap();
 
         assert_eq!((sizing.estimate, sizing.over), (1_800, 2));
@@ -853,14 +946,14 @@ mod tests {
     /// whole of what is left, which is more room than the floor would have given it.
     #[test]
     fn a_model_that_has_only_been_stopped_has_no_figure() {
-        let sizings = Sizings::of([Ran::stopped(Some("opus"), 900)]);
+        let sizings = Sizings::under(Rule::default(), [Ran::stopped(Some("opus"), 900)]);
 
         assert_eq!(sizings.model(Some("opus")), None);
     }
 
     #[test]
     fn one_run_is_both_figures() {
-        let sizings = Sizings::of([Ran::finished(Some("opus"), 42)]);
+        let sizings = Sizings::under(Rule::default(), [Ran::finished(Some("opus"), 42)]);
         let sizing = sizings.model(Some("opus")).unwrap();
 
         assert_eq!((sizing.estimate, sizing.median, sizing.over), (42, 42, 1));

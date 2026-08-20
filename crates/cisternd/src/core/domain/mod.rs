@@ -15,7 +15,7 @@ pub use session::{
     Budget, Held, NotASessionSet, NotOpened, Opening, Session, SessionId, SessionState, Sessions,
     Span, StoppedReason, Usage,
 };
-pub use supervision::{Decision, HUNDREDTHS, Ran, Sizings, Spending, Standing, decide};
+pub use supervision::{Decision, HUNDREDTHS, Ran, Rule, Sizings, Spending, Standing, decide};
 pub use task::{
     Backlog, DisposalRefused, Disposition, NotABacklog, RemovalRefused, Repository, Restored, Task,
     TaskId, TaskState,

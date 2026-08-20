@@ -10,7 +10,7 @@
 
 use crate::core::{
     domain::{
-        Backlog, Consumption, Decision, HUNDREDTHS, Observation, Ran, Session, SessionId,
+        Backlog, Consumption, Decision, HUNDREDTHS, Observation, Ran, Rule, Session, SessionId,
         SessionState, Sizings, Spending, Standing, StoppedReason, TaskId, TaskState, Usage, decide,
     },
     port::{
@@ -61,11 +61,25 @@ pub struct Supervisor<'a> {
     /// A guard on the machine rather than on the budget, so the number belongs to whoever
     /// started the daemon rather than to a rule about spending.
     at_once: usize,
+    /// The numbers a run is sized by.
+    ///
+    /// What ships is `Rule::default`. A sweep that compares two of them varies this, so that
+    /// comparing them is a loop rather than a build each.
+    rule: Rule,
 }
 
 impl<'a> Supervisor<'a> {
     pub fn new(outside: Outside<'a>, at_once: usize) -> Self {
-        Supervisor { outside, at_once }
+        Self::sizing_by(outside, at_once, Rule::default())
+    }
+
+    /// The same, sizing by a rule other than the one that ships.
+    pub fn sizing_by(outside: Outside<'a>, at_once: usize, rule: Rule) -> Self {
+        Supervisor {
+            outside,
+            at_once,
+            rule,
+        }
     }
 }
 
@@ -258,15 +272,18 @@ impl Supervisor<'_> {
             },
             Usage::Tokens(_) => None,
         };
-        Ok(Sizings::of(held.into_iter().filter_map(|run| {
-            let ran = sampled(&run)?;
-            let counted = spending_of(&run.spent?)?;
-            let cost = match per_millionth {
-                None => counted.tokens(),
-                Some((moved, over)) => counted.cost.checked_mul(moved)? / over.max(1),
-            };
-            Some(ran(run.model.as_deref(), cost))
-        })))
+        Ok(Sizings::under(
+            self.rule,
+            held.into_iter().filter_map(|run| {
+                let ran = sampled(&run)?;
+                let counted = spending_of(&run.spent?)?;
+                let cost = match per_millionth {
+                    None => counted.tokens(),
+                    Some((moved, over)) => counted.cost.checked_mul(moved)? / over.max(1),
+                };
+                Some(ran(run.model.as_deref(), cost))
+            }),
+        ))
     }
 
     /// How long a run of each model has taken, from the ledger, in seconds.
@@ -275,12 +292,15 @@ impl Supervisor<'_> {
     /// time than its task needs, for the same reason it spent less.
     fn lasting(&self) -> Result<Sizings, Refusal> {
         let held = self.outside.runs.read()?;
-        Ok(Sizings::of(held.into_iter().filter_map(|run| {
-            let ran = sampled(&run)?;
-            let started = run.started_at.parse::<u64>().ok()?;
-            let ended = run.ended_at.parse::<u64>().ok()?;
-            Some(ran(run.model.as_deref(), ended.checked_sub(started)?))
-        })))
+        Ok(Sizings::under(
+            self.rule,
+            held.into_iter().filter_map(|run| {
+                let ran = sampled(&run)?;
+                let started = run.started_at.parse::<u64>().ok()?;
+                let ended = run.ended_at.parse::<u64>().ok()?;
+                Some(ran(run.model.as_deref(), ended.checked_sub(started)?))
+            }),
+        ))
     }
 
     /// How long the running session still has, or nothing where none is running.
