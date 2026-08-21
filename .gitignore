@@ -1,4 +1,6 @@
-# Local clone and scratch space, not part of this repository
+# Local clone, scratch space, and working notes, not part of this repository.
+# A document under docs/ is published; one that is a draft, an internal note, or
+# an experiment's write-up belongs in .private/docs/ instead.
 .private/
 
 # Build output
