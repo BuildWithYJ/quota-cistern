@@ -44,6 +44,8 @@ struct Entry {
     started_at: Value,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     limit_at_start: Value,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    limit_last_seen: Value,
     consumed: Value,
     updated_at: Value,
     #[serde(default, skip_serializing_if = "Value::is_null")]
@@ -92,6 +94,7 @@ impl FileSessions {
                     model: as_optional(entry.model),
                     started_at: as_text(entry.started_at),
                     limit_at_start: as_optional(entry.limit_at_start),
+                    limit_last_seen: as_optional(entry.limit_last_seen),
                     consumed: as_text(entry.consumed),
                     updated_at: as_text(entry.updated_at),
                     resets_at: as_optional(entry.resets_at),
@@ -116,6 +119,10 @@ impl FileSessions {
                     started_at: as_number(&session.started_at),
                     limit_at_start: session
                         .limit_at_start
+                        .as_deref()
+                        .map_or(Value::Null, as_number),
+                    limit_last_seen: session
+                        .limit_last_seen
                         .as_deref()
                         .map_or(Value::Null, as_number),
                     consumed: as_number(&session.consumed),
@@ -168,6 +175,7 @@ mod tests {
             model: None,
             started_at: "1000".to_owned(),
             limit_at_start: Some("1100".to_owned()),
+            limit_last_seen: Some("1100".to_owned()),
             consumed: "0".to_owned(),
             updated_at: "1000".to_owned(),
             resets_at: None,

@@ -28,9 +28,23 @@ An adapter has a port on one side and something outside on the other. Code that 
 
 An inbound adapter turns an envelope into a use case call and the answer back into an envelope. Which exit code a refusal becomes is decided here; the core never names one.
 
-An outbound adapter is where a vendor's field names, a file format, and a git invocation belong. None of them cross back into the core, and `cisternd/tests/architecture.rs` checks the field names.
+An outbound adapter is where a file format and a git invocation belong. A vendor's own words do not belong in code at all: they sit in a definition the daemon reads, and `cisternd/tests/architecture.rs` fails on a vendor's field name written in the daemon's own code. Tests are the exception, since a vendor's answer has to be written out somewhere for the code that reads one to be tested against it.
 
-Outbound adapters are grouped by the means rather than by the outside: `claude`, `git`, `file`, and the clock. A second vendor is a directory beside `claude` and nothing else. Whatever a means needs in order to work — an invocation written as JSON, a prompt, a stand-in used in tests, the part every file store shares — sits in that directory too.
+Outbound adapters are grouped by the means rather than by the outside: `program`, `git`, `file`, and the clock. Whatever a means needs in order to work — a stand-in used in tests, the part every file store shares — sits in that directory too.
+
+## The vendor
+
+The means for a vendor is an external program, and which program it is comes from a definition rather than from code. A definition names the program, its arguments, the goal that leads the prompt, the two ceilings a run is cut off at, the words the vendor uses when a run hits one, and where each figure sits in the answer. A second vendor is a file.
+
+`program/claude.toml` is the definition this build ships with. It travels in the binary and nothing is written to disk, so an upgrade has nothing of a user's to overwrite. A file at `$XDG_CONFIG_HOME/cistern/vendors/<name>.toml` is laid over it, holding only what differs, so a definition we improve reaches someone who changed one line of it. A name nothing ships has nothing to lay over and has to be written out. A name with no definition either way stops the daemon starting rather than failing on the first task.
+
+What stays in code is the part that does not change with the vendor: starting the child, ending its process group, reading its pipes, and following a path into its answer. A path is names joined by dots, and one name may be `*`, which stands for every key of the object at that point and adds up the numbers under it. That is the only rule beyond following names, and it is there so that a vendor reporting per model what the core counts once needs no code.
+
+Two things a definition cannot add on its own. The shape an answer arrives in and the way an allowance is asked for are both code, and a definition picks between the ones written by name. A shape nobody has written yet is a change to Rust.
+
+The format of a definition is what a user writes against. Changing it breaks the files they placed.
+
+A vendor's words reach one more place. What a line of a run's output amounts to is read by the trace store, which is a file adapter and has no business naming a vendor's module. The composition root carries the names across, so the store follows names it was handed rather than names it knows.
 
 The two edges are named differently on purpose. A port says who is on the other side, because that is what the core is talking to. An adapter says how, because that is what changes when the same conversation is held another way.
 
@@ -52,7 +66,7 @@ cisternd/src/
   core/port/outbound/ what the core needs from outside
   core/service/       one per command group
   adapter/inbound/    envelope to use case
-  adapter/outbound/   port to file or git, one directory per means
+  adapter/outbound/   port to a program, a file, or git, one directory per means
   platform/           what touches no port
   main.rs             composition root
 ```
