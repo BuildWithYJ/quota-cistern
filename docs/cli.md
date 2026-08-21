@@ -95,7 +95,7 @@ The backlog is stored at `$XDG_DATA_HOME/cistern/backlog.json`, or `~/.local/sha
 Adds a task to the backlog as `Pending`. It is not assigned to a session directly; which session picks it up is decided by the core when a session opens.
 
 ```
-cistern task add --title <T> --instruction <I> [--branch <B>] [--after <task>] [--model <M>]
+cistern task add --title <T> --instruction <I> [--branch <B>] [--after <task>] [--model <M>] [--force]
 ```
 
 **Arguments**
@@ -107,6 +107,7 @@ cistern task add --title <T> --instruction <I> [--branch <B>] [--after <task>] [
 | `--branch <B>` | no | branch name | Branch the task starts from. Defaults to `main`, or to the predecessor's result branch when `--after` is given |
 | `--after <task>` | no | id | Predecessor task. This task is not assigned until that one completes |
 | `--model <M>` | no | model name | Model for this task. Falls back to the session's `--model` |
+| `--force` | no | flag | Registers the task as written, even when the instruction carries too little to run unattended |
 
 The two may be given together. The task then waits for its predecessor and starts from the branch that was named.
 
@@ -129,6 +130,7 @@ With `--after`, the task is not eligible for assignment until the predecessor re
 | Code | Condition |
 | --- | --- |
 | 0 | Success |
+| 1 | The instruction does not say where to work, or how to tell it is done, and `--force` was not given |
 | 2 | Argument error (missing `--title`) |
 | 3 | The task named by `--after` does not exist |
 | 4 | The command was not run inside a repository |
@@ -137,7 +139,7 @@ With `--after`, the task is not eligible for assignment until the predecessor re
 **Example**
 
 ```console
-$ cistern task add --title "refactor X" --instruction "tidy up src/utils"
+$ cistern task add --title "refactor X" --instruction "tidy up src/utils/format.rs; cargo test utils passes"
 task:1 added to backlog
   title:  refactor X
   branch: main (base)

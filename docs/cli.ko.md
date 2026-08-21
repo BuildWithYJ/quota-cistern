@@ -103,7 +103,7 @@
 작업을 백로그에 `Pending`으로 등록한다. 세션에 직접 배정하지 않으며, 어느 세션에 편성될지는 세션을 열 때 코어가 정한다.
 
 ```
-cistern task add --title <T> --instruction <I> [--branch <B>] [--after <task>] [--model <M>]
+cistern task add --title <T> --instruction <I> [--branch <B>] [--after <task>] [--model <M>] [--force]
 ```
 
 **인자**
@@ -116,6 +116,7 @@ cistern task add --title <T> --instruction <I> [--branch <B>] [--after <task>] [
 | `--branch <B>`      | 아니오 | 브랜치명  | 작업이 시작할 브랜치. 기본 `main`이고, `--after`를 주면 선행 작업의 결과 브랜치 |
 | `--after <task>`    | 아니오 | ID    | 선행 작업. 그 작업이 끝나기 전에는 편성되지 않는다 |
 | `--model <M>`       | 아니오 | 모델 이름 | 이 작업에 쓸 모델. 생략하면 세션의 `--model`  |
+| `--force`           | 아니오 | 플래그   | 지시가 자율 실행에 부족해도 적힌 그대로 등록한다      |
 
 
 둘을 함께 줄 수 있다. 그때 작업은 선행 작업을 기다리되 지정한 브랜치에서 시작한다.
@@ -142,6 +143,7 @@ cistern task add --title <T> --instruction <I> [--branch <B>] [--after <task>] [
 | 코드  | 조건                          |
 | --- | --------------------------- |
 | 0   | 성공                          |
+| 1   | 지시가 어디서 일할지 또는 무엇으로 끝을 확인할지 말하지 않고 `--force`도 없음 |
 | 2   | 인자 오류 (예: `--title` 누락)     |
 | 3   | `--after`가 가리키는 작업 없음       |
 | 4   | 저장소 안에서 실행하지 않음             |
@@ -151,7 +153,7 @@ cistern task add --title <T> --instruction <I> [--branch <B>] [--after <task>] [
 **예시**
 
 ```console
-$ cistern task add --title "리팩터 X" --instruction "src/utils 정리"
+$ cistern task add --title "리팩터 X" --instruction "src/utils/format.rs 정리; cargo test utils 통과"
 task:1 added to backlog
   title:  리팩터 X
   branch: main (base)

@@ -2,8 +2,8 @@
 
 use crate::core::{
     domain::{
-        Backlog, Consumption, Disposition, NotABacklog, Observation, RemovalRefused, Repository,
-        Restored, SessionId, Task, TaskId, TaskState,
+        Backlog, Consumption, Disposition, NotABacklog, Observation, Readiness, RemovalRefused,
+        Repository, Restored, SessionId, Task, TaskId, TaskState,
     },
     port::{
         inbound::{
@@ -84,6 +84,17 @@ impl BacklogUseCase for BacklogService<'_> {
                 value: given.title.to_owned(),
             });
         }
+
+        // Read before the backlog is: an instruction that carries too little to run unattended is
+        // turned back whatever the backlog holds, so nothing is written for a run that could not
+        // have gone anywhere.
+        let readiness = Readiness::read(given.instruction);
+        if !given.force && !readiness.ready() {
+            return Err(Refusal::NotReady {
+                missing: readiness.missing(),
+            });
+        }
+
         let after = given.after.map(identifier).transpose()?;
 
         // Asked before the backlog is read.
@@ -528,10 +539,11 @@ mod tests {
         Registration {
             cwd: "/work/api/src",
             title,
-            instruction: "do it",
+            instruction: "fix parse() in src/util.rs; cargo test util",
             branch: None,
             after: None,
             model: None,
+            force: false,
         }
     }
 
@@ -578,6 +590,31 @@ mod tests {
         let tasks = Remembered::default();
         let outcome = in_a_repository(&tasks).add(registering("   "));
         assert!(matches!(outcome, Err(Refusal::BadValue { .. })));
+    }
+
+    /// An instruction with no place to work and no way to check is turned back before the backlog
+    /// is read, so nothing is written for a task that could not have run unattended.
+    #[test]
+    fn an_instruction_that_carries_too_little_is_refused() {
+        let tasks = Remembered::default();
+        let mut given = registering("first");
+        given.instruction = "make search a bit better";
+        let outcome = in_a_repository(&tasks).add(given);
+
+        assert!(matches!(outcome, Err(Refusal::NotReady { .. })));
+        assert_eq!(tasks.reads.load(Ordering::Relaxed), 0);
+    }
+
+    /// Force registers a task as written, even one the gate would otherwise turn back.
+    #[test]
+    fn force_registers_what_the_gate_would_turn_back() {
+        let tasks = Remembered::default();
+        let mut given = registering("first");
+        given.instruction = "make search a bit better";
+        given.force = true;
+
+        let added = in_a_repository(&tasks).add(given).unwrap();
+        assert_eq!(added.state, "Pending");
     }
 
     #[test]
