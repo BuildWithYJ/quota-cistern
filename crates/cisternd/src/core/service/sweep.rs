@@ -371,7 +371,7 @@ fn sweeping_the_rule() {
                 },
             )
         }))
-        .chain([0, 25, 50, 75, 90, 100].into_iter().map(|fallback| {
+        .chain([0, 25, 50, 75, 100].into_iter().map(|fallback| {
             (
                 format!("fallback {fallback}"),
                 Rule {

@@ -83,22 +83,11 @@ impl Budget {
 
 /// What each waiting task may be allowed, taken in the order they wait.
 ///
-/// Not a count. A count says how many fit and says nothing about what each of them may take,
-/// so a session that starts four is a session that has given four runs no limit at all. Every
-/// task that starts here leaves with a figure it may not pass.
+/// What holds the session to what it declared is the first line: what is left, less what the
+/// runs already going are allowed. Nothing about that depends on any figure being right.
 ///
-/// What keeps the session inside what it declared is the first line: what is left, less what
-/// the runs already going are allowed. Their allowances are held against the budget until they
-/// end, so whatever they all spend, together they cannot pass it. Nothing about that depends
-/// on a figure being right.
-///
-/// What a run of that model has cost caps it further. That figure can be wrong in either
-/// direction without breaking the promise: too high and fewer start than could have, too low
-/// and more start, each with a smaller allowance. It buys back the budget a run would
+/// What a run of that model has cost caps it further, which buys back the budget a run would
 /// otherwise spend going nowhere.
-///
-/// A model nothing has finished a run with has no figure, so one task starts with the whole of
-/// what is left, and what it costs is the figure the next answer is worked out from.
 fn allow(standing: &Standing) -> Vec<Allowance> {
     let mut free = standing.left.saturating_sub(standing.booked);
     let mut given: Vec<Allowance> = Vec::new();
@@ -117,14 +106,9 @@ fn allow(standing: &Standing) -> Vec<Allowance> {
             }
             break;
         };
-        // A task that cannot finish before the session's time runs out is one the hardlock
-        // would stop part way through, which spends what it spends and leaves nothing. Held to
-        // the same quantile as a ceiling and for the same reason: not starting costs idle time,
-        // and starting something that is stopped costs the work.
-        //
-        // Taken in the order they wait, so a task that does not fit ends the round rather than
-        // letting a shorter one behind it go first. That is how a budget that does not stretch
-        // to the next task is treated too.
+        // A task the clock will stop part way through spends what it spends and leaves
+        // nothing. Taken in order, so one that does not fit ends the round rather than letting
+        // a shorter one behind it go first.
         if standing
             .lasting
             .model(model.as_deref())
@@ -136,9 +120,7 @@ fn allow(standing: &Standing) -> Vec<Allowance> {
         let ceiling = if free >= want {
             want
         } else if standing.running == 0 && given.is_empty() && free >= sizing.fallback.max(1) {
-            // Room for most of what this model costs but not for a whole reservation. Most of
-            // what might start would finish inside what is left, which is worth more than
-            // stopping a session that still has budget.
+            // Nothing is going, so nothing else can be hurt by this one running over.
             free
         } else {
             break;
@@ -152,29 +134,18 @@ fn allow(standing: &Standing) -> Vec<Allowance> {
     given
 }
 
-/// The quantile a ceiling is set at, in whole percent.
+/// The quantile a run is sized at while others are going, in whole percent.
 ///
-/// High rather than middling, because the two ways of being wrong do not cost the same. A
-/// ceiling under what a run needs stops the run, and everything it spent up to then is paid
-/// for with nothing to show; doing the work again means reading the whole conversation back in
-/// as well. A ceiling over what a run needs costs nothing at all: what a run is allowed is held
-/// against the budget while it goes and comes back unspent when it ends, so the price of aiming
-/// high is that fewer run at once rather than that more is spent.
-///
-/// The figure is borrowed rather than measured. Systems that set a limit on something fatal to
-/// exceed use the same range: Kubernetes' vertical autoscaler takes the 95th percentile for
-/// memory and the 90th for CPU, and Google's Autopilot takes the 98th or the peak for memory
-/// and the mean for batch CPU, each with a margin on top. A run of ours that meets its ceiling
-/// loses its work, which puts it with memory rather than with CPU.
-const ESTIMATE: u64 = 95;
+/// The third quarter. Others are going, so a run that goes over eats budget they were counting
+/// on, and a size three runs in four come in under is far enough up to make that rare.
+const ESTIMATE: u64 = 75;
 
-/// The quantile a session falls back to where what is left will not cover a reservation.
+/// The quantile a run is sized at when nothing else is going, in whole percent.
 ///
-/// The third quarter rather than the middle. At the middle the trade is a coin flip: half the
-/// runs of a model cost more than it, so half the tasks started that way spend past what the
-/// session declared. A quantile above the middle is what makes the fallback a fallback rather
-/// than a gamble taken once at the end of every session.
-const FALLBACK: u64 = 75;
+/// The first quarter. With nothing else going there is nobody to take budget from, so a
+/// session that would otherwise stop with budget in hand starts one more and is optimistic
+/// about it. This is the only place a session is.
+const FALLBACK: u64 = 25;
 
 /// How far a stopped run lifts the estimate above where it was stopped.
 ///
@@ -221,28 +192,19 @@ impl Default for Rule {
 
 /// What runs of one model have cost.
 ///
-/// Two figures rather than one. A prediction used as a hard limit kills a run every time the
-/// prediction is low, so what a run is allowed and what a run is expected to take are kept
-/// apart: this says what to expect, and what is left of the budget says what is allowed.
+/// Two figures: one for while others are going and one for when none is. A session is
+/// conservative in the first place and optimistic in the second.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sizing {
-    /// What a run of this model is expected to take, at the quantile above.
+    /// What to set aside while other runs are going.
     ///
-    /// Never under twice what a run of this model was stopped at. A run held to a ceiling was
-    /// still working when it was stopped, so its task takes more than that; a figure set at
-    /// where the last run stopped would stop the next one at the same place and stay there,
-    /// having learnt nothing. Doubling is how a backfilling scheduler grows a prediction its
-    /// job has already outlived, and it climbs to what the work takes in a few runs.
+    /// Never under twice what a run of this model was stopped at: a run held to a ceiling was
+    /// still working, so its task takes more than that, and a figure set where it stopped
+    /// would stop the next one in the same place forever.
     pub estimate: u64,
-    /// What a session falls back to, at the quantile its rule names.
-    ///
-    /// A session with nothing running lowers its bar to this rather than starting nothing.
-    /// Above the middle, so that most of what it might start would fit rather than half.
+    /// What to set aside when nothing else is going.
     pub fallback: u64,
-    /// How many runs these were worked out from.
-    ///
-    /// Runs that finished. A run that was stopped says where it was stopped rather than what
-    /// its task takes, so it raises the floor under `estimate` without being counted here.
+    /// How many finished runs these were worked out from.
     pub over: usize,
     /// How far to widen the estimate, from the rule these were worked out under.
     ///
@@ -252,20 +214,8 @@ pub struct Sizing {
 }
 
 impl Sizing {
-    /// What a run of this model may be allowed.
-    ///
-    /// The estimate widened by how little it was worked out from: `estimate x (1 + 1/over)`.
-    /// Twice the estimate from one run, half as much again from two, an eighth more from
-    /// eight. Kubernetes' vertical autoscaler widens its own upper bound by this shape and for
-    /// this reason, and the shape is what recommends it -- nothing here picks a number to say
-    /// how much wider, the count of runs says it.
-    ///
-    /// Why widen at all. The estimate is what a run is expected to take, and a run allowed
-    /// exactly that is stopped the moment it takes any more; a figure worked out from one run
-    /// is not one to hold the next to, since it says what that run happened to cost and
-    /// nothing about what the next task is. This makes being stopped less likely. It does not
-    /// make it unlikely: what runs cost is spread far wider than the uncertainty this covers,
-    /// and the rest of the tail is not something a multiplier reaches.
+    /// What to set aside for a run of this model, widened by how few runs it came from:
+    /// `estimate x (1 + widen/over)`.
     pub fn allowing(&self) -> u64 {
         self.estimate.saturating_add(
             self.estimate
@@ -277,10 +227,8 @@ impl Sizing {
 
 /// What one run cost, and whether that figure is what its task takes.
 ///
-/// A run stopped at its ceiling spent what it was stopped at. Counting that as what the task
-/// costs closes a loop: the stopped figure pulls the estimate down toward the ceiling that
-/// stopped it, the lower estimate stops the next run sooner, and the sizing settles under
-/// what the work needs with nothing to pull it back up.
+/// A run stopped at its ceiling spent what it was stopped at, which is a floor under what its
+/// task takes rather than a measure of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ran {
     model: Option<String>,
@@ -310,9 +258,8 @@ impl Ran {
 
 /// What runs have cost, by the model that ran them.
 ///
-/// A model nothing has finished a run with has nothing here, and a session that meets one
-/// starts a single task and measures it rather than guessing. The first run that finishes is
-/// the first sample.
+/// A model nothing has finished a run with has nothing here. A session that meets one starts
+/// a single task and measures it rather than guessing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Sizings {
     by_model: BTreeMap<String, Sizing>,
@@ -323,16 +270,9 @@ pub struct Sizings {
 impl Sizings {
     /// Works the figures out from what each run cost, keeping the models apart.
     ///
-    /// Splitting by model is what keeps the figures from being five times out. The middle of
-    /// what one model's runs cost differs from another's by more than that, so a session
-    /// running one model against a figure taken over all of them is measured against a size
-    /// nothing it runs is.
-    /// Runs that were stopped are kept apart from runs that finished. What a stopped run cost
-    /// is where we stopped it, which is a floor under what its task takes rather than a
-    /// measure of it, so it lifts the estimate without being averaged into it.
-    ///
-    /// A model with nothing but stopped runs has no figure at all. One task then starts with
-    /// the whole of what is left, which is more room than any floor would have given it.
+    /// Split by model, since what one model's runs cost differs from another's by several
+    /// times over. Runs that were stopped lift the estimate rather than being averaged into
+    /// it, and a model with nothing but stopped runs has no figure at all.
     pub fn under(rule: Rule, runs: impl IntoIterator<Item = Ran>) -> Self {
         let mut apart: BTreeMap<Option<String>, (Vec<u64>, u64)> = BTreeMap::new();
         for run in runs {

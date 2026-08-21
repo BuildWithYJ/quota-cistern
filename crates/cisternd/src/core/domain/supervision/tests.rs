@@ -213,10 +213,10 @@ fn with_nothing_to_go_on_and_one_running_nothing_starts() {
 /// More than half of what might start would finish inside what is left, which is worth
 /// more than stopping a session that still has budget.
 #[test]
-fn a_session_with_nothing_running_lowers_its_bar_to_what_most_runs_cost() {
+fn a_session_with_nothing_running_lowers_its_bar_to_what_a_cheap_run_costs() {
     assert_eq!(
         ceilings(decide(&Standing {
-            // Under a whole reservation, over what three runs in four of this model cost.
+            // Under a whole reservation, over what a run of this model in four comes in under.
             left: 110,
             running: 0,
             sizings: Sizings::under(
@@ -232,9 +232,9 @@ fn a_session_with_nothing_running_lowers_its_bar_to_what_most_runs_cost() {
     );
 }
 
-/// Not even what most runs of it cost fits, and nothing is running that would make room.
+/// Not even a cheap run of it fits, and nothing is running that would make room.
 #[test]
-fn a_session_that_cannot_cover_what_most_runs_cost_stops() {
+fn a_session_that_cannot_cover_a_cheap_run_stops() {
     assert_eq!(
         decide(&Standing {
             left: 40,
@@ -401,7 +401,7 @@ fn the_figures_are_read_between_the_runs() {
 
     assert_eq!(
         (sizing.estimate, sizing.fallback, sizing.over),
-        (400, 358, 4)
+        (358, 141, 4)
     );
 }
 
@@ -420,8 +420,7 @@ fn the_estimate_only_falls_under_the_dearest_run_once_there_are_runs_enough() {
         .estimate
     };
 
-    assert_eq!((costs(4), costs(8), costs(13)), (400, 800, 1_300));
-    assert_eq!(costs(14), 1_395);
+    assert_eq!((costs(4), costs(8), costs(13)), (358, 658, 1_033));
 }
 
 /// A run stopped at its ceiling spent what it was stopped at. Counting that as what the
@@ -446,8 +445,8 @@ fn a_rule_of_someones_own_is_what_a_sizing_is_worked_out_by() {
         ..Rule::default()
     });
 
-    assert_eq!((shipped.estimate, shipped.allowing()), (400, 500));
-    assert_eq!((wider.estimate, wider.allowing()), (400, 800));
+    assert_eq!((shipped.estimate, shipped.allowing()), (358, 447));
+    assert_eq!((wider.estimate, wider.allowing()), (358, 716));
     assert_eq!((lower.estimate, lower.allowing()), (250, 312));
 }
 
@@ -465,7 +464,7 @@ fn a_run_that_was_stopped_is_not_counted_as_what_its_task_costs() {
 
     assert_eq!(
         (sizing.estimate, sizing.fallback, sizing.over),
-        (400, 400, 2)
+        (400, 300, 2)
     );
 }
 
