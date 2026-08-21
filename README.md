@@ -20,11 +20,19 @@ You could build something yourself to run an agent unattended. Preparing it and 
 
 ## Getting started
 
-Installing gives you two commands, `cisternd` and `cistern`.
+Installing gives you two commands, `cisternd` and `cistern`. Take the archive for your machine
+and unpack it into a directory on your `PATH`. The two have to land in the same one, since the
+command line looks for the daemon beside itself.
 
 ```console
-$ cargo install --git https://github.com/BuildWithYJ/quota-cistern cistern cisternd
+$ mkdir -p ~/.local/bin
+$ curl -L https://github.com/BuildWithYJ/quota-cistern/releases/latest/download/cistern-aarch64-apple-darwin.tar.gz | tar -xz -C ~/.local/bin
 ```
+
+On Linux, take `cistern-x86_64-unknown-linux-gnu.tar.gz` instead. If `cistern` is not found
+afterwards, that directory is not on your `PATH`; unpack into one that is. Fetching with
+`curl` rather than through a browser matters on macOS: a browser marks what it downloads, and
+macOS refuses to run a marked file that nobody signed.
 
 `cisternd` is the daemon that runs the tasks and holds the state. The first `cistern` command starts one and it keeps running afterwards, so there is nothing to start by hand. What it writes goes to `~/.local/state/cistern/daemon.log`.
 
