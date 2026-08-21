@@ -1,8 +1,19 @@
-//! How many tasks may run, and whether a session has spent what it declared.
+//! What a session does next, worked out from how it stands.
 //!
-//! Section 2.2 of `docs/cli.md` says assignment is dynamic.
-//! Each time a task ends, what that task actually consumed decides whether one more fits.
-//! The arithmetic behind that decision is here, apart from the stores and the clock the decision is made against.
+//! Section 2.2 of `docs/cli.md` says assignment is dynamic: each time a task ends, what it
+//! consumed decides whether one more fits. The arithmetic is here, apart from the stores and
+//! the clock it is made against.
+//!
+//! Three questions, asked apart and answered together.
+//!
+//! ```text
+//! usage   what a run of this model has cost      Sizings
+//! time    how long one has taken, and how long the session has left
+//! budget  what is left, less what running tasks are already allowed
+//! ```
+//!
+//! None of them knows how many hands the machine has. What the budget covers is what `allow`
+//! answers; how many of those actually start is the service's to say.
 
 use std::{
     collections::BTreeMap,
@@ -81,48 +92,54 @@ impl Budget {
     }
 }
 
+/// Whether a run of this model would finish before the session's time runs out.
+///
+/// Starting one that would not spends what it spends and leaves nothing. A model nothing has
+/// been timed on holds nothing back.
+fn fits_the_clock(standing: &Standing, model: Option<&str>) -> bool {
+    !standing
+        .lasting
+        .model(model)
+        .is_some_and(|lasts| lasts.estimate > standing.time_left)
+}
+
+/// What to set aside for a run of this model, or nothing where what is left will not cover it.
+///
+/// Two figures and two situations. While others are going a run is sized at what three in four
+/// come in under, since going over eats budget they were counting on. With nothing going there
+/// is nobody to take from, so what is left goes to one more run rather than being left unspent.
+///
+/// A model nothing has finished a run with has no figure at all, and one task then starts with
+/// what is left and is measured.
+fn set_aside(standing: &Standing, model: Option<&str>, free: u64, alone: bool) -> Option<u64> {
+    let Some(sizing) = standing.sizings.model(model) else {
+        return alone.then_some(free);
+    };
+    let want = sizing.allowing().max(1);
+    match () {
+        _ if free >= want => Some(want),
+        _ if alone && free >= sizing.fallback.max(1) => Some(free),
+        _ => None,
+    }
+}
+
 /// What each waiting task may be allowed, taken in the order they wait.
 ///
 /// What holds the session to what it declared is the first line: what is left, less what the
 /// runs already going are allowed. Nothing about that depends on any figure being right.
 ///
-/// What a run of that model has cost caps it further, which buys back the budget a run would
-/// otherwise spend going nowhere.
+/// Taken in order, so a task that does not fit ends the round rather than letting a shorter
+/// one behind it go first. How many of these actually start is the machine's to say, not this.
 fn allow(standing: &Standing) -> Vec<Allowance> {
     let mut free = standing.left.saturating_sub(standing.booked);
     let mut given: Vec<Allowance> = Vec::new();
 
     for (task, model) in &standing.pending {
-        if standing.running + given.len() >= standing.at_once || free == 0 {
+        let alone = standing.running == 0 && given.is_empty();
+        if free == 0 || !fits_the_clock(standing, model.as_deref()) {
             break;
         }
-        let Some(sizing) = standing.sizings.model(model.as_deref()) else {
-            // Nothing to go on. One task, measured, and the next decision has a figure.
-            if standing.running == 0 && given.is_empty() {
-                given.push(Allowance {
-                    task: *task,
-                    ceiling: free,
-                });
-            }
-            break;
-        };
-        // A task the clock will stop part way through spends what it spends and leaves
-        // nothing. Taken in order, so one that does not fit ends the round rather than letting
-        // a shorter one behind it go first.
-        if standing
-            .lasting
-            .model(model.as_deref())
-            .is_some_and(|lasts| lasts.estimate > standing.time_left)
-        {
-            break;
-        }
-        let want = sizing.allowing().max(1);
-        let ceiling = if free >= want {
-            want
-        } else if standing.running == 0 && given.is_empty() && free >= sizing.fallback.max(1) {
-            // Nothing is going, so nothing else can be hurt by this one running over.
-            free
-        } else {
+        let Some(ceiling) = set_aside(standing, model.as_deref(), free, alone) else {
             break;
         };
         given.push(Allowance {
@@ -391,8 +408,6 @@ pub struct Standing {
     pub out_of_time: bool,
     /// Whether what it consumed could no longer be read.
     pub unreadable: bool,
-    /// The most tasks this machine has hands for.
-    pub at_once: usize,
 }
 
 /// What follows from how a session stands.

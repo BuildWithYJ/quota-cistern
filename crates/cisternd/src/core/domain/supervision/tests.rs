@@ -31,7 +31,6 @@ fn standing() -> Standing {
         blocked: false,
         out_of_time: false,
         unreadable: false,
-        at_once: 4,
     }
 }
 
@@ -329,19 +328,23 @@ fn the_bar_is_not_lowered_while_something_runs() {
 }
 
 #[test]
-fn no_more_than_a_handful_start_however_large_the_budget() {
-    assert_eq!(
+fn what_the_budget_covers_is_what_starts_however_many_wait() {
+    let starting = |left| {
         ceilings(decide(&Standing {
-            left: 1_000_000,
+            left,
             running: 0,
             pending: (1..=10)
                 .map(|n| (task(n), Some("opus".to_owned())))
                 .collect(),
             ..standing()
         }))
-        .len(),
-        4
-    );
+        .len()
+    };
+
+    // The default standing sizes a run of this model at 200, so a budget of a million covers
+    // every task waiting and one of five hundred covers two.
+    assert_eq!(starting(1_000_000), 10);
+    assert_eq!(starting(500), 2);
 }
 
 // what a model's runs have cost

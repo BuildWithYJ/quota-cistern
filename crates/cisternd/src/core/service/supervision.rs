@@ -170,22 +170,19 @@ impl Supervisor<'_> {
                 None => Spending::Tokens(Consumption::total(tasks.counted_in(session)).tokens()),
             };
             Ok(
-                match decide(&standing(
-                    tasks,
-                    &held,
-                    spent,
-                    &sizings,
-                    &lasting,
-                    self.at_once,
-                    now,
-                )) {
+                match decide(&standing(tasks, &held, spent, &sizings, &lasting, now)) {
                     // Stopping takes this store again and the sessions store with it, so it happens
                     // once this hold is given up rather than under it.
                     Decision::Stop(why) => Settled::Stop(spent, why),
+                    // How many of these start is the machine's to say. The decision says
+                    // what the budget will cover; this box has so many hands, and a task
+                    // assigned with no thread waiting for it would sit still holding its
+                    // share of the budget.
                     Decision::Start(allowed) => Settled::Started(
                         spent,
                         allowed
                             .iter()
+                            .take(self.at_once.saturating_sub(tasks.running_in(session)))
                             .filter_map(|allowance| {
                                 tasks.assign(allowance.task, session, allowance.ceiling, now)
                             })
@@ -515,14 +512,16 @@ fn sampled(run: &Run) -> Option<fn(Option<&str>, u64) -> Ran> {
     }
 }
 
-/// is holding the store for the ninety seconds the reading takes.
+/// How a session stands, from the backlog as it is held.
+///
+/// Everything read from a store rather than from the vendor, so this costs nothing and takes
+/// no time. What the vendor had to be asked was asked before the hold was taken.
 fn standing(
     tasks: &Backlog,
     held: &Session,
     spent: Spending,
     sizings: &Sizings,
     lasting: &Sizings,
-    at_once: usize,
     now: u64,
 ) -> Standing {
     let session = held.id();
@@ -537,7 +536,6 @@ fn standing(
         running: tasks.running_in(session),
         out_of_time: held.out_of_time(now),
         unreadable: matches!(tasks.consumed_by(session), Observation::Unreadable { .. }),
-        at_once,
     }
 }
 
