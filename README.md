@@ -69,15 +69,15 @@ Every task that ends is up for review, whether it completed, was interrupted, or
 ### Example
 
 ```console
-$ cistern task add --title "refactor utils" --instruction "tidy up src/utils"
+$ cistern task add --title "refactor utils" --instruction "tidy up src/utils/format.rs; cargo test utils passes"
 task:1 added to backlog
   title:  refactor utils
   branch: main (base)
   repo:   ~/work/api
 
-$ cistern task add --title "update docs" --instruction "document the new API"
+$ cistern task add --title "add a --json flag" --instruction "add a --json flag to src/cli.rs; scripts/check.sh passes"
 task:2 added to backlog
-  title:  update docs
+  title:  add a --json flag
   branch: main (base)
   repo:   ~/work/api
 
