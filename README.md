@@ -113,7 +113,7 @@ The agent runs with `--permission-mode bypassPermissions`. A work area is not a 
 
 ## Known limitations
 
-- A budget declared as a percentage is measured against the vendor's limit, which is read from its status line, so `run --usage 50%` and `interrupt` wait up to 90 seconds and the daemon answers nothing else while they do. A budget declared in tokens does not read it.
+- A budget declared as a percentage is measured against the vendor's limit, which is read from its status line, so `run --usage 50%` and `interrupt` wait up to 90 seconds. A budget declared in tokens does not read it.
 - That reading depends on how Claude Code presents its limit. The words it waits for and the place the figure sits are in the vendor definition, so a change there is a file to write rather than a release to wait for.
 - Work areas stay under the data directory and result branches stay in the repository. Nothing removes either for you.
 

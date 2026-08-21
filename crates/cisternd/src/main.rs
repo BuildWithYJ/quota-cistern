@@ -110,6 +110,17 @@ fn main() -> ExitCode {
         queued: &queued,
     };
 
+    // Each group owns the names its commands arrive under, so this offers the request to one and then the next.
+    // Made outside the threads below, since each of them answers with it and one made inside
+    // would go before they do.
+    let answer = |request| {
+        inbound::configuration::respond(&configuration, request)
+            .or_else(|request| inbound::backlog::respond(&backlog, request))
+            .or_else(|request| inbound::execution::respond(&execution, request))
+            .or_else(|request| inbound::review::respond(&review, request))
+            .unwrap_or_else(inbound::unknown)
+    };
+
     thread::scope(|threads| {
         // The same number the core was given, so a task it assigns has a thread waiting.
         for _ in 0..AT_ONCE {
@@ -123,15 +134,7 @@ fn main() -> ExitCode {
             });
         }
 
-        // Each group owns the names its commands arrive under, so this offers the request to one and then the next.
-        let answer = |request| {
-            inbound::configuration::respond(&configuration, request)
-                .or_else(|request| inbound::backlog::respond(&backlog, request))
-                .or_else(|request| inbound::execution::respond(&execution, request))
-                .or_else(|request| inbound::review::respond(&review, request))
-                .unwrap_or_else(inbound::unknown)
-        };
-        platform::serve::serve(&server, answer)
+        platform::serve::serve(&server, &answer, threads)
     })
 }
 
