@@ -13,6 +13,16 @@ The `cistern-contract` crate defines the envelope in Rust. The crate is the sour
 
 The core creates the socket when it starts and removes it when it exits. A surface that cannot connect reports that the core is not running.
 
+On Unix the directory holding the socket is created readable, writable, and searchable by its owner alone. `$XDG_RUNTIME_DIR` is already private to the user where the system sets it; where it is unset the socket goes under the home directory, which is commonly open to everyone on the machine, and a socket anyone may connect to is one anyone may give work to.
+
+## One core at a time
+
+On Unix the core takes an exclusive `flock` on `<socket directory>/lock` before it clears or binds the socket, and holds it until the process ends. A core that cannot take it exits rather than starting.
+
+The stores are held against a lock inside one process, which says nothing between two of them, so being the only core is what makes that lock true. Clearing a socket left behind by a killed core and binding a new one are also one step under it: two cores doing that at once each read the other's half-bound socket as dead and each take it away.
+
+The kernel gives the lock back when the holder ends, however it ended, which is what tells a core that is still running from a file a killed one left behind. On Windows the named pipe is a kernel object under a name only one process can hold, so the name itself does this and there is no lock file.
+
 One connection carries one request. The core never sends a message the surface did not ask for.
 
 ## Framing

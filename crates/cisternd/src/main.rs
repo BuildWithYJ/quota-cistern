@@ -33,6 +33,9 @@ use platform::work::Queue;
 /// more than there are threads to run.
 const AT_ONCE: usize = 4;
 
+/// The vendor a configuration that names none falls back to.
+const BY_DEFAULT: &str = "claude";
+
 fn main() -> ExitCode {
     if let Err(e) = platform::signal::remove_on_signal() {
         return quit(e);
@@ -53,30 +56,30 @@ fn main() -> ExitCode {
     let Some(worktrees) = outbound::git::worktree::GitWorktrees::in_data_home() else {
         return quit("neither XDG_DATA_HOME nor HOME is set");
     };
-    let Some(limit) = outbound::claude::limit::ClaudeLimit::in_data_home() else {
-        return quit("neither XDG_DATA_HOME nor HOME is set");
+    // The names there is a definition for, whether it ships or the user placed it.
+    // Adding a vendor is a file; nothing here and nothing in the core is touched.
+    let known = outbound::program::Definition::known();
+    let named = match chosen(&configuration_store, &known) {
+        Ok(named) => named,
+        Err(e) => return quit(e),
     };
-    let limit = match limit {
-        Ok(limit) => limit,
+    let definition = match outbound::program::Definition::found(&named) {
+        Ok(definition) => definition,
         Err(e) => return quit(e.reason),
     };
-    let Some(traces) = outbound::file::trace::FileTraces::in_data_home() else {
+    let Some(limit) = outbound::program::limit::ProgramLimit::in_data_home(definition.clone())
+    else {
         return quit("neither XDG_DATA_HOME nor HOME is set");
     };
-    // The names this build can run. Adding a vendor is a directory beside
-    // `claude` and a line here; the core is not touched.
-    let known = [outbound::claude::NAME.to_owned()];
-    if let Err(e) = runnable(&configuration_store, &known) {
-        return quit(e);
-    }
+    let Some(traces) = outbound::file::trace::FileTraces::in_data_home(shapes_of(&definition))
+    else {
+        return quit("neither XDG_DATA_HOME nor HOME is set");
+    };
 
     let roots = outbound::git::roots::GitRoots;
     let results = outbound::git::result::GitResults;
     let clock = outbound::clock::SystemClock;
-    let agent = match outbound::claude::agent::ClaudeAgent::new() {
-        Ok(agent) => agent,
-        Err(e) => return quit(e.reason),
-    };
+    let agent = outbound::program::agent::ProgramAgent::new(definition);
 
     let configuration = ConfigurationService::new(&configuration_store, known);
     let backlog = BacklogService::new(&backlog_store, &roots, &results);
@@ -176,20 +179,19 @@ impl<U: Carrying> Carrying for Queueing<'_, U> {
     }
 }
 
-/// Refuses to start on a stored vendor this build cannot run.
+/// Which vendor to run, refusing a name nothing defines.
 ///
-/// The check belongs here because only this file knows which adapters it holds.
-/// Failing once beats failing on every task a session assigns.
-fn runnable(store: &dyn ConfigurationStore, known: &[String]) -> Result<(), String> {
+/// Failing once here beats failing on every task a session assigns.
+fn chosen(store: &dyn ConfigurationStore, known: &[String]) -> Result<String, String> {
     let held = store.load().map_err(|e| e.reason)?;
     let Some((_, name)) = held.iter().find(|(key, _)| key == "vendor") else {
-        return Ok(());
+        return Ok(BY_DEFAULT.to_owned());
     };
     if known.contains(name) {
-        return Ok(());
+        return Ok(name.clone());
     }
     Err(format!(
-        "the configuration says vendor {name}, which this build cannot run; it runs {}",
+        "the configuration says vendor {name}, which nothing defines; there is {}",
         known.join(", ")
     ))
 }
@@ -202,6 +204,28 @@ fn why(e: &NotCarried) -> String {
     match e {
         NotCarried::NoSuchTask { id } => format!("{id} is no longer in the backlog"),
         NotCarried::Unavailable { reason } => format!("a store could not be read: {reason}"),
+    }
+}
+
+/// What a vendor's stream lines are shaped like, as the trace store asks for it.
+///
+/// The two are named apart on purpose. A file store has no business naming a vendor's
+/// module, so the names cross here rather than through a reference between adapters.
+fn shapes_of(definition: &outbound::program::Definition) -> outbound::file::trace::Shapes {
+    let held = &definition.trace;
+    outbound::file::trace::Shapes {
+        said: held.said.clone(),
+        came_back: held.came_back.clone(),
+        blocks: held.blocks.clone(),
+        text: held.text.clone(),
+        reached_for: held.reached_for.clone(),
+        result: held.result.clone(),
+        errored: held.errored.clone(),
+        held: held.held.clone(),
+        called: held.called.clone(),
+        given: held.given.clone(),
+        subject: held.subject.clone(),
+        subject_path: held.subject_path.clone(),
     }
 }
 

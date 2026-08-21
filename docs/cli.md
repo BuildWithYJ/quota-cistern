@@ -14,6 +14,14 @@ These apply to every command.
 
 `cistern --version` prints the version. Running `cistern` with no subcommand, or with invalid arguments, prints usage to stderr and exits with code 2.
 
+### The core
+
+Every command reaches the core, which owns what is stored. A command that finds no core running starts one and carries on, and the core it started keeps running afterwards. `--version` is the exception: it reports whether the two sides match, so it starts none.
+
+The core is looked for beside the command line and then on the `PATH`. A command that cannot start one, or that starts one which stops before answering, says so and exits with code 5.
+
+What the core writes goes to `$XDG_STATE_HOME/cistern/daemon.log`, or `~/.local/state/cistern/daemon.log` when that variable is unset. A core started by hand writes to the terminal instead.
+
 ### Exit codes
 
 | Code | Meaning | Description |
@@ -23,7 +31,7 @@ These apply to every command.
 | 2 | Usage error | Bad argument or flag |
 | 3 | Not found | No such session or task id |
 | 4 | State conflict | Operation not possible in the current state |
-| 5 | Core error | The core is not running, its version does not match the surface's, or it failed while handling the request |
+| 5 | Core error | No core could be started, the one that was started stopped before answering, its version does not match the surface's, or it failed while handling the request |
 
 ### Output
 
@@ -659,7 +667,7 @@ cistern config get [<key>]
 
 | Key | Value | Description |
 | --- | --- | --- |
-| `vendor` | `claude` | The agent to run. 0.1.0 supports `claude` only |
+| `vendor` | a name a definition exists for | The agent to run. `claude` ships with the daemon, and a file at `$XDG_CONFIG_HOME/cistern/vendors/<name>.toml` adds a name or lays over one that ships, `claude` included. A file laid over another replaces an array whole rather than adding to it, so an override that changes `args` has to keep whatever `answer.reader` reads |
 
 Configuration is stored at `$XDG_CONFIG_HOME/cistern/config.toml`, or `~/.config/cistern/config.toml` when that variable is unset.
 
