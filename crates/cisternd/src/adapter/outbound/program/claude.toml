@@ -1,0 +1,139 @@
+# Claude Code, as this build calls it.
+#
+# Everything the vendor names is here. To change one of them, write a file at
+# $XDG_CONFIG_HOME/cistern/vendors/claude.toml holding only what differs; it is laid over
+# this one, so the rest keeps coming from here and an upgrade brings the improvements with
+# it. Copying the whole of this file instead would freeze it at the moment it was copied.
+#
+#     turns = "100"
+
+program = "claude"
+
+# The goal leads the prompt. After the instruction the command is read as ordinary text
+# and gates nothing, which is why the order is fixed in `args` rather than left to
+# whoever composes the two.
+goal = "/goal The task described below is finished, its result is committed on the current branch, and git status reports a clean tree."
+
+# How far one run may go before it is cut off. A guard against a run that goes nowhere,
+# not the ceiling a session declares; that one is measured in what a task consumed and is
+# the supervisor's.
+turns = "200"
+spend = "20"
+
+# Arguments are grouped so that a group holding a place nobody filled is dropped whole.
+# A task that named no model has to lose --model with it.
+#
+# The last group is what `answer.reader` below reads. A file laid over this one replaces an
+# array whole rather than adding to it, so an `args` that leaves those flags out changes the
+# shape of the answer without changing the reader that expects it: runs then finish with
+# nothing readable where the usage should be. Override `args` and `answer.reader` together,
+# or leave that group in.
+args = [
+  ["--permission-mode", "bypassPermissions"],
+  ["--max-turns", "{turns}"],
+  ["--max-budget-usd", "{spend}"],
+  ["--model", "{model}"],
+  ["-p", "{goal}\n\n{instruction}"],
+  ["--output-format", "stream-json", "--verbose"],
+]
+
+[answer]
+# One object per line, the last of which is the answer and the rest the trace.
+reader = "last-json-line"
+
+# The name the vendor gives for stopping is what tells a ceiling from a failure.
+outcome = "subtype"
+
+# What a run that failed said about itself, when it said anything.
+said = "result"
+
+# The price, and what to multiply it by to reach millionths of the currency.
+cost = "total_cost_usd"
+cost_scale = 1000000.0
+
+# The per-model breakdown rather than the run's own `usage`. That one counts only the
+# calls that left a message, while the price covers all of them; the same answer shows
+# 3182 against 3377. The star adds up every model, since one run may reach for more
+# than one.
+input = "modelUsage.*.inputTokens"
+output = "modelUsage.*.outputTokens"
+cache_written = "modelUsage.*.cacheCreationInputTokens"
+cache_read = "modelUsage.*.cacheReadInputTokens"
+
+# A run cut off at a ceiling answers with no text of its own. The word it gives instead
+# is all there is to report, so each word carries the sentence to report for it. The
+# same places are filled here as in `args`.
+[answer.at_ceiling]
+error_max_turns = "the agent was cut off after {turns} turns"
+# What 2.1.227 answers with for `--max-budget-usd`, checked against it. `error_max_budget` is
+# what an earlier one said, and both are kept so that either answers the same way.
+error_max_budget_usd = "the agent was cut off at {spend} dollars"
+error_max_budget = "the agent was cut off at {spend} dollars"
+
+# How much of the five-hour allowance is left.
+#
+# The figure is only on the status line, and the status line is only drawn where there is
+# a terminal, so this is a session with a terminal attached rather than the one-shot
+# invocation above. Nothing of the user's own settings is loaded: those can hold anything,
+# and a session that stops to complain about them never draws a status line.
+[limit]
+reader = "status-line"
+program = "claude"
+args = [
+  ["--settings", "{settings}"],
+  ["--setting-sources", "project"],
+  ["--model", "haiku"],
+]
+
+# What the vendor is given to load, written out as JSON. `{script}` is the program the reader
+# wrote, which is the only way the figure leaves the session.
+settings = { statusLine = { type = "command", command = "{script}" } }
+
+# Sent once, because the figure is empty until an answer has come back.
+prompt = "say ok and nothing else"
+
+# What the screen says at the two moments something has to be typed. These are the
+# vendor's words and change when the vendor changes them.
+# Matched with the spacing and the case taken out, on both sides, so these are
+# written as the screen reads rather than as it arrives.
+trusts = "Trust this folder"
+ready = "try\""
+
+# The five-hour window. The longer one arrives beside it and is not read. The figure
+# crosses as hundredths of a percent, since the vendor writes a fraction that lands a
+# hair off a whole number.
+used = "rate_limits.five_hour.used_percentage"
+used_scale = 100.0
+resets_at = "rate_limits.five_hour.resets_at"
+
+# Long enough for a session to start, be trusted, take a prompt, and hear back; shorter
+# than a person's patience. A terminal that has finished drawing says nothing until it is
+# typed at, which is why the screen is looked at on a timer.
+give_up_after = 90
+settles_in = 4
+between_looks_ms = 200
+rows = 40
+cols = 120
+
+# What one line of what a run wrote amounts to.
+#
+# What the agent said and what it reached for, one sentence each. Its thinking is left
+# out, being long and addressed to nobody.
+[trace]
+said = "assistant"
+came_back = "user"
+blocks = "message.content"
+text = "text"
+reached_for = "tool_use"
+result = "tool_result"
+errored = "is_error"
+
+# What a result block holds, what a tool is called, and where its arguments are.
+held = "content"
+called = "name"
+given = "input"
+
+# A tool takes an object of arguments and one of them is what a person would say it acted
+# on. The rest is left in the file.
+subject = ["command", "pattern", "url", "description"]
+subject_path = ["file_path", "path", "notebook_path"]

@@ -83,11 +83,11 @@ fn nothing_is_reached_through_an_alias() {
     );
 }
 
-/// What a vendor calls a field is the vendor's.
-/// A vendor renaming one is a change to one adapter rather than to the core.
+/// What a vendor calls a field is the vendor's, and it belongs in a definition rather than
+/// in code. A vendor renaming one is then a change to a file.
 ///
-/// The names are the ones Claude Code answers with.
-/// Another vendor spells them differently.
+/// The names are the ones Claude Code answers with. Another vendor spells them
+/// differently, which is the point: none of them may be written in Rust.
 const VENDOR_FIELDS: &[&str] = &[
     "input_tokens",
     "output_tokens",
@@ -97,11 +97,15 @@ const VENDOR_FIELDS: &[&str] = &[
 ];
 
 #[test]
-fn no_vendor_field_name_reaches_the_core() {
+fn no_vendor_field_name_is_written_in_rust() {
     let mut named = Vec::new();
 
-    for file in rust_files(&workspace().join("crates/cisternd/src/core")) {
+    for file in rust_files(&workspace().join("crates/cisternd/src")) {
+        if is_a_test(&file) {
+            continue;
+        }
         let text = fs::read_to_string(&file).unwrap();
+        let text = written_code(&text);
         for field in VENDOR_FIELDS {
             if text.contains(field) {
                 named.push(format!("{} names {field}", under_workspace(&file)));
@@ -111,7 +115,7 @@ fn no_vendor_field_name_reaches_the_core() {
 
     assert!(
         named.is_empty(),
-        "docs/architecture.md says a vendor's words stop at its adapter:\n{}",
+        "docs/architecture.md says a vendor's words live in a definition, not in Rust:\n{}",
         named.join("\n")
     );
 }
@@ -129,6 +133,26 @@ fn the_socket_library_stays_in_the_contract() {
             !text.contains("interprocess"),
             "{crate_name} depends on interprocess; the exchange belongs to cistern-contract"
         );
+    }
+}
+
+/// Whether the whole file is a module's tests.
+///
+/// A test may write out a vendor's answer as the vendor sends it, and one that could not
+/// would be testing something other than what arrives. The clause is about the code that
+/// runs.
+fn is_a_test(file: &Path) -> bool {
+    file.file_name().is_some_and(|name| name == "tests.rs")
+}
+
+/// A file up to where its tests begin.
+///
+/// The same reason as `is_a_test`, for the modules whose tests are still written at the
+/// foot of the file they test. This goes when the last of them has moved.
+fn written_code(text: &str) -> &str {
+    match text.find("#[cfg(test)]") {
+        Some(at) => &text[..at],
+        None => text,
     }
 }
 
