@@ -1,1 +1,0 @@
-/goal The task described below is finished, its result is committed on the current branch, and git status reports a clean tree.

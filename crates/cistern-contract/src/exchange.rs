@@ -14,7 +14,7 @@ use interprocess::local_socket::{Listener, ListenerOptions, Name, Stream, prelud
 
 use crate::{
     Answer, Failure, Request, Response, VERSION,
-    address::{clear_if_dead, name, prepare},
+    address::{Alone, clear_if_dead, hold_alone, name, prepare},
     code::{CORE_ERROR, USAGE_ERROR},
 };
 
@@ -51,7 +51,10 @@ pub(crate) fn ask_at(
 /// The socket the core listens on.
 ///
 /// It holds the listener rather than handing it out, so that no caller has to name the socket library.
-pub struct Server(Listener);
+///
+/// It holds the lock that says this process is the one core for as long as it listens. Giving
+/// the server up is what gives the lock back, so the two cannot come apart.
+pub struct Server(Listener, #[allow(dead_code)] Option<Alone>);
 
 /// One connection that has arrived and not yet been answered.
 pub struct Exchange(Stream);
@@ -69,14 +72,33 @@ const WITHIN: Duration = Duration::from_secs(20);
 /// Fails with [`io::ErrorKind::AddrInUse`] when a core is already listening.
 pub fn listen() -> io::Result<Server> {
     prepare()?;
+    // Taken before the socket is cleared, so that one core is deciding whether the socket
+    // belongs to anyone. Two doing it at once each read the other's half-bound socket as dead
+    // and each take it away.
+    let alone = hold_alone()?;
     let name = name()?;
     clear_if_dead()?;
-    listen_at(name)
+    listen_at(name).map(|Server(listener, _)| Server(listener, Some(alone)))
 }
 
 /// Opens the socket at a given address, without preparing or clearing it.
+/// The whole of what opening the socket does, for a directory named rather than read out of
+/// the environment. A test reaches the order of the steps through here.
+#[cfg(all(unix, test))]
+pub(crate) fn listen_in(dir: &std::path::Path) -> io::Result<Server> {
+    crate::address::prepare_at(dir)?;
+    let alone = crate::address::hold_alone_at(&dir.join("lock"))?;
+    let sock = dir.join("sock");
+    crate::address::clear_if_dead_at(&sock)?;
+    listen_at(crate::address::named(&sock)?)
+        .map(|Server(listener, _)| Server(listener, Some(alone)))
+}
+
 pub(crate) fn listen_at(name: Name<'_>) -> io::Result<Server> {
-    ListenerOptions::new().name(name).create_sync().map(Server)
+    ListenerOptions::new()
+        .name(name)
+        .create_sync()
+        .map(|listener| Server(listener, None))
 }
 
 impl Server {
