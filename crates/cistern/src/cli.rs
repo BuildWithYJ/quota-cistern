@@ -26,7 +26,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Sets the vendor.
+    /// Sets the vendor, and how a session is run.
     Config {
         #[command(subcommand)]
         command: ConfigCommand,

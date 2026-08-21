@@ -31,7 +31,7 @@
 //! this runs. A turn of somebody's conversation is not one and is left out.
 
 use crate::core::{
-    domain::Rule,
+    domain::{Policy, Timing},
     port::{
         inbound::{Carrying, ExecutionUseCase},
         outbound::{BacklogStore, StoredTask},
@@ -270,7 +270,7 @@ impl Came {
 /// does is keep the ledger between sessions, so a sizing has every run there has ever been
 /// behind it.
 fn one_session(
-    rule: Rule,
+    policy: Policy,
     costs: &Costs,
     budget: u64,
     guard: u64,
@@ -312,7 +312,7 @@ fn one_session(
     };
     // Only this session's runs are counted, and the ledger already holds those before it.
     let before = runs.runs().len();
-    let supervisor = Supervisor::sizing_by(outside, AT_ONCE, rule);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, policy);
     let execution = ExecutionService::new(outside, &supervisor);
     let work = WorkService::new(outside, &supervisor);
 
@@ -358,32 +358,29 @@ fn one_session(
 #[test]
 #[ignore = "a sweep to read rather than a test to pass"]
 fn sweeping_the_rule() {
-    let shipped = Rule::default();
-    let rules: Vec<(String, Rule)> = [0, 1, 2, 3, 4]
+    let shipped = Policy::default();
+    let policies: Vec<(String, Policy)> = [0, 1, 2, 3, 4]
         .into_iter()
-        .map(|widen| (format!("widen {widen}"), Rule { widen, ..shipped }))
-        .chain([80, 90, 95, 99, 100].into_iter().map(|estimate| {
-            (
-                format!("quantile {estimate}"),
-                Rule {
-                    estimate,
-                    ..shipped
-                },
-            )
-        }))
-        .chain([0, 25, 50, 75, 100].into_iter().map(|fallback| {
-            (
-                format!("fallback {fallback}"),
-                Rule {
-                    fallback,
-                    ..shipped
-                },
-            )
-        }))
+        .map(|widen| (format!("widen {widen}"), Policy { widen, ..shipped }))
+        .chain(
+            [50, 75, 90, 95, 100]
+                .into_iter()
+                .map(|busy| (format!("busy {busy}"), Policy { busy, ..shipped })),
+        )
+        .chain(
+            [0, 25, 50, 75, 100]
+                .into_iter()
+                .map(|alone| (format!("alone {alone}"), Policy { alone, ..shipped })),
+        )
         .chain(
             [0, 1, 2, 4]
                 .into_iter()
-                .map(|lift| (format!("lift {lift}"), Rule { lift, ..shipped })),
+                .map(|lift| (format!("lift {lift}"), Policy { lift, ..shipped })),
+        )
+        .chain(
+            [Timing::Fits, Timing::Any]
+                .into_iter()
+                .map(|timing| (format!("timing {timing:?}"), Policy { timing, ..shipped })),
         )
         .collect();
 
@@ -400,10 +397,10 @@ fn sweeping_the_rule() {
                 "{:<14} {:>8} {:>8} {:>7} {:>7} {:>7} {:>7} {:>5}",
                 "rule", "finished", "stopped", "cut %", "used %", "lost %", "work %", "over"
             );
-            for (named, rule) in &rules {
+            for (named, policy) in &policies {
                 let runs = Ledger::default();
                 let came = (0..SESSIONS)
-                    .map(|seed| one_session(*rule, &costs, budget, GUARD, seed, &runs))
+                    .map(|seed| one_session(*policy, &costs, budget, GUARD, seed, &runs))
                     .fold(Came::default(), Came::and);
                 let all = (came.finished + came.stopped).max(1);
                 let spent = came.done + came.lost;

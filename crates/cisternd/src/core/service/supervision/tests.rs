@@ -11,6 +11,35 @@ use crate::core::{
 use super::super::fixtures::*;
 use super::super::{ExecutionService, Outside, Supervisor, WorkService};
 
+/// A person may choose how a session treats the clock, and a word nobody knows is refused by
+/// name rather than quietly ignored.
+#[test]
+fn what_a_person_chose_about_the_clock_is_read_or_refused() {
+    let sessions = Remembered::empty();
+    let tasks = Tasks::holding(vec![a_pending_task()]);
+    let areas = Areas::default();
+    let agent = Answering::finishing();
+    let runs = Ledger::default();
+    let outside = Outside {
+        sessions: &sessions,
+        tasks: &tasks,
+        worktrees: &areas,
+        agent: &agent,
+        clock: &STILL,
+        limit: &UNTOUCHED,
+        traces: &NOTHING_KEPT,
+        runs: &runs,
+    };
+
+    assert!(Supervisor::timed_by(outside, AT_ONCE, None).is_ok());
+    assert!(Supervisor::timed_by(outside, AT_ONCE, Some("fits")).is_ok());
+    assert!(Supervisor::timed_by(outside, AT_ONCE, Some("any")).is_ok());
+    assert_eq!(
+        Supervisor::timed_by(outside, AT_ONCE, Some("sometimes")).err(),
+        Some("the configuration says timing sometimes, which is neither fits nor any".to_owned())
+    );
+}
+
 /// A budget is a figure.
 /// A session that cannot be measured against its own would run past it without anything noticing.
 #[test]

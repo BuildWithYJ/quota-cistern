@@ -6,6 +6,8 @@
 
 use std::fmt::{self, Display};
 
+use super::Timing;
+
 /// The name of an agent to run.
 ///
 /// The core does not know which agents exist. It only knows the name it was
@@ -26,6 +28,7 @@ pub struct Known(Vec<String>);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
     Vendor,
+    Timing,
 }
 
 /// A key together with a value that key takes.
@@ -34,6 +37,7 @@ pub enum Key {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Setting {
     Vendor(VendorName),
+    Timing(Timing),
 }
 
 /// What is stored.
@@ -43,6 +47,7 @@ pub enum Setting {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Configuration {
     vendor: Option<VendorName>,
+    timing: Option<Timing>,
 }
 
 impl Key {
@@ -50,6 +55,7 @@ impl Key {
     pub fn parse(key: &str) -> Option<Self> {
         match key {
             "vendor" => Some(Key::Vendor),
+            "timing" => Some(Key::Timing),
             _ => None,
         }
     }
@@ -59,6 +65,7 @@ impl Display for Key {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Key::Vendor => "vendor",
+            Key::Timing => "timing",
         })
     }
 }
@@ -95,6 +102,7 @@ impl Setting {
     pub fn parse(key: Key, value: &str, known: &Known) -> Option<Self> {
         match key {
             Key::Vendor => known.read(value).map(Setting::Vendor),
+            Key::Timing => Timing::parse(value).map(Setting::Timing),
         }
     }
 }
@@ -104,6 +112,7 @@ impl Configuration {
     pub fn apply(&mut self, setting: Setting) {
         match setting {
             Setting::Vendor(vendor) => self.vendor = Some(vendor),
+            Setting::Timing(timing) => self.timing = Some(timing),
         }
     }
 
@@ -111,12 +120,13 @@ impl Configuration {
     pub fn value_of(&self, key: Key) -> Option<String> {
         match key {
             Key::Vendor => self.vendor.as_ref().map(VendorName::to_string),
+            Key::Timing => self.timing.map(|timing| timing.to_string()),
         }
     }
 
     /// Every key that holds something, in the order `docs/cli.md` lists them.
     pub fn entries(&self) -> Vec<(Key, String)> {
-        [Key::Vendor]
+        [Key::Vendor, Key::Timing]
             .into_iter()
             .filter_map(|key| self.value_of(key).map(|value| (key, value)))
             .collect()

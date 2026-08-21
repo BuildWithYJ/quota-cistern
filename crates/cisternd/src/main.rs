@@ -111,7 +111,12 @@ fn main() -> ExitCode {
 
     // One judgement, asked by the commands that need a decision and by the workers that carry
     // out what one assigned.
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = match setting(&configuration_store, "timing")
+        .and_then(|timing| Supervisor::timed_by(outside, AT_ONCE, timing.as_deref()))
+    {
+        Ok(supervisor) => supervisor,
+        Err(e) => return quit(e),
+    };
     let execution = ExecutionService::new(outside, &supervisor);
     let work = WorkService::new(outside, &supervisor);
 
@@ -233,6 +238,16 @@ fn chosen(store: &dyn ConfigurationStore, known: &[String]) -> Result<String, St
         "the configuration says vendor {name}, which nothing defines; there is {}",
         known.join(", ")
     ))
+}
+
+/// What the configuration says a key holds, if anything.
+fn setting(store: &dyn ConfigurationStore, key: &str) -> Result<Option<String>, String> {
+    Ok(store
+        .load()
+        .map_err(|e| e.reason)?
+        .into_iter()
+        .find(|(held, _)| held == key)
+        .map(|(_, value)| value))
 }
 
 /// What a worker says when a task could not be carried on.

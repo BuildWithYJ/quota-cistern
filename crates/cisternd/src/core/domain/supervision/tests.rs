@@ -18,7 +18,7 @@ fn standing() -> Standing {
     Standing {
         left: 1_000,
         booked: 0,
-        sizings: Sizings::under(Rule::default(), [Ran::finished(Some("opus"), 100)]),
+        sizings: Sizings::under(Policy::default(), [Ran::finished(Some("opus"), 100)]),
         // Nothing has been timed, so the clock lets everything start. The tests that are
         // about the clock say what runs have taken.
         lasting: Sizings::default(),
@@ -31,6 +31,7 @@ fn standing() -> Standing {
         blocked: false,
         out_of_time: false,
         unreadable: false,
+        policy: Policy::default(),
     }
 }
 
@@ -42,6 +43,35 @@ fn ceilings(decision: Decision) -> Vec<u64> {
 }
 
 // what a decision comes to
+
+/// The policy is a value, so a session run under another one is another value rather than
+/// another build. And the clock is part of it: what a session does about a run it may not
+/// have time for is a choice, and nothing so far says which choice is right.
+#[test]
+fn a_policy_of_someones_own_is_what_a_session_is_run_under() {
+    let out_of_reach = || Standing {
+        lasting: Sizings::under(Policy::default(), [Ran::finished(Some("opus"), 9_000)]),
+        time_left: 100,
+        running: 0,
+        ..standing()
+    };
+
+    assert_eq!(
+        decide(&out_of_reach()),
+        Decision::Stop(StoppedReason::BudgetHardlock)
+    );
+    assert_eq!(
+        ceilings(decide(&Standing {
+            policy: Policy {
+                timing: Timing::Any,
+                ..Policy::default()
+            },
+            ..out_of_reach()
+        }))
+        .len(),
+        2
+    );
+}
 
 #[test]
 fn a_session_with_room_and_something_waiting_starts_more() {
@@ -219,7 +249,7 @@ fn a_session_with_nothing_running_lowers_its_bar_to_what_a_cheap_run_costs() {
             left: 110,
             running: 0,
             sizings: Sizings::under(
-                Rule::default(),
+                Policy::default(),
                 [
                     Ran::finished(Some("opus"), 50),
                     Ran::finished(Some("opus"), 100),
@@ -239,7 +269,7 @@ fn a_session_that_cannot_cover_a_cheap_run_stops() {
             left: 40,
             running: 0,
             sizings: Sizings::under(
-                Rule::default(),
+                Policy::default(),
                 [
                     Ran::finished(Some("opus"), 50),
                     Ran::finished(Some("opus"), 100),
@@ -258,7 +288,7 @@ fn a_session_that_cannot_cover_a_cheap_run_stops() {
 fn a_task_that_cannot_finish_in_the_time_left_does_not_start() {
     assert_eq!(
         decide(&Standing {
-            lasting: Sizings::under(Rule::default(), [Ran::finished(Some("opus"), 900)]),
+            lasting: Sizings::under(Policy::default(), [Ran::finished(Some("opus"), 900)]),
             time_left: 600,
             ..standing()
         }),
@@ -270,7 +300,7 @@ fn a_task_that_cannot_finish_in_the_time_left_does_not_start() {
 fn a_task_that_fits_the_time_left_starts() {
     assert_eq!(
         ceilings(decide(&Standing {
-            lasting: Sizings::under(Rule::default(), [Ran::finished(Some("opus"), 900)]),
+            lasting: Sizings::under(Policy::default(), [Ran::finished(Some("opus"), 900)]),
             time_left: 3_600,
             ..standing()
         })),
@@ -285,7 +315,7 @@ fn a_session_with_nothing_running_and_no_time_for_another_run_stops() {
     assert_eq!(
         decide(&Standing {
             running: 0,
-            lasting: Sizings::under(Rule::default(), [Ran::finished(Some("opus"), 900)]),
+            lasting: Sizings::under(Policy::default(), [Ran::finished(Some("opus"), 900)]),
             time_left: 600,
             ..standing()
         }),
@@ -299,7 +329,7 @@ fn a_session_with_nothing_running_and_no_time_for_another_run_stops() {
 fn a_model_nothing_has_been_timed_on_starts_whatever_the_time_left() {
     assert_eq!(
         ceilings(decide(&Standing {
-            lasting: Sizings::under(Rule::default(), [Ran::finished(Some("haiku"), 900)]),
+            lasting: Sizings::under(Policy::default(), [Ran::finished(Some("haiku"), 900)]),
             time_left: 1,
             ..standing()
         })),
@@ -315,7 +345,7 @@ fn the_bar_is_not_lowered_while_something_runs() {
         decide(&Standing {
             left: 60,
             sizings: Sizings::under(
-                Rule::default(),
+                Policy::default(),
                 [
                     Ran::finished(Some("opus"), 50),
                     Ran::finished(Some("opus"), 100),
@@ -355,7 +385,7 @@ fn what_the_budget_covers_is_what_starts_however_many_wait() {
 #[test]
 fn each_model_is_worked_out_from_its_own_runs() {
     let sizings = Sizings::under(
-        Rule::default(),
+        Policy::default(),
         [
             Ran::finished(Some("haiku"), 10),
             Ran::finished(Some("haiku"), 20),
@@ -374,7 +404,7 @@ fn each_model_is_worked_out_from_its_own_runs() {
 #[test]
 fn runs_that_named_no_model_are_their_own() {
     let sizings = Sizings::under(
-        Rule::default(),
+        Policy::default(),
         [Ran::finished(None, 7), Ran::finished(Some("opus"), 900)],
     );
 
@@ -392,7 +422,7 @@ fn runs_that_named_no_model_are_their_own() {
 #[test]
 fn the_figures_are_read_between_the_runs() {
     let sizings = Sizings::under(
-        Rule::default(),
+        Policy::default(),
         [
             Ran::finished(Some("opus"), 100),
             Ran::finished(Some("opus"), 200),
@@ -415,7 +445,7 @@ fn the_figures_are_read_between_the_runs() {
 fn the_estimate_only_falls_under_the_dearest_run_once_there_are_runs_enough() {
     let costs = |over: u64| {
         Sizings::under(
-            Rule::default(),
+            Policy::default(),
             (1..=over).map(|each| Ran::finished(Some("opus"), each * 100)),
         )
         .model(Some("opus"))
@@ -434,18 +464,18 @@ fn the_estimate_only_falls_under_the_dearest_run_once_there_are_runs_enough() {
 #[test]
 fn a_rule_of_someones_own_is_what_a_sizing_is_worked_out_by() {
     let runs = || (1..=4).map(|each| Ran::finished(Some("opus"), each * 100));
-    let sized = |rule| Sizings::under(rule, runs()).model(Some("opus")).unwrap();
+    let sized = |policy| Sizings::under(policy, runs()).model(Some("opus")).unwrap();
 
-    let shipped = Sizings::under(Rule::default(), runs())
+    let shipped = Sizings::under(Policy::default(), runs())
         .model(Some("opus"))
         .unwrap();
-    let wider = sized(Rule {
+    let wider = sized(Policy {
         widen: 4,
-        ..Rule::default()
+        ..Policy::default()
     });
-    let lower = sized(Rule {
-        estimate: 50,
-        ..Rule::default()
+    let lower = sized(Policy {
+        busy: 50,
+        ..Policy::default()
     });
 
     assert_eq!((shipped.estimate, shipped.allowing()), (358, 447));
@@ -456,7 +486,7 @@ fn a_rule_of_someones_own_is_what_a_sizing_is_worked_out_by() {
 #[test]
 fn a_run_that_was_stopped_is_not_counted_as_what_its_task_costs() {
     let sizings = Sizings::under(
-        Rule::default(),
+        Policy::default(),
         [
             Ran::finished(Some("opus"), 300),
             Ran::finished(Some("opus"), 400),
@@ -476,7 +506,7 @@ fn a_run_that_was_stopped_is_not_counted_as_what_its_task_costs() {
 #[test]
 fn a_run_that_was_stopped_lifts_the_estimate_past_where_it_stopped() {
     let sizings = Sizings::under(
-        Rule::default(),
+        Policy::default(),
         [
             Ran::finished(Some("opus"), 300),
             Ran::finished(Some("opus"), 400),
@@ -492,14 +522,14 @@ fn a_run_that_was_stopped_lifts_the_estimate_past_where_it_stopped() {
 /// whole of what is left, which is more room than the floor would have given it.
 #[test]
 fn a_model_that_has_only_been_stopped_has_no_figure() {
-    let sizings = Sizings::under(Rule::default(), [Ran::stopped(Some("opus"), 900)]);
+    let sizings = Sizings::under(Policy::default(), [Ran::stopped(Some("opus"), 900)]);
 
     assert_eq!(sizings.model(Some("opus")), None);
 }
 
 #[test]
 fn one_run_is_both_figures() {
-    let sizings = Sizings::under(Rule::default(), [Ran::finished(Some("opus"), 42)]);
+    let sizings = Sizings::under(Policy::default(), [Ran::finished(Some("opus"), 42)]);
     let sizing = sizings.model(Some("opus")).unwrap();
 
     assert_eq!((sizing.estimate, sizing.fallback, sizing.over), (42, 42, 1));

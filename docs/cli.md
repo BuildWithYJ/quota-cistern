@@ -731,7 +731,7 @@ task:6 discarded
 
 #### `cistern config`
 
-Sets the vendor.
+Sets the vendor, and how a session is run.
 
 ```
 cistern config set <key> <value>
@@ -743,6 +743,7 @@ cistern config get [<key>]
 | Key | Value | Description |
 | --- | --- | --- |
 | `vendor` | a name a definition exists for | The agent to run. `claude` ships with the daemon, and a file at `$XDG_CONFIG_HOME/cistern/vendors/<name>.toml` adds a name or lays over one that ships, `claude` included. A file laid over another replaces an array whole rather than adding to it, so an override that changes `args` has to keep whatever `answer.reader` reads |
+| `timing` | `fits` · `any` | What a session does about a task a run of whose model has taken longer than the session has left. `fits` holds it back, since a run the clock stops part way spends what it spends and leaves nothing. `any` starts it anyway: a session out of time takes nothing more on and lets what is going finish, so being past the deadline no longer ends a run. Defaults to `fits` |
 
 Configuration is stored at `$XDG_CONFIG_HOME/cistern/config.toml`, or `~/.config/cistern/config.toml` when that variable is unset.
 

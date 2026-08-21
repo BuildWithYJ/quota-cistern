@@ -10,8 +10,9 @@
 
 use crate::core::{
     domain::{
-        Backlog, Consumption, Decision, HUNDREDTHS, Observation, Ran, Rule, Session, SessionId,
-        SessionState, Sizings, Spending, Standing, StoppedReason, TaskId, TaskState, Usage, decide,
+        Backlog, Consumption, Decision, HUNDREDTHS, Observation, Policy, Ran, Session, SessionId,
+        SessionState, Sizings, Spending, Standing, StoppedReason, TaskId, TaskState, Timing, Usage,
+        decide,
     },
     port::{
         inbound::Refusal,
@@ -65,21 +66,49 @@ pub struct Supervisor<'a> {
     ///
     /// What ships is `Rule::default`. A sweep that compares two of them varies this, so that
     /// comparing them is a loop rather than a build each.
-    rule: Rule,
+    policy: Policy,
 }
 
 impl<'a> Supervisor<'a> {
     pub fn new(outside: Outside<'a>, at_once: usize) -> Self {
-        Self::sizing_by(outside, at_once, Rule::default())
+        Self::running_by(outside, at_once, Policy::default())
     }
 
-    /// The same, sizing by a rule other than the one that ships.
-    pub fn sizing_by(outside: Outside<'a>, at_once: usize, rule: Rule) -> Self {
+    /// The same, run by a policy other than the one that ships.
+    pub(super) fn running_by(outside: Outside<'a>, at_once: usize, policy: Policy) -> Self {
         Supervisor {
             outside,
             at_once,
-            rule,
+            policy,
         }
+    }
+
+    /// The same, told what a person chose in the words they wrote it in.
+    ///
+    /// Text because the domain is private to the core, which is how the vendor's name reaches
+    /// `ConfigurationService`. Nothing chosen leaves the policy as it ships, and a word this
+    /// does not know is refused by name rather than ignored.
+    pub fn timed_by(
+        outside: Outside<'a>,
+        at_once: usize,
+        timing: Option<&str>,
+    ) -> Result<Self, String> {
+        let Some(said) = timing else {
+            return Ok(Supervisor::new(outside, at_once));
+        };
+        let Some(timing) = Timing::parse(said) else {
+            return Err(format!(
+                "the configuration says timing {said}, which is neither fits nor any"
+            ));
+        };
+        Ok(Supervisor::running_by(
+            outside,
+            at_once,
+            Policy {
+                timing,
+                ..Policy::default()
+            },
+        ))
     }
 }
 
@@ -170,7 +199,15 @@ impl Supervisor<'_> {
                 None => Spending::Tokens(Consumption::total(tasks.counted_in(session)).tokens()),
             };
             Ok(
-                match decide(&standing(tasks, &held, spent, &sizings, &lasting, now)) {
+                match decide(&standing(
+                    tasks,
+                    &held,
+                    spent,
+                    &sizings,
+                    &lasting,
+                    self.policy,
+                    now,
+                )) {
                     // Stopping takes this store again and the sessions store with it, so it happens
                     // once this hold is given up rather than under it.
                     Decision::Stop(why) => Settled::Stop(spent, why),
@@ -270,7 +307,7 @@ impl Supervisor<'_> {
             Usage::Tokens(_) => None,
         };
         Ok(Sizings::under(
-            self.rule,
+            self.policy,
             held.into_iter().filter_map(|run| {
                 let ran = sampled(&run)?;
                 let counted = spending_of(&run.spent?)?;
@@ -290,7 +327,7 @@ impl Supervisor<'_> {
     fn lasting(&self) -> Result<Sizings, Refusal> {
         let held = self.outside.runs.read()?;
         Ok(Sizings::under(
-            self.rule,
+            self.policy,
             held.into_iter().filter_map(|run| {
                 let ran = sampled(&run)?;
                 let started = run.started_at.parse::<u64>().ok()?;
@@ -522,6 +559,7 @@ fn standing(
     spent: Spending,
     sizings: &Sizings,
     lasting: &Sizings,
+    policy: Policy,
     now: u64,
 ) -> Standing {
     let session = held.id();
@@ -536,6 +574,7 @@ fn standing(
         running: tasks.running_in(session),
         out_of_time: held.out_of_time(now),
         unreadable: matches!(tasks.consumed_by(session), Observation::Unreadable { .. }),
+        policy,
     }
 }
 
