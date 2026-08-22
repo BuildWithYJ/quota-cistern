@@ -193,13 +193,13 @@ fn a_reason_reads_back_as_it_was_written() {
 }
 
 #[test]
-fn a_session_is_out_of_time_once_it_has_run_as_long_as_it_declared() {
+fn a_session_has_no_time_left_once_it_has_run_as_long_as_it_declared() {
     let mut sessions = Sessions::default();
     sessions.open(opening()).unwrap();
     let held = sessions.running().unwrap();
 
-    assert!(!held.out_of_time(1_000 + 8 * 3_600 - 1));
-    assert!(held.out_of_time(1_000 + 8 * 3_600));
+    assert_eq!(held.time_left(1_000 + 8 * 3_600 - 1), 1);
+    assert_eq!(held.time_left(1_000 + 8 * 3_600), 0);
 }
 
 #[test]

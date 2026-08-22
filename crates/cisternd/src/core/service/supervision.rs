@@ -10,9 +10,9 @@
 
 use crate::core::{
     domain::{
-        AT_CEILING, Backlog, Consumption, Decision, HUNDREDTHS, Observation, Policy, Ran, Session,
-        SessionId, SessionState, Sizings, Spending, Standing, StoppedReason, TaskId, TaskState,
-        Timing, Usage, decide,
+        AT_CEILING, Backlog, Before, Consumption, Decision, HUNDREDTHS, Observation, Policy,
+        Priced, Session, SessionId, SessionState, Sizings, Spending, Standing, StoppedReason,
+        TaskId, TaskState, Timing, Usage, decide, done_waiting, moved_per_millionth, sampled,
     },
     port::{
         inbound::Refusal,
@@ -174,14 +174,14 @@ impl Supervisor<'_> {
             return Ok(Vec::new());
         };
 
-        let read = match (held.budget().usage, read) {
-            (Usage::Share(_), None) => {
-                return self
-                    .stop(session, StoppedReason::ObservationUnreadable)
-                    .map(|_| Vec::new());
-            }
-            (Usage::Share(_), spent) => spent,
-            (Usage::Tokens(_), _) => None,
+        // A share the vendor would no longer answer for is one of the two ways a session
+        // becomes unmeasurable; a task whose own count did not read is the other. Which of
+        // them happened is this one's to know and what follows from it is not, so it is
+        // carried to `decide` as a fact rather than settled here.
+        let unread = matches!((held.budget().usage, read), (Usage::Share(_), None));
+        let read = match held.budget().usage {
+            Usage::Share(_) => read,
+            Usage::Tokens(_) => None,
         };
 
         // What runs have cost, in the unit this session declared, and how long they took. Both
@@ -189,24 +189,31 @@ impl Supervisor<'_> {
         // has ever been. File reads rather than vendor ones, and taken before the hold like the
         // vendor reading was.
         let ledger = self.outside.runs.read()?;
-        let sizings = self.sizings(held.budget().usage, &ledger);
-        let lasting = self.lasting(&ledger);
+        let before = Before {
+            cost: self.sizings(held.budget().usage, &ledger),
+            lasting: self.lasting(&ledger),
+        };
 
         let now = self.outside.clock.now();
         let settled = backlog::change(self.outside.tasks, |tasks| {
-            let spent = match read {
-                Some(spent) => spent,
-                None => Spending::Tokens(Consumption::total(tasks.counted_in(session)).tokens()),
+            let spent = match (read, held.budget().usage) {
+                (Some(spent), _) => spent,
+                // Nothing readable to measure this session against. What it last read stands
+                // in, since `decide` stops it whatever the figure says.
+                (None, Usage::Share(_)) => held.consumed(),
+                (None, Usage::Tokens(_)) => {
+                    Spending::Tokens(Consumption::total(tasks.counted_in(session)).tokens())
+                }
             };
             Ok(
                 match decide(&standing(
                     tasks,
                     &held,
                     spent,
-                    &sizings,
-                    &lasting,
+                    &before,
                     self.policy,
                     now,
+                    unread,
                 )) {
                     // Stopping takes this store again and the sessions store with it, so it happens
                     // once this hold is given up rather than under it.
@@ -300,7 +307,7 @@ impl Supervisor<'_> {
         // every run that reported both. Nothing here is in the unit a share is declared in
         // until a run has said both, which is where a session declared as a share starts.
         let per_millionth = match usage {
-            Usage::Share(_) => match moved_per_millionth(held) {
+            Usage::Share(_) => match moved_per_millionth(held.iter().filter_map(priced)) {
                 // No run has said both yet, so nothing here can be put in the unit this
                 // session declared. A figure of nothing would size every run at nothing and
                 // allow every run almost nothing, so there is no figure at all: one task
@@ -357,14 +364,16 @@ impl Supervisor<'_> {
     /// So a session with a run going stops at the decision that run's ending reaches.
     pub fn stop_if_out_of_time(&self) -> Result<(), Refusal> {
         let now = self.outside.clock.now();
-        let Some(session) = sessions::read(self.outside.sessions)?
-            .running()
-            .filter(|held| held.out_of_time(now))
-            .map(Session::id)
-        else {
+        let Some(held) = sessions::read(self.outside.sessions)?.running().cloned() else {
             return Ok(());
         };
-        if backlog::read(self.outside.tasks)?.running_in(session) > 0 {
+        let session = held.id();
+        // The same rule the decision a task's ending reaches asks, so that the two cannot come
+        // to different answers about one session.
+        if !done_waiting(
+            held.time_left(now),
+            backlog::read(self.outside.tasks)?.running_in(session),
+        ) {
             return Ok(());
         }
         self.stop(session, StoppedReason::BudgetHardlock)
@@ -450,52 +459,6 @@ impl Settled {
     }
 }
 
-/// How far the vendor's limit moved for every millionth the ledger's runs were priced at, as a
-/// pair to multiply and divide by rather than a fraction to round.
-///
-/// A run's own share of the limit cannot be read off the limit. The vendor keeps one figure for
-/// the account, so two runs going at once move it together and no reading tells them apart;
-/// taking a reading when each run ends splits the movement into stretches of time, and the run
-/// that ends first is handed whatever the others spent while it ran. What a run reported for
-/// itself is the only per-run figure there is.
-///
-/// So a run's size in the unit a share is declared in is what it was priced at, at the rate the
-/// whole ledger moved the limit. The rate is right even where the split was not: the total
-/// movement is the total movement however it is divided among the runs that caused it.
-///
-/// Priced rather than counted, because a token of one model is not a token of another. A rate
-/// taken over tokens is out for any one model by however much its tokens cost more or less than
-/// the rest of the ledger's, and the vendor has already told us that much in the price. What is
-/// left over is whatever the limit weighs differently from the price, which is the smaller
-/// question and the one there is no answer to here.
-fn moved_per_millionth(held: &[Run]) -> (u64, u64) {
-    let (mut moved, mut priced) = (0u64, 0u64);
-    for run in held {
-        let Some(spent) = run.spent.as_ref() else {
-            continue;
-        };
-        let Some(counted) = backlog::counted(spent) else {
-            continue;
-        };
-        let took = run
-            .limit_before
-            .as_ref()
-            .zip(run.limit_after.as_ref())
-            .and_then(|(before, after)| {
-                let before: u64 = before.parse().ok()?;
-                let after: u64 = after.parse().ok()?;
-                after.checked_sub(before)
-            });
-        // A limit that read lower afterwards is a window that began again, and what was spent
-        // before it turned over is in no reading at all.
-        if let Some(took) = took.filter(|took| *took > 0) {
-            moved = moved.saturating_add(took);
-            priced = priced.saturating_add(counted.cost);
-        }
-    }
-    (moved, priced)
-}
-
 /// What runs come to, by the model that ran them, under one figure taken from each.
 ///
 /// Two questions of the same ledger, what a run cost and how long it took, and the same runs
@@ -505,25 +468,30 @@ fn sized(policy: Policy, held: &[Run], figure: impl Fn(&Run) -> Option<u64>) -> 
     Sizings::under(
         policy,
         held.iter().filter_map(|run| {
-            let ran = sampled(run)?;
+            let ran = sampled(
+                TaskState::parse(&run.outcome)?,
+                run.reason.as_deref() == Some(AT_CEILING),
+            )?;
             Some(ran(run.model.as_deref(), figure(run)?))
         }),
     )
 }
 
-/// Which kind of sample a run is, or nothing where it is neither.
+/// What one line of the ledger says about the two units, as the domain asks for it.
 ///
-/// A run that finished says what its task takes. A run stopped at its ceiling says where it was
-/// stopped. A run that failed or that the vendor turned away says neither.
-fn sampled(run: &Run) -> Option<fn(Option<&str>, u64) -> Ran> {
-    match (
-        TaskState::parse(&run.outcome)?,
-        run.reason.as_deref() == Some(AT_CEILING),
-    ) {
-        (TaskState::Completed, _) => Some(Ran::finished),
-        (TaskState::Interrupted, true) => Some(Ran::stopped),
-        _ => None,
-    }
+/// Reading the text a store kept is this side's work. Nothing here decides anything: a line
+/// that says nothing about what it was priced at is left out, since there is no figure in it
+/// for either unit.
+fn priced(run: &Run) -> Option<Priced> {
+    let over = run
+        .limit_before
+        .as_ref()
+        .zip(run.limit_after.as_ref())
+        .and_then(|(before, after)| Some((before.parse().ok()?, after.parse().ok()?)));
+    Some(Priced {
+        over,
+        priced: backlog::counted(run.spent.as_ref()?)?.cost,
+    })
 }
 
 /// How a session stands, from the backlog as it is held.
@@ -534,22 +502,23 @@ fn standing(
     tasks: &Backlog,
     held: &Session,
     spent: Spending,
-    sizings: &Sizings,
-    lasting: &Sizings,
+    before: &Before,
     policy: Policy,
     now: u64,
+    unread: bool,
 ) -> Standing {
     let session = held.id();
     Standing {
         left: held.budget().left(spent),
         booked: tasks.booked_in(session),
-        sizings: sizings.clone(),
-        lasting: lasting.clone(),
+        before: before.clone(),
         time_left: held.time_left(now),
         pending: tasks.waiting(),
         blocked: tasks.blocked(),
         running: tasks.running_in(session),
-        unreadable: matches!(tasks.consumed_by(session), Observation::Unreadable { .. }),
+        // Either way of becoming unmeasurable: a share the vendor would not answer for, or a
+        // task whose own count did not read.
+        unreadable: unread || matches!(tasks.consumed_by(session), Observation::Unreadable { .. }),
         policy,
     }
 }

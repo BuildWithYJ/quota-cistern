@@ -5,19 +5,23 @@
 
 mod configuration;
 mod consumption;
+mod policy;
 mod session;
+mod sizing;
+mod spending;
 mod supervision;
 mod task;
 
 pub use configuration::{Configuration, Key, Known, Setting};
 pub use consumption::{Consumption, Observation};
+pub use policy::{Policy, Timing};
 pub use session::{
     Budget, Held, NotASessionSet, NotOpened, Opening, Session, SessionId, SessionState, Sessions,
     Span, StoppedReason, Usage,
 };
-pub use supervision::{
-    Decision, HUNDREDTHS, Policy, Ran, Sizings, Spending, Standing, Timing, decide,
-};
+pub use sizing::{Before, Priced, Sizings, moved_per_millionth, sampled};
+pub use spending::{HUNDREDTHS, Spending};
+pub use supervision::{Decision, Standing, decide, done_waiting};
 pub use task::{
     AT_CEILING, Backlog, DisposalRefused, Disposition, NotABacklog, RemovalRefused, Repository,
     Restored, Task, TaskId, TaskState,
