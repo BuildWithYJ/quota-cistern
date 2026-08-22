@@ -219,6 +219,8 @@ cistern task show <task>
 | `session` | string | Session it was assigned to, or null |
 | `state` | enum | Task state |
 | `title` | string | Task title |
+| `instruction` | string | What the run is given to work from |
+| `original` | string | What the author wrote, when the instruction was filled in from the repository, or null |
 | `base_branch` | string | Base branch |
 | `after` | string | Predecessor task, or null |
 | `model` | string | Model the task ran on |
@@ -250,7 +252,13 @@ task:2  Interrupted
   reason:      budget hardlock
   worktree:    ~/.local/share/cistern/worktrees/2
   disposition: (none)
+  instruction:
+    add tests; cargo test util passes (in src/util.rs)
+  original:
+    add tests; cargo test util passes
 ```
+
+An instruction runs to more than a column holds, so it is printed under its label rather than beside it. `original` is printed only for a task whose instruction was filled in; a task the author wrote whole has none.
 
 ### 2.2 Sessions and execution
 

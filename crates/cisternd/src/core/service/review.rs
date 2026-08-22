@@ -278,6 +278,7 @@ mod tests {
             id: id.to_owned(),
             title: "verify webhook signature".to_owned(),
             instruction: "do it".to_owned(),
+            original: None,
             branch: None,
             after: None,
             model: None,
