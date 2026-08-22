@@ -515,6 +515,14 @@ impl Sessions {
         }
     }
 
+    /// The session carrying that number, if one does.
+    ///
+    /// Beside `running`, which asks the same set the other way. A caller with a number in hand
+    /// asks here rather than walking the list itself.
+    pub fn find(&self, id: SessionId) -> Option<&Session> {
+        self.sessions.iter().find(|session| session.id == id)
+    }
+
     /// The session that is running, if one is.
     pub fn running(&self) -> Option<&Session> {
         self.sessions

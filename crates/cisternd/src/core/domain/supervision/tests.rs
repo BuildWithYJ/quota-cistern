@@ -29,7 +29,6 @@ fn standing() -> Standing {
         ],
         running: 1,
         blocked: false,
-        out_of_time: false,
         unreadable: false,
         policy: Policy::default(),
     }
@@ -97,7 +96,7 @@ fn a_consumption_nobody_could_read_stops_it() {
 fn a_session_out_of_time_takes_nothing_more_on() {
     assert_eq!(
         decide(&Standing {
-            out_of_time: true,
+            time_left: 0,
             running: 1,
             ..standing()
         }),
@@ -110,7 +109,7 @@ fn a_session_out_of_time_takes_nothing_more_on() {
 fn a_session_out_of_time_with_nothing_going_stops_with_budget_left() {
     assert_eq!(
         decide(&Standing {
-            out_of_time: true,
+            time_left: 0,
             running: 0,
             ..standing()
         }),

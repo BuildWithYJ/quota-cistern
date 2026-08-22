@@ -19,6 +19,6 @@ pub use supervision::{
     Decision, HUNDREDTHS, Policy, Ran, Sizings, Spending, Standing, Timing, decide,
 };
 pub use task::{
-    Backlog, DisposalRefused, Disposition, NotABacklog, RemovalRefused, Repository, Restored, Task,
-    TaskId, TaskState,
+    AT_CEILING, Backlog, DisposalRefused, Disposition, NotABacklog, RemovalRefused, Repository,
+    Restored, Task, TaskId, TaskState,
 };

@@ -194,22 +194,24 @@ fn dropped(data: &Value) {
 }
 
 fn tidied(data: &Value) {
-    let Some(items) = data.get("items").and_then(Value::as_array) else {
-        return;
-    };
-    let gone: Vec<&Value> = items
-        .iter()
-        .filter(|one| one.get("kept").is_none_or(Value::is_null))
-        .collect();
-    if gone.is_empty() && items.is_empty() {
+    let items = array(data, "items");
+    if items.is_empty() {
         println!("nothing to tidy up");
         return;
     }
-    if !gone.is_empty() {
-        let named: Vec<&str> = gone.iter().filter_map(|one| text(one, "task")).collect();
+    // A work area that was taken away says nothing about why it was kept; one that was left
+    // says why. That is the only thing telling the two apart, so it is asked once here and
+    // again below rather than the two being matched by value.
+    let taken = |one: &Value| one.get("kept").is_none_or(Value::is_null);
+    let named: Vec<&str> = items
+        .iter()
+        .filter(|one| taken(one))
+        .filter_map(|one| text(one, "task"))
+        .collect();
+    if !named.is_empty() {
         println!("tidied up  {}", named.join("  "));
     }
-    for one in items.iter().filter(|one| !gone.contains(one)) {
+    for one in items.iter().filter(|one| !taken(one)) {
         let (Some(task), Some(kept)) = (text(one, "task"), text(one, "kept")) else {
             continue;
         };

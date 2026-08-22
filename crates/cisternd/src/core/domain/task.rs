@@ -17,6 +17,14 @@ const DEFAULT_BRANCH: &str = "main";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TaskId(u32);
 
+/// The reason section 1 of `docs/cli.md` gives a task stopped at the ceiling on one run.
+///
+/// A word rather than a state, since the state is `Interrupted` whichever way a run was cut
+/// off. Beside the states because two roles read it: what a person is told, and what the
+/// supervisor reads back off the ledger, where a run that ended this way says where it was
+/// stopped rather than what its task takes.
+pub const AT_CEILING: &str = "task ceiling";
+
 /// The five states section 1 lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskState {

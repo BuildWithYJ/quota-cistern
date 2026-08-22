@@ -444,8 +444,6 @@ pub struct Standing {
     pub running: usize,
     /// Whether tasks are left that none of them may start.
     pub blocked: bool,
-    /// Whether the time it declared has run out.
-    pub out_of_time: bool,
     /// Whether what it consumed could no longer be read.
     pub unreadable: bool,
     /// How this session is being run.
@@ -474,14 +472,17 @@ pub fn decide(standing: &Standing) -> Decision {
     // declared is a deadline for taking work on, and a run that is past it is a run whose
     // length we guessed short. Ending it there spends everything it spent and leaves nothing,
     // and the guess was ours rather than anything the task did.
-    let starting = match standing.out_of_time {
+    // Nothing left of the time it declared is what out of time means, and it is the same
+    // figure `time_left` holds; a second field for it could disagree with the first.
+    let out_of_time = standing.time_left == 0;
+    let starting = match out_of_time {
         true => Vec::new(),
         false => allow(standing),
     };
     // Nothing more fits and nothing is running that would make room.
     // Waiting for a task that will never start is not carrying on.
     if standing.running == 0 && starting.is_empty() {
-        if standing.out_of_time {
+        if out_of_time {
             return Decision::Stop(StoppedReason::BudgetHardlock);
         }
         return Decision::Stop(match (standing.pending.is_empty(), standing.blocked) {

@@ -13,7 +13,7 @@ use std::{
     fs::{self, OpenOptions},
     io,
     os::unix::process::CommandExt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -117,43 +117,42 @@ fn started_then_asked(command: &str, params: Value) -> io::Result<Response> {
 /// It is put in a process group of its own so that it outlives the command that started it.
 /// A core sharing this one's group would take the interrupt meant for the command.
 fn start(kept: &PathBuf) -> io::Result<Child> {
-    let writing = OpenOptions::new().create(true).append(true).open(kept)?;
-    let mut running = Command::new(beside_this_one().unwrap_or_else(|| PathBuf::from(CORE)));
-    running
+    let at = program().ok_or_else(|| {
+        gave_up(&format!(
+            "no {CORE} beside this command and none on the PATH"
+        ))
+    })?;
+    Command::new(at)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(writing)
-        .process_group(0);
-
-    running.spawn().or_else(|beside| {
-        // Nothing beside the command line, so whatever the PATH holds.
-        Command::new(CORE)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(OpenOptions::new().create(true).append(true).open(kept)?)
-            .process_group(0)
-            .spawn()
-            .map_err(|on_path| {
-                gave_up(&format!(
-                    "no {CORE} beside this command ({beside}) and none on the PATH ({on_path})"
-                ))
-            })
-    })
+        .stderr(OpenOptions::new().create(true).append(true).open(kept)?)
+        .process_group(0)
+        .spawn()
 }
 
-/// The core program this command would start, which is the file a build replaces.
+/// The core program this command would start, and the file a build replaces.
 ///
-/// The same two places `start` tries and in the same order, so what this names is what would
-/// run. Nothing where neither holds one.
+/// One answer for both questions, so that what `--version` compares against is what would run.
+/// Beside the command line first, then the `PATH`.
 pub fn program() -> Option<PathBuf> {
     beside_this_one().or_else(on_path)
 }
 
-/// The first core the `PATH` holds.
+/// The first core the `PATH` holds that this user may run.
+///
+/// The permission bit is part of the question. A file of that name that cannot be run is not
+/// the core the `PATH` offers, and taking it for one would compare against a file no core was
+/// ever started from.
 fn on_path() -> Option<PathBuf> {
     env::split_paths(&env::var_os("PATH")?)
         .map(|dir| dir.join(CORE))
-        .find(|at| at.is_file())
+        .find(|at| runnable(at))
+}
+
+/// Whether a path names a file this user may run.
+fn runnable(at: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(at).is_ok_and(|held| held.is_file() && held.permissions().mode() & 0o111 != 0)
 }
 
 /// The core beside this command, which is where an install puts the two.
@@ -162,7 +161,7 @@ fn on_path() -> Option<PathBuf> {
 /// core rather than to an older one left somewhere on the `PATH`.
 fn beside_this_one() -> Option<PathBuf> {
     let beside = env::current_exe().ok()?.parent()?.join(CORE);
-    beside.is_file().then_some(beside)
+    runnable(&beside).then_some(beside)
 }
 
 /// The file what the core writes goes to, with its directory made.

@@ -135,13 +135,9 @@ impl ExecutionUseCase for ExecutionService<'_> {
         })?;
 
         let held = sessions::read(self.outside.sessions)?;
-        let session = held
-            .sessions()
-            .iter()
-            .find(|session| session.id() == wanted)
-            .ok_or_else(|| Refusal::NoSuchSession {
-                id: wanted.labelled(),
-            })?;
+        let session = held.find(wanted).ok_or_else(|| Refusal::NoSuchSession {
+            id: wanted.labelled(),
+        })?;
 
         let tasks = backlog::read(self.outside.tasks)?;
         let ran = tasks
@@ -221,29 +217,12 @@ impl ExecutionUseCase for ExecutionService<'_> {
         // nothing and what was last recorded stands, since a session stopped by hand is
         // stopped either way.
         self.supervising.spending_of(running)?;
-        let now = self.outside.clock.now();
-
-        // The runs end before the tasks do, so nothing is recorded as ended while its agent is still working.
-        for task in backlog::read(self.outside.tasks)?.taken_by(running) {
-            if task.state() == TaskState::Running {
-                self.outside.agent.stop(&task.id().to_string());
-            }
-        }
-
-        let interrupted = backlog::change(self.outside.tasks, |tasks| {
-            Ok(tasks.interrupt(running, &StoppedReason::Interrupted.to_string(), now))
-        })?;
-        sessions::change(self.outside.sessions, |sessions| {
-            sessions.stop(running, StoppedReason::Interrupted, now);
-            Ok(())
-        })?;
+        // The same stopping a session reaches on its own, which is where that whole order is
+        // written down. Only the reason differs, and only a person gives this one.
+        let interrupted = self.supervising.stop(running, StoppedReason::Interrupted)?;
 
         let held = sessions::read(self.outside.sessions)?;
-        let session = held
-            .sessions()
-            .iter()
-            .find(|session| session.id() == running)
-            .ok_or(Refusal::NoSessionRunning)?;
+        let session = held.find(running).ok_or(Refusal::NoSessionRunning)?;
 
         Ok(Stopped {
             session: running.labelled(),
@@ -288,8 +267,6 @@ impl ExecutionService<'_> {
         Span::of(until.saturating_sub(session.started_at()))
     }
 }
-
-impl ExecutionService<'_> {}
 
 #[cfg(test)]
 mod tests;

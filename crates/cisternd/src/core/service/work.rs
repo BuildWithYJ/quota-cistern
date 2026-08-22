@@ -7,7 +7,7 @@
 //! decision to the supervisor, which answers with what to run next.
 
 use crate::core::{
-    domain::{Consumption, Observation, StoppedReason, Task, TaskId, TaskState},
+    domain::{AT_CEILING, Consumption, Observation, StoppedReason, Task, TaskId, TaskState},
     port::{
         inbound::{Carrying, NotCarried, Refusal},
         outbound::{Cut, Observed, Outcome, Run, Spent, Work},
@@ -18,12 +18,6 @@ use super::{
     backlog, labelled, sessions,
     supervision::{Outside, Supervisor},
 };
-
-/// The reason section 1 gives a task stopped at the ceiling on one run.
-///
-/// The supervisor reads it back off the ledger: a run that ended this way says where it was
-/// stopped rather than what its task takes, which is not a figure to size the next one from.
-pub(super) const AT_CEILING: &str = "task ceiling";
 
 /// How a run came to an end, in the two places that have to hear it.
 ///
@@ -304,8 +298,7 @@ impl WorkService<'_> {
                 now,
                 Over {
                     before,
-                    after,
-                    read_at: after.map(|_| read_at),
+                    after: after.map(|after| (after, read_at)),
                 },
             )
         }))?;
@@ -363,6 +356,7 @@ fn not_carried(why: Refusal) -> NotCarried {
 /// second of those was taken. All three are the session's already, so they are handed in
 /// rather than asked for.
 fn ran(held: &Task, why: &Ended, now: u64, over: Over) -> Run {
+    let (spent, unreadable) = backlog::kept(held.consumed());
     Run {
         task: held.id().to_string(),
         session: held.session().map(|session| session.to_string()),
@@ -373,15 +367,12 @@ fn ran(held: &Task, why: &Ended, now: u64, over: Over) -> Run {
         reason: held.reason().map(str::to_owned),
         said: why.said.clone(),
         turns: why.turns.clone(),
-        spent: backlog::kept(held.consumed()),
-        unreadable: match held.consumed() {
-            Observation::Unreadable { why } => Some(why.clone()),
-            _ => None,
-        },
+        spent,
+        unreadable,
         ceiling: held.ceiling().map(|at| at.to_string()),
         limit_before: over.before.map(|at| at.to_string()),
-        limit_after: over.after.map(|at| at.to_string()),
-        limit_after_at: over.read_at.map(|at| at.to_string()),
+        limit_after: over.after.map(|(at, _)| at.to_string()),
+        limit_after_at: over.after.map(|(_, read_at)| read_at.to_string()),
     }
 }
 
@@ -389,11 +380,14 @@ fn ran(held: &Task, why: &Ended, now: u64, over: Over) -> Run {
 /// taken.
 ///
 /// A session declared in tokens never reads the limit, and neither does a run whose session is
-/// already gone, so all three are absent together.
+/// already gone, so both are absent together.
 struct Over {
     before: Option<u64>,
-    after: Option<u64>,
-    read_at: Option<u64>,
+    /// What the limit read when this run ended, and when that reading was taken.
+    ///
+    /// One value rather than two, since a reading and its time arrive together and are absent
+    /// together. Two fields would let a caller set one and forget the other.
+    after: Option<(u64, u64)>,
 }
 
 impl Over {
@@ -402,7 +396,6 @@ impl Over {
         Over {
             before: None,
             after: None,
-            read_at: None,
         }
     }
 }

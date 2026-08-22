@@ -14,9 +14,9 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::core::port::outbound::{Run, Runs, StoredConsumption, Unavailable};
+use crate::core::port::outbound::{Run, Runs, Unavailable};
 
-use super::{as_number, as_optional, as_text, as_value};
+use super::{Counted, as_number, as_optional, as_text, as_value, counted, kept::Kept, spending};
 
 /// What the file is called, beside the two the other stores keep.
 const NAMED: &str = "runs.jsonl";
@@ -66,19 +66,6 @@ struct Entry {
     limit_after_at: Value,
 }
 
-/// What one run consumed, as the file holds it.
-///
-/// The same shape the backlog keeps, so the two read alike.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Counted {
-    input: Value,
-    output: Value,
-    cache_written: Value,
-    cache_read: Value,
-    cost: Value,
-}
-
 impl FileRuns {
     /// Takes the path it is given.
     /// This is how a test reaches a temporary one.
@@ -88,13 +75,8 @@ impl FileRuns {
 
     /// Beside the backlog, under the directory `docs/cli.md` names.
     pub fn in_data_home() -> Option<Self> {
-        let base = match env::var_os("XDG_DATA_HOME") {
-            Some(dir) => PathBuf::from(dir),
-            None => PathBuf::from(env::var_os("HOME")?)
-                .join(".local")
-                .join("share"),
-        };
-        Some(FileRuns::at(base.join("cistern").join(NAMED)))
+        Kept::in_data_home(env::var_os("XDG_DATA_HOME"), env::var_os("HOME"), NAMED)
+            .map(FileRuns::at)
     }
 
     fn failing(&self, at: &Path, e: impl std::fmt::Display) -> Unavailable {
@@ -156,16 +138,6 @@ fn held(entry: Entry) -> Run {
     }
 }
 
-fn spending(counted: Counted) -> StoredConsumption {
-    StoredConsumption {
-        input: as_text(counted.input),
-        output: as_text(counted.output),
-        cache_written: as_text(counted.cache_written),
-        cache_read: as_text(counted.cache_read),
-        cost: as_text(counted.cost),
-    }
-}
-
 /// What the core hands over, as the file holds it.
 fn written(run: Run) -> Entry {
     Entry {
@@ -178,7 +150,7 @@ fn written(run: Run) -> Entry {
         reason: as_value(run.reason),
         said: as_value(run.said),
         turns: run.turns.as_deref().map_or(Value::Null, as_number),
-        spent: run.spent.map(counted),
+        spent: run.spent.as_ref().map(counted),
         unreadable: as_value(run.unreadable),
         ceiling: run.ceiling.as_deref().map_or(Value::Null, as_number),
         limit_before: run.limit_before.as_deref().map_or(Value::Null, as_number),
@@ -187,19 +159,11 @@ fn written(run: Run) -> Entry {
     }
 }
 
-fn counted(spent: StoredConsumption) -> Counted {
-    Counted {
-        input: as_number(&spent.input),
-        output: as_number(&spent.output),
-        cache_written: as_number(&spent.cache_written),
-        cache_read: as_number(&spent.cache_read),
-        cost: as_number(&spent.cost),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use tempfile::TempDir;
+
+    use crate::core::port::outbound::StoredConsumption;
 
     use super::*;
 

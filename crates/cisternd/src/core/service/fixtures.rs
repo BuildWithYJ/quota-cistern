@@ -4,6 +4,37 @@
 //! report over the same session. A test that reaches for a different stand-in would be testing
 //! a different session.
 
+/// The outside a service test runs against, with what it does not care about standing still.
+///
+/// One place rather than one per test. A port added to `Outside` is a line here and a line
+/// where the daemon is built, which is what that value promises; sixty tests each naming eight
+/// ports is how that promise stops being true.
+///
+/// A clock that does not move, a limit nobody asks, and no trace kept are what nearly every
+/// test wants. One that wants otherwise says so and takes the rest from here:
+///
+/// ```ignore
+/// let outside = Outside { limit: &climbing, ..stand_ins(&sessions, &tasks, &areas, &agent, &runs) };
+/// ```
+pub(super) fn stand_ins<'a>(
+    sessions: &'a dyn SessionStore,
+    tasks: &'a dyn BacklogStore,
+    areas: &'a dyn Worktrees,
+    agent: &'a dyn Agent,
+    runs: &'a dyn Runs,
+) -> Outside<'a> {
+    Outside {
+        sessions,
+        tasks,
+        worktrees: areas,
+        agent,
+        clock: &STILL,
+        limit: &UNTOUCHED,
+        traces: &NOTHING_KEPT,
+        runs,
+    }
+}
+
 /// The hands the composition root gives the core, fixed here.
 pub(super) const AT_ONCE: usize = 4;
 
@@ -12,6 +43,7 @@ use std::{
     sync::{Mutex, PoisonError},
 };
 
+use super::Outside;
 use crate::core::{
     port::inbound::Declaration,
     port::outbound::{

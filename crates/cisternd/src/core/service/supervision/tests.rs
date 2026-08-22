@@ -20,16 +20,7 @@ fn what_a_person_chose_about_the_clock_is_read_or_refused() {
     let areas = Areas::default();
     let agent = Answering::finishing();
     let runs = Ledger::default();
-    let outside = Outside {
-        sessions: &sessions,
-        tasks: &tasks,
-        worktrees: &areas,
-        agent: &agent,
-        clock: &STILL,
-        limit: &UNTOUCHED,
-        traces: &NOTHING_KEPT,
-        runs: &runs,
-    };
+    let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
 
     assert!(Supervisor::timed_by(outside, AT_ONCE, None).is_ok());
     assert!(Supervisor::timed_by(outside, AT_ONCE, Some("fits")).is_ok());
@@ -57,16 +48,7 @@ fn a_session_whose_count_could_not_be_read_stops_and_says_so() {
         },
     });
     let runs = Ledger::default();
-    let outside = Outside {
-        sessions: &sessions,
-        tasks: &tasks,
-        worktrees: &areas,
-        agent: &agent,
-        clock: &STILL,
-        limit: &UNTOUCHED,
-        traces: &NOTHING_KEPT,
-        runs: &runs,
-    };
+    let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
     let supervisor = Supervisor::new(outside, AT_ONCE);
     let execution = ExecutionService::new(outside, &supervisor);
     let work = WorkService::new(outside, &supervisor);
@@ -137,16 +119,7 @@ fn a_session_carries_tasks_that_take_more_than_the_ones_before_them() {
     let areas = Areas::default();
     let agent = Costing::taking([100, 200, 300, 400, 400]);
     let runs = Ledger::default();
-    let outside = Outside {
-        sessions: &sessions,
-        tasks: &tasks,
-        worktrees: &areas,
-        agent: &agent,
-        clock: &STILL,
-        limit: &UNTOUCHED,
-        traces: &NOTHING_KEPT,
-        runs: &runs,
-    };
+    let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
     let supervisor = Supervisor::new(outside, 1);
     let execution = ExecutionService::new(outside, &supervisor);
     let work = WorkService::new(outside, &supervisor);
@@ -178,16 +151,7 @@ fn a_run_that_was_cut_leaves_a_floor_under_what_its_kind_is_sized_at() {
     // Every run is held to the guard the definition carries, which is what cuts the second.
     let agent = Costing::taking([100, 400, 400]).guarded_at(200);
     let runs = Ledger::default();
-    let outside = Outside {
-        sessions: &sessions,
-        tasks: &tasks,
-        worktrees: &areas,
-        agent: &agent,
-        clock: &STILL,
-        limit: &UNTOUCHED,
-        traces: &NOTHING_KEPT,
-        runs: &runs,
-    };
+    let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
     let supervisor = Supervisor::new(outside, 1);
     let execution = ExecutionService::new(outside, &supervisor);
     let work = WorkService::new(outside, &supervisor);
@@ -218,16 +182,7 @@ fn a_session_that_spent_what_it_declared_stops_and_says_so() {
     let areas = Areas::default();
     let agent = Answering::finishing();
     let runs = Ledger::default();
-    let outside = Outside {
-        sessions: &sessions,
-        tasks: &tasks,
-        worktrees: &areas,
-        agent: &agent,
-        clock: &STILL,
-        limit: &UNTOUCHED,
-        traces: &NOTHING_KEPT,
-        runs: &runs,
-    };
+    let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
     let supervisor = Supervisor::new(outside, AT_ONCE);
     let execution = ExecutionService::new(outside, &supervisor);
     let work = WorkService::new(outside, &supervisor);
@@ -266,14 +221,8 @@ fn a_share_starts_several_once_it_knows_what_a_task_costs() {
     };
     let runs = Ledger::default();
     let outside = Outside {
-        sessions: &sessions,
-        tasks: &tasks,
-        worktrees: &areas,
-        agent: &agent,
-        clock: &STILL,
         limit: &moving,
-        traces: &NOTHING_KEPT,
-        runs: &runs,
+        ..stand_ins(&sessions, &tasks, &areas, &agent, &runs)
     };
     let supervisor = Supervisor::new(outside, AT_ONCE);
     let execution = ExecutionService::new(outside, &supervisor);
@@ -303,14 +252,8 @@ fn a_share_that_reached_what_it_declared_stops() {
     };
     let runs = Ledger::default();
     let outside = Outside {
-        sessions: &sessions,
-        tasks: &tasks,
-        worktrees: &areas,
-        agent: &agent,
-        clock: &STILL,
         limit: &moving,
-        traces: &NOTHING_KEPT,
-        runs: &runs,
+        ..stand_ins(&sessions, &tasks, &areas, &agent, &runs)
     };
     let supervisor = Supervisor::new(outside, AT_ONCE);
     let execution = ExecutionService::new(outside, &supervisor);
@@ -340,14 +283,8 @@ fn a_share_that_crosses_a_window_counts_both_of_them() {
     let turning = Turning::over(&[3_000, 3_400, 200]);
     let runs = Ledger::default();
     let outside = Outside {
-        sessions: &sessions,
-        tasks: &tasks,
-        worktrees: &areas,
-        agent: &agent,
-        clock: &STILL,
         limit: &turning,
-        traces: &NOTHING_KEPT,
-        runs: &runs,
+        ..stand_ins(&sessions, &tasks, &areas, &agent, &runs)
     };
     let supervisor = Supervisor::new(outside, AT_ONCE);
     let execution = ExecutionService::new(outside, &supervisor);
@@ -387,16 +324,7 @@ fn two_runs_of_a_size_are_sized_alike_however_the_readings_split() {
         a_run_of("1", 500_000, ("1000", "1900")),
         a_run_of("2", 500_000, ("1900", "2000")),
     ]));
-    let outside = Outside {
-        sessions: &sessions,
-        tasks: &tasks,
-        worktrees: &areas,
-        agent: &agent,
-        clock: &STILL,
-        limit: &UNTOUCHED,
-        traces: &NOTHING_KEPT,
-        runs: &runs,
-    };
+    let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
     let supervisor = Supervisor::new(outside, AT_ONCE);
     let execution = ExecutionService::new(outside, &supervisor);
 
@@ -426,16 +354,7 @@ fn two_runs_of_a_price_are_sized_alike_however_far_apart_their_counts_are() {
         a_run_costing("1", 1_000_000, 500_000, ("1000", "1900")),
         a_run_costing("2", 100_000, 500_000, ("1900", "2000")),
     ]));
-    let outside = Outside {
-        sessions: &sessions,
-        tasks: &tasks,
-        worktrees: &areas,
-        agent: &agent,
-        clock: &STILL,
-        limit: &UNTOUCHED,
-        traces: &NOTHING_KEPT,
-        runs: &runs,
-    };
+    let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
     let supervisor = Supervisor::new(outside, AT_ONCE);
     let execution = ExecutionService::new(outside, &supervisor);
 
@@ -472,14 +391,8 @@ fn a_run_that_crossed_a_window_is_no_sample_at_all() {
     let turning = Turning::over(&[3_000, 3_100, 100]);
     let runs = Ledger::default();
     let outside = Outside {
-        sessions: &sessions,
-        tasks: &tasks,
-        worktrees: &areas,
-        agent: &agent,
-        clock: &STILL,
         limit: &turning,
-        traces: &NOTHING_KEPT,
-        runs: &runs,
+        ..stand_ins(&sessions, &tasks, &areas, &agent, &runs)
     };
     let supervisor = Supervisor::new(outside, AT_ONCE);
     let execution = ExecutionService::new(outside, &supervisor);
@@ -512,16 +425,7 @@ fn two_tasks_ending_at_once_do_not_start_more_than_the_machine_takes() {
         let areas = Areas::default();
         let agent = Answering::finishing();
         let runs = Ledger::default();
-        let outside = Outside {
-            sessions: &sessions,
-            tasks: &tasks,
-            worktrees: &areas,
-            agent: &agent,
-            clock: &STILL,
-            limit: &UNTOUCHED,
-            traces: &NOTHING_KEPT,
-            runs: &runs,
-        };
+        let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
         let supervisor = Supervisor::new(outside, AT_ONCE);
         let execution = ExecutionService::new(outside, &supervisor);
         let work = WorkService::new(outside, &supervisor);
@@ -562,16 +466,7 @@ fn two_tasks_ending_at_once_do_not_assign_past_what_is_left() {
         let areas = Areas::default();
         let agent = Answering::finishing();
         let runs = Ledger::default();
-        let outside = Outside {
-            sessions: &sessions,
-            tasks: &tasks,
-            worktrees: &areas,
-            agent: &agent,
-            clock: &STILL,
-            limit: &UNTOUCHED,
-            traces: &NOTHING_KEPT,
-            runs: &runs,
-        };
+        let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
         // Room enough that what is left is what decides, not the machine.
         let supervisor = Supervisor::new(outside, 8);
         let execution = ExecutionService::new(outside, &supervisor);
@@ -615,14 +510,8 @@ fn a_share_whose_limit_stops_being_readable_stops_the_session() {
     let limit = AtPercent::at(1_000);
     let runs = Ledger::default();
     let outside = Outside {
-        sessions: &sessions,
-        tasks: &tasks,
-        worktrees: &areas,
-        agent: &agent,
-        clock: &STILL,
         limit: &limit,
-        traces: &NOTHING_KEPT,
-        runs: &runs,
+        ..stand_ins(&sessions, &tasks, &areas, &agent, &runs)
     };
     let supervisor = Supervisor::new(outside, AT_ONCE);
     let execution = ExecutionService::new(outside, &supervisor);
@@ -651,16 +540,7 @@ fn stopping_a_session_ends_the_runs_it_still_had_going() {
     let areas = Areas::default();
     let agent = Answering::finishing();
     let runs = Ledger::default();
-    let outside = Outside {
-        sessions: &sessions,
-        tasks: &tasks,
-        worktrees: &areas,
-        agent: &agent,
-        clock: &STILL,
-        limit: &UNTOUCHED,
-        traces: &NOTHING_KEPT,
-        runs: &runs,
-    };
+    let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
     let supervisor = Supervisor::new(outside, AT_ONCE);
     ExecutionService::new(outside, &supervisor)
         .run(declaring("2M", "8h"))
@@ -744,16 +624,7 @@ fn a_session_with_time_left_is_left_alone() {
     let areas = Areas::default();
     let agent = Answering::finishing();
     let runs = Ledger::default();
-    let outside = Outside {
-        sessions: &sessions,
-        tasks: &tasks,
-        worktrees: &areas,
-        agent: &agent,
-        clock: &STILL,
-        limit: &UNTOUCHED,
-        traces: &NOTHING_KEPT,
-        runs: &runs,
-    };
+    let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
     let supervisor = Supervisor::new(outside, AT_ONCE);
     ExecutionService::new(outside, &supervisor)
         .run(declaring("2M", "8h"))

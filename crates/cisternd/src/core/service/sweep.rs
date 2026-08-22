@@ -109,12 +109,6 @@ const SHAPES: [Shape; 4] = [Shape::Alike, Shape::Spread, Shape::Tailed, Shape::S
 struct Observed {
     model: String,
     tokens: u64,
-    /// How long it took, which a clock that moves would hold a session to.
-    #[allow(dead_code)]
-    seconds: u64,
-    /// When it began, which says how runs like these overlapped.
-    #[allow(dead_code)]
-    began: u64,
 }
 
 /// Where a task's cost and model come from.

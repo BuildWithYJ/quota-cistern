@@ -8,13 +8,12 @@ use std::{env, path::PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::core::port::outbound::{
-    BacklogStore, StoredBacklog, StoredConsumption, StoredTask, Unavailable,
-};
+use crate::core::port::outbound::{BacklogStore, StoredBacklog, StoredTask, Unavailable};
 
 use super::{
+    Counted, counted,
     kept::Kept,
-    {as_number, as_optional, as_text, as_value},
+    spending, {as_number, as_optional, as_text, as_value},
 };
 
 /// The backlog, kept as JSON at a path fixed when this is built.
@@ -73,21 +72,6 @@ struct Entry {
     disposition: Value,
 }
 
-/// What a task consumed, as the file holds it.
-///
-/// An object of its own rather than five fields beside the others.
-/// That way a task that never ran carries no counts at all.
-/// A reader can see which of the three states a task is in without comparing five keys.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct Counted {
-    input: Value,
-    output: Value,
-    cache_written: Value,
-    cache_read: Value,
-    cost: Value,
-}
-
 /// What the file is called where `docs/cli.md` says it is kept.
 const NAMED: &str = "backlog.json";
 
@@ -140,13 +124,7 @@ impl FileBacklog {
                     reason: as_optional(entry.reason),
                     attempts: as_optional(entry.attempts),
                     ceiling: as_optional(entry.ceiling),
-                    consumed: entry.consumed.map(|counted| StoredConsumption {
-                        input: as_text(counted.input),
-                        output: as_text(counted.output),
-                        cache_written: as_text(counted.cache_written),
-                        cache_read: as_text(counted.cache_read),
-                        cost: as_text(counted.cost),
-                    }),
+                    consumed: entry.consumed.map(spending),
                     unreadable: as_optional(entry.unreadable),
                     disposition: as_optional(entry.disposition),
                 })
@@ -177,13 +155,7 @@ impl FileBacklog {
                     reason: as_value(task.reason.clone()),
                     attempts: task.attempts.as_deref().map_or(Value::Null, as_number),
                     ceiling: task.ceiling.as_deref().map_or(Value::Null, as_number),
-                    consumed: task.consumed.as_ref().map(|counted| Counted {
-                        input: as_number(&counted.input),
-                        output: as_number(&counted.output),
-                        cache_written: as_number(&counted.cache_written),
-                        cache_read: as_number(&counted.cache_read),
-                        cost: as_number(&counted.cost),
-                    }),
+                    consumed: task.consumed.as_ref().map(counted),
                     unreadable: as_value(task.unreadable.clone()),
                     disposition: as_value(task.disposition.clone()),
                 })
@@ -218,6 +190,8 @@ mod tests {
     use std::fs;
 
     use tempfile::TempDir;
+
+    use crate::core::port::outbound::StoredConsumption;
 
     use super::*;
 
