@@ -237,7 +237,7 @@ impl WorkService<'_> {
             // again, and the reading it is holding is the last there will be.
             // Nothing was said about how it ended: the vendor would not take it, which is
             // the session's state rather than anything about this task.
-            let run = held.map(|held| ran(held, &Ended::nothing(), now, (None, None)));
+            let run = held.map(|held| ran(held, &Ended::nothing(), now, Over::unread()));
             tasks.wait_again(id, now);
             Ok((session, run))
         })?;
@@ -278,7 +278,7 @@ impl WorkService<'_> {
             self.remember(
                 ended
                     .as_ref()
-                    .map(|held| ran(held, &why, now, (None, None))),
+                    .map(|held| ran(held, &why, now, Over::unread())),
             )?;
             return Ok(Vec::new());
         };
@@ -293,11 +293,22 @@ impl WorkService<'_> {
         let before = self.supervising.limit_last_seen(session)?;
         let read = self.supervising.measured(session)?;
         let after = self.supervising.limit_last_seen(session)?;
-        self.remember(
-            ended
-                .as_ref()
-                .map(|held| ran(held, &why, now, (before, after))),
-        )?;
+        // Taken after the reading rather than with `now`, which was read before the vendor was
+        // asked. Asking takes as long as it takes, and what the limit did meanwhile is in the
+        // figure; this is what says over how long.
+        let read_at = self.outside.clock.now();
+        self.remember(ended.as_ref().map(|held| {
+            ran(
+                held,
+                &why,
+                now,
+                Over {
+                    before,
+                    after,
+                    read_at: after.map(|_| read_at),
+                },
+            )
+        }))?;
 
         self.supervising.settle(session, read).map(labelled)
     }
@@ -348,9 +359,10 @@ fn not_carried(why: Refusal) -> NotCarried {
 /// Taken from the task while the store is held, so the figures are the ones the run left rather
 /// than the ones a later run put there.
 ///
-/// `over` is how far the vendor's limit was spent before the run and after it. Both are
-/// readings the session already took, so they are handed in rather than asked for.
-fn ran(held: &Task, why: &Ended, now: u64, over: (Option<u64>, Option<u64>)) -> Run {
+/// `over` is how far the vendor's limit was spent before the run and after it, and when the
+/// second of those was taken. All three are the session's already, so they are handed in
+/// rather than asked for.
+fn ran(held: &Task, why: &Ended, now: u64, over: Over) -> Run {
     Run {
         task: held.id().to_string(),
         session: held.session().map(|session| session.to_string()),
@@ -367,8 +379,31 @@ fn ran(held: &Task, why: &Ended, now: u64, over: (Option<u64>, Option<u64>)) -> 
             _ => None,
         },
         ceiling: held.ceiling().map(|at| at.to_string()),
-        limit_before: over.0.map(|at| at.to_string()),
-        limit_after: over.1.map(|at| at.to_string()),
+        limit_before: over.before.map(|at| at.to_string()),
+        limit_after: over.after.map(|at| at.to_string()),
+        limit_after_at: over.read_at.map(|at| at.to_string()),
+    }
+}
+
+/// What the vendor's limit stood at either side of a run, and when the second of the two was
+/// taken.
+///
+/// A session declared in tokens never reads the limit, and neither does a run whose session is
+/// already gone, so all three are absent together.
+struct Over {
+    before: Option<u64>,
+    after: Option<u64>,
+    read_at: Option<u64>,
+}
+
+impl Over {
+    /// A run nobody read the limit for.
+    fn unread() -> Self {
+        Over {
+            before: None,
+            after: None,
+            read_at: None,
+        }
     }
 }
 

@@ -58,6 +58,7 @@ pub(super) fn a_run_costing(task: &str, tokens: u64, cost: u64, over: (&str, &st
         ceiling: None,
         limit_before: Some(over.0.to_owned()),
         limit_after: Some(over.1.to_owned()),
+        limit_after_at: Some("1100".to_owned()),
     }
 }
 
@@ -246,6 +247,20 @@ impl Clock for Frozen {
 }
 
 pub(super) static STILL: Frozen = Frozen(1_000);
+
+/// A clock that moves a second every time it is read.
+///
+/// For the one question a still clock cannot answer: whether a moment was taken before
+/// something or after it.
+pub(super) struct Ticking(pub(super) Mutex<u64>);
+
+impl Clock for Ticking {
+    fn now(&self) -> u64 {
+        let mut held = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        *held += 1;
+        *held
+    }
+}
 
 /// A vendor limit that stands where a test put it.
 pub(super) struct AtPercent {

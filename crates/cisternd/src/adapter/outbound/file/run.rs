@@ -61,6 +61,9 @@ struct Entry {
     limit_before: Value,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     limit_after: Value,
+    /// When the reading that ends the run was taken, which is not when the run ended.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    limit_after_at: Value,
 }
 
 /// What one run consumed, as the file holds it.
@@ -149,6 +152,7 @@ fn held(entry: Entry) -> Run {
         ceiling: as_optional(entry.ceiling),
         limit_before: as_optional(entry.limit_before),
         limit_after: as_optional(entry.limit_after),
+        limit_after_at: as_optional(entry.limit_after_at),
     }
 }
 
@@ -179,6 +183,7 @@ fn written(run: Run) -> Entry {
         ceiling: run.ceiling.as_deref().map_or(Value::Null, as_number),
         limit_before: run.limit_before.as_deref().map_or(Value::Null, as_number),
         limit_after: run.limit_after.as_deref().map_or(Value::Null, as_number),
+        limit_after_at: run.limit_after_at.as_deref().map_or(Value::Null, as_number),
     }
 }
 
@@ -226,6 +231,7 @@ mod tests {
             ceiling: Some("900".to_owned()),
             limit_before: Some("1100".to_owned()),
             limit_after: Some("1400".to_owned()),
+            limit_after_at: Some("1786350140".to_owned()),
         }
     }
 
@@ -258,6 +264,7 @@ mod tests {
                 },
                 "limit_before": 1_100u64,
                 "limit_after": 1_400u64,
+                "limit_after_at": 1_786_350_140u64,
             })]
         );
     }
@@ -271,6 +278,7 @@ mod tests {
         runs.append(Run {
             limit_before: None,
             limit_after: None,
+            limit_after_at: None,
             ..a_run("1")
         })
         .unwrap();
@@ -278,6 +286,7 @@ mod tests {
         let held = lines(&runs)[0].clone();
         assert!(held.get("limit_before").is_none(), "{held}");
         assert!(held.get("limit_after").is_none(), "{held}");
+        assert!(held.get("limit_after_at").is_none(), "{held}");
     }
 
     /// The whole reason this file is not read and written whole.

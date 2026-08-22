@@ -747,6 +747,61 @@ fn a_run_of_a_share_records_where_the_limit_stood_either_side_of_it() {
     assert_ne!(before, after, "the run cost nothing the limit could see");
 }
 
+/// When the reading that ends a run was taken, which is not when the run ended.
+///
+/// Reading the limit means putting a session in front of the vendor and waiting for its
+/// status line. Whatever moved the limit over that stretch is in the figure, so a line that
+/// says only what the figure was cannot say over how long it was gathered. With this, what
+/// sits between two runs of a session is readable, and a stretch with nothing of ours going
+/// is somebody else's doing.
+#[test]
+fn a_run_of_a_share_says_when_the_reading_that_ended_it_was_taken() {
+    let sessions = Remembered::empty();
+    let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+    let areas = Areas::default();
+    let agent = Answering::finishing();
+    let climbing = Advancing {
+        used: Mutex::new(1_000),
+        step: 300,
+    };
+    let runs = Ledger::default();
+    // A still clock cannot tell a moment taken before the vendor was asked from one taken
+    // after, which is the whole of what this is about.
+    let moving = Ticking(Mutex::new(1_000));
+    let outside = Outside {
+        sessions: &sessions,
+        tasks: &tasks,
+        worktrees: &areas,
+        agent: &agent,
+        clock: &moving,
+        limit: &climbing,
+        traces: &NOTHING_KEPT,
+        runs: &runs,
+    };
+    let supervisor = Supervisor::new(outside, AT_ONCE);
+
+    ExecutionService::new(outside, &supervisor)
+        .run(declaring("50%", "8h"))
+        .unwrap();
+    WorkService::new(outside, &supervisor)
+        .carry_on("task:1")
+        .unwrap();
+
+    let written = runs.runs();
+    assert_eq!(written.len(), 1, "{written:?}");
+    let read_at: u64 = written[0]
+        .limit_after_at
+        .as_deref()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let ended_at: u64 = written[0].ended_at.parse().unwrap();
+    assert!(
+        read_at > ended_at,
+        "the reading was dated before the run it ended: {written:?}"
+    );
+}
+
 /// A session declared in tokens never asks how far the limit is spent, so a run of one has
 /// no reading either side of it.
 #[test]
@@ -778,4 +833,5 @@ fn a_run_of_a_count_records_no_reading_at_all() {
     let written = runs.runs();
     assert_eq!(written[0].limit_before, None, "{written:?}");
     assert_eq!(written[0].limit_after, None, "{written:?}");
+    assert_eq!(written[0].limit_after_at, None, "{written:?}");
 }

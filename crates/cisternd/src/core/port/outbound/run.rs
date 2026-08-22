@@ -65,6 +65,19 @@ pub struct Run {
     /// nothing before it.
     pub limit_before: Option<String>,
     pub limit_after: Option<String>,
+    /// When the reading that ends this run was taken, in seconds since the epoch.
+    ///
+    /// Not the moment the run ended. Reading the limit means putting a session in front of the
+    /// vendor and waiting for its status line, which takes as long as it takes, and whatever
+    /// moved the limit meanwhile is in the figure. `ended_at` and this bracket that stretch.
+    ///
+    /// The reading a run starts from is the one the run before it ended on, so its time is on
+    /// that line rather than repeated here. What sits between two runs of a session is then
+    /// readable: a stretch with nothing of ours going, and whatever the limit moved over it is
+    /// somebody else's doing.
+    ///
+    /// Nothing for a run of a session declared in tokens, which never reads the limit.
+    pub limit_after_at: Option<String>,
 }
 
 /// Every run there has been, in the order they ended.
