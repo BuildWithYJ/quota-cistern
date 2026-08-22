@@ -35,7 +35,7 @@ A request is one line and so is the response. A connection closed before a reque
 | `type` | string | The command, in snake_case |
 | `params` | object | The command's arguments |
 
-`type` is the command name with spaces replaced by underscores: `task add` is `task_add`. What `params` holds is the argument table in that command's section of the CLI specification, together with what a surface supplies on the user's behalf. `task_add` carries `cwd`, the directory the command was run in, because the core runs as a daemon and its own working directory is not the user's. Every value in `params` crosses as a string, whatever form the argument table gives it; a value of another type is refused with code 2 and never reaches the core.
+`type` is the command name with spaces replaced by underscores: `task add` is `task_add`. What `params` holds is the argument table in that command's section of the CLI specification, together with what a surface supplies on the user's behalf. `task_add` carries `cwd`, the directory the command was run in, because the core runs as a daemon and its own working directory is not the user's. Every value in `params` crosses in the form its argument table gives it: a flag as a boolean, everything else as a string. An argument the user did not give crosses as null, or does not cross at all, and reads the same either way. A value of any other type is refused with code 2 and never reaches the core.
 
 ## Response
 
