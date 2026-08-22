@@ -244,19 +244,27 @@ impl Supervisor<'_> {
     /// own spent what it spent before it went wrong, which is neither.
     fn sizings(&self, usage: Usage) -> Result<Sizings, Refusal> {
         let held = self.outside.runs.read()?;
+        // How far the vendor's limit moves for a millionth of what it prices a run at, over
+        // every run that reported both. Nothing here is in the unit a share is declared in
+        // until a run has said both, which is where a session declared as a share starts.
+        let per_millionth = match usage {
+            Usage::Share(_) => match moved_per_millionth(&held)? {
+                // No run has said both yet, so nothing here can be put in the unit this
+                // session declared. A figure of nothing would size every run at nothing and
+                // allow every run almost nothing, so there is no figure at all: one task
+                // starts with what is left and is measured, as at the beginning.
+                (0, _) | (_, 0) => return Ok(Sizings::default()),
+                both => Some(both),
+            },
+            Usage::Tokens(_) => None,
+        };
         Ok(Sizings::of(held.into_iter().filter_map(|run| {
             let ran = sampled(&run)?;
-            let cost = match usage {
-                Usage::Tokens(_) => spending_of(&run.spent?).map(|counted| counted.tokens()),
-                // What the run moved the vendor's limit by, which is what a share is measured
-                // in. A limit that read lower afterwards is a window that began again, and
-                // what the run spent before it turned over is in no reading at all.
-                Usage::Share(_) => {
-                    let before: u64 = run.limit_before?.parse().ok()?;
-                    let after: u64 = run.limit_after?.parse().ok()?;
-                    after.checked_sub(before)
-                }
-            }?;
+            let counted = spending_of(&run.spent?)?;
+            let cost = match per_millionth {
+                None => counted.tokens(),
+                Some((moved, over)) => counted.cost.checked_mul(moved)? / over.max(1),
+            };
             Some(ran(run.model.as_deref(), cost))
         })))
     }
@@ -466,6 +474,52 @@ fn spending_of(spent: &StoredConsumption) -> Option<Consumption> {
         cache_read: spent.cache_read.parse().ok()?,
         cost: spent.cost.parse().ok()?,
     })
+}
+
+/// How far the vendor's limit moved for every millionth the ledger's runs were priced at, as a
+/// pair to multiply and divide by rather than a fraction to round.
+///
+/// A run's own share of the limit cannot be read off the limit. The vendor keeps one figure for
+/// the account, so two runs going at once move it together and no reading tells them apart;
+/// taking a reading when each run ends splits the movement into stretches of time, and the run
+/// that ends first is handed whatever the others spent while it ran. What a run reported for
+/// itself is the only per-run figure there is.
+///
+/// So a run's size in the unit a share is declared in is what it was priced at, at the rate the
+/// whole ledger moved the limit. The rate is right even where the split was not: the total
+/// movement is the total movement however it is divided among the runs that caused it.
+///
+/// Priced rather than counted, because a token of one model is not a token of another. A rate
+/// taken over tokens is out for any one model by however much its tokens cost more or less than
+/// the rest of the ledger's, and the vendor has already told us that much in the price. What is
+/// left over is whatever the limit weighs differently from the price, which is the smaller
+/// question and the one there is no answer to here.
+fn moved_per_millionth(held: &[Run]) -> Result<(u64, u64), Refusal> {
+    let (mut moved, mut priced) = (0u64, 0u64);
+    for run in held {
+        let Some(spent) = run.spent.as_ref() else {
+            continue;
+        };
+        let Some(counted) = spending_of(spent) else {
+            continue;
+        };
+        let took = run
+            .limit_before
+            .as_ref()
+            .zip(run.limit_after.as_ref())
+            .and_then(|(before, after)| {
+                let before: u64 = before.parse().ok()?;
+                let after: u64 = after.parse().ok()?;
+                after.checked_sub(before)
+            });
+        // A limit that read lower afterwards is a window that began again, and what was spent
+        // before it turned over is in no reading at all.
+        if let Some(took) = took.filter(|took| *took > 0) {
+            moved = moved.saturating_add(took);
+            priced = priced.saturating_add(counted.cost);
+        }
+    }
+    Ok((moved, priced))
 }
 
 /// Which kind of sample a run is, or nothing where it is neither.
@@ -1157,5 +1211,87 @@ mod tests {
 
         assert_eq!(supervisor.time_left().unwrap(), None);
         supervisor.stop_if_out_of_time().unwrap();
+    }
+
+    /// What a run of a share-declared session cost is read from what it was priced at, not
+    /// from how far the vendor's limit moved while it ran.
+    ///
+    /// The vendor keeps one figure for the account, so runs going at once move it together and
+    /// the reading taken when each ends hands the first to finish whatever the others spent
+    /// meanwhile. Two runs of the same size then look nothing alike. Here they report the same
+    /// price and the readings split 900 to 100 between them, which is what that looks like;
+    /// both are the same size all the same, and what the next task is allowed follows from
+    /// that size rather than from the larger slice.
+    #[test]
+    fn two_runs_of_a_size_are_sized_alike_however_the_readings_split() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+        let areas = Areas::default();
+        let agent = Answering::finishing();
+        let runs = Ledger(Mutex::new(vec![
+            a_run_of("1", 500_000, ("1000", "1900")),
+            a_run_of("2", 500_000, ("1900", "2000")),
+        ]));
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &UNTOUCHED,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        let execution = ExecutionService::new(outside, &supervisor);
+
+        // A thousand points over a million millionths, so half a million is 500 points. Both
+        // runs are that, so the estimate is 500 and two runs to go on widen it by half. Were
+        // the readings taken for the truth, the larger slice would make it 900.
+        let started = execution.run(declaring("50%", "8h")).unwrap();
+
+        assert_eq!(started.assigned.len(), 2);
+        let held = tasks.load().unwrap();
+        assert_eq!(held.tasks[0].ceiling.as_deref(), Some("750"));
+        assert_eq!(held.tasks[1].ceiling.as_deref(), Some("750"));
+    }
+
+    /// Two runs the vendor priced alike are sized alike however far apart their token counts
+    /// are.
+    ///
+    /// What a token costs differs between models by several times over, so a rate taken over
+    /// tokens is out for any one model by that much. The price already carries the difference.
+    /// Here one run counted ten times the other and was priced the same; both are one size.
+    #[test]
+    fn two_runs_of_a_price_are_sized_alike_however_far_apart_their_counts_are() {
+        let sessions = Remembered::empty();
+        let tasks = Tasks::holding(vec![a_pending_task(), a_second_task()]);
+        let areas = Areas::default();
+        let agent = Answering::finishing();
+        let runs = Ledger(Mutex::new(vec![
+            a_run_costing("1", 1_000_000, 500_000, ("1000", "1900")),
+            a_run_costing("2", 100_000, 500_000, ("1900", "2000")),
+        ]));
+        let outside = Outside {
+            sessions: &sessions,
+            tasks: &tasks,
+            worktrees: &areas,
+            agent: &agent,
+            clock: &STILL,
+            limit: &UNTOUCHED,
+            traces: &NOTHING_KEPT,
+            runs: &runs,
+        };
+        let supervisor = Supervisor::new(outside, AT_ONCE);
+        let execution = ExecutionService::new(outside, &supervisor);
+
+        // The same thousand points over the same million millionths, so both runs are 500 and
+        // the estimate is 500 widened by half. Counted instead, the two would be 909 and 90.
+        let started = execution.run(declaring("50%", "8h")).unwrap();
+
+        assert_eq!(started.assigned.len(), 2);
+        let held = tasks.load().unwrap();
+        assert_eq!(held.tasks[0].ceiling.as_deref(), Some("750"));
+        assert_eq!(held.tasks[1].ceiling.as_deref(), Some("750"));
     }
 }

@@ -16,10 +16,48 @@ use crate::core::{
     port::inbound::Declaration,
     port::outbound::{
         Agent, BacklogStore, Clock, Cut, Ended, Keeping, Limit, Observed, Outcome, Reading, Run,
-        Runs, SessionStore, Spent, StoredBacklog, StoredSessions, StoredTask, Traces, Unavailable,
-        Work, Worktrees,
+        Runs, SessionStore, Spent, StoredBacklog, StoredConsumption, StoredSessions, StoredTask,
+        Traces, Unavailable, Work, Worktrees,
     },
 };
+
+/// A run that finished, reported what it cost, and left a reading either side of it.
+///
+/// The two readings are what the vendor's limit stood at when the run before this one ended
+/// and when this one did, which is not the same as what this run moved it by.
+///
+/// Priced at what it counted, which is the run of a single model. `a_run_costing` is where the
+/// two figures come apart.
+pub(super) fn a_run_of(task: &str, tokens: u64, over: (&str, &str)) -> Run {
+    a_run_costing(task, tokens, tokens, over)
+}
+
+/// The same, priced at something other than what it counted.
+///
+/// What a token costs differs between models, so two runs of one price are two runs of one
+/// size however far apart their counts are.
+pub(super) fn a_run_costing(task: &str, tokens: u64, cost: u64, over: (&str, &str)) -> Run {
+    Run {
+        task: task.to_owned(),
+        session: Some("1".to_owned()),
+        model: None,
+        started_at: "1000".to_owned(),
+        ended_at: "1100".to_owned(),
+        outcome: "Completed".to_owned(),
+        reason: None,
+        spent: Some(StoredConsumption {
+            input: "0".to_owned(),
+            output: tokens.to_string(),
+            cache_written: "0".to_owned(),
+            cache_read: "0".to_owned(),
+            cost: cost.to_string(),
+        }),
+        unreadable: None,
+        ceiling: None,
+        limit_before: Some(over.0.to_owned()),
+        limit_after: Some(over.1.to_owned()),
+    }
+}
 
 /// Sessions held in memory, so the steps can be checked without a file.
 pub(super) struct Remembered {
