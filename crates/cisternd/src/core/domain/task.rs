@@ -69,6 +69,11 @@ pub struct Task {
     id: TaskId,
     title: String,
     instruction: String,
+    /// What the author wrote, for a task whose instruction was filled in from something else.
+    ///
+    /// Absent when the instruction is theirs as they wrote it, so its presence is what says a
+    /// fill happened at all.
+    original: Option<String>,
     branch: Option<String>,
     after: Option<TaskId>,
     model: Option<String>,
@@ -106,6 +111,18 @@ pub struct Task {
     disposition: Option<Disposition>,
 }
 
+/// What a run is given to work from, and what the author wrote when the two differ.
+///
+/// The two travel together: an original without the instruction it grew from says nothing, and
+/// which of them a reader wants depends on whether they are reading the run or reviewing it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Instruction {
+    /// What the run is given.
+    pub given: String,
+    /// What the author wrote, when the run is given something else.
+    pub original: Option<String>,
+}
+
 /// A task on its way back from a store, with every value already read.
 ///
 /// Whoever read it names the fields once here, and the backlog checks them together.
@@ -114,6 +131,7 @@ pub struct Restored {
     pub id: TaskId,
     pub title: String,
     pub instruction: String,
+    pub original: Option<String>,
     pub branch: Option<String>,
     pub after: Option<TaskId>,
     pub model: Option<String>,
@@ -280,6 +298,11 @@ impl Task {
         &self.instruction
     }
 
+    /// What the author wrote, for a task whose instruction was filled in from something else.
+    pub fn original(&self) -> Option<&str> {
+        self.original.as_deref()
+    }
+
     /// The branch that was named, if one was.
     ///
     /// [`Task::base_branch`] is where the task starts from, which is this only when a branch was named.
@@ -397,7 +420,7 @@ impl Backlog {
     pub fn add(
         &mut self,
         title: String,
-        instruction: String,
+        instruction: Instruction,
         branch: Option<String>,
         after: Option<TaskId>,
         model: Option<String>,
@@ -408,7 +431,8 @@ impl Backlog {
         let registered = Task {
             id,
             title,
-            instruction,
+            instruction: instruction.given,
+            original: instruction.original,
             branch,
             after,
             model,
@@ -801,6 +825,7 @@ impl Backlog {
                 id: held.id,
                 title: held.title,
                 instruction: held.instruction,
+                original: held.original,
                 branch: held.branch,
                 after: held.after,
                 model: held.model,

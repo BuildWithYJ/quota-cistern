@@ -39,6 +39,9 @@ struct Entry {
     id: Value,
     title: Value,
     instruction: Value,
+    /// Absent for a backlog written before a filled-in instruction kept what the author wrote.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    original: Value,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     branch: Value,
     #[serde(default, skip_serializing_if = "Value::is_null")]
@@ -111,6 +114,7 @@ impl FileBacklog {
                     id: as_text(entry.id),
                     title: as_text(entry.title),
                     instruction: as_text(entry.instruction),
+                    original: as_optional(entry.original),
                     branch: as_optional(entry.branch),
                     after: as_optional(entry.after),
                     model: as_optional(entry.model),
@@ -142,6 +146,7 @@ impl FileBacklog {
                     id: as_number(&task.id),
                     title: Value::String(task.title.clone()),
                     instruction: Value::String(task.instruction.clone()),
+                    original: as_value(task.original.clone()),
                     branch: as_value(task.branch.clone()),
                     after: task.after.as_deref().map_or(Value::Null, as_number),
                     model: as_value(task.model.clone()),
@@ -206,6 +211,7 @@ mod tests {
             id: "1".to_owned(),
             title: "refactor X".to_owned(),
             instruction: "tidy up src/utils".to_owned(),
+            original: None,
             branch: None,
             after: None,
             model: None,
@@ -352,6 +358,59 @@ mod tests {
         let read = tasks.load().unwrap();
         assert_eq!(read.tasks[0].after, None);
         assert_eq!(read.tasks[0].branch, None);
+    }
+
+    /// A backlog written before a task kept what its author wrote reads back, rather than failing.
+    #[test]
+    fn a_backlog_written_without_an_original_still_reads() {
+        let (dir, tasks) = in_a_temporary_directory();
+        fs::write(
+            dir.path().join("backlog.json"),
+            r#"{"next_id":2,"tasks":[{"id":1,"title":"x","instruction":"y",
+                "repository":"/work/api","state":"Pending"}]}"#,
+        )
+        .unwrap();
+
+        let read = tasks.load().unwrap();
+        assert_eq!(read.tasks[0].instruction, "y");
+        assert_eq!(read.tasks[0].original, None);
+    }
+
+    /// What the author wrote goes into the file and comes back, and is absent where there is none.
+    ///
+    /// Its absence is what says a task was written whole, so a key written as null for one that
+    /// carries none would say a fill happened where none did.
+    #[test]
+    fn an_original_goes_into_the_file_and_comes_back() {
+        let (dir, tasks) = in_a_temporary_directory();
+        let path = dir.path().join("backlog.json");
+        put(
+            &tasks,
+            &StoredBacklog {
+                next_id: "3".to_owned(),
+                tasks: vec![
+                    StoredTask {
+                        original: Some("make it faster".to_owned()),
+                        ..a_task()
+                    },
+                    StoredTask {
+                        id: "2".to_owned(),
+                        ..a_task()
+                    },
+                ],
+            },
+        );
+
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(
+            written.contains("\"original\": \"make it faster\""),
+            "{written}"
+        );
+        assert_eq!(written.matches("\"original\"").count(), 1, "{written}");
+
+        let read = tasks.load().unwrap();
+        assert_eq!(read.tasks[0].original.as_deref(), Some("make it faster"));
+        assert_eq!(read.tasks[1].original, None);
     }
 
     /// A number crosses the port as text and goes back as a number, so the file stays JSON a person would have written.
