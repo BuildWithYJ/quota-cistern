@@ -31,7 +31,7 @@ const ANSWERS_WITHIN: Duration = Duration::from_secs(5);
 const TRY_EVERY: Duration = Duration::from_millis(5);
 
 /// What the core is called.
-const CORE: &str = "cisternd";
+pub const CORE: &str = "cisternd";
 
 /// Where what the core writes is kept.
 const LOG: &str = "daemon.log";
@@ -139,6 +139,21 @@ fn start(kept: &PathBuf) -> io::Result<Child> {
                 ))
             })
     })
+}
+
+/// The core program this command would start, which is the file a build replaces.
+///
+/// The same two places `start` tries and in the same order, so what this names is what would
+/// run. Nothing where neither holds one.
+pub fn program() -> Option<PathBuf> {
+    beside_this_one().or_else(on_path)
+}
+
+/// The first core the `PATH` holds.
+fn on_path() -> Option<PathBuf> {
+    env::split_paths(&env::var_os("PATH")?)
+        .map(|dir| dir.join(CORE))
+        .find(|at| at.is_file())
 }
 
 /// The core beside this command, which is where an install puts the two.

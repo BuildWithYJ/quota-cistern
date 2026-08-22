@@ -12,6 +12,7 @@ mod platform {
         io,
         os::unix::fs::{DirBuilderExt, PermissionsExt},
         path::{Path, PathBuf},
+        time::SystemTime,
     };
 
     use interprocess::local_socket::{GenericFilePath, Name, prelude::*};
@@ -77,6 +78,17 @@ mod platform {
     /// The socket file, as the local socket API names it.
     pub fn name() -> io::Result<Name<'static>> {
         named(&path()?)
+    }
+
+    /// When the socket now in place was bound, which is when the core holding it started.
+    ///
+    /// The core makes the socket as it starts and takes it away as it ends, so the file is as
+    /// old as the core. A surface has no other way to ask how long a core has been running,
+    /// and comparing it against the core program on disk is how a core left over from before a
+    /// rebuild shows up: both sides report the same version, since a version does not carry a
+    /// build.
+    pub fn bound_at() -> io::Result<SystemTime> {
+        fs::metadata(path()?)?.modified()
     }
 
     /// Makes the directory the socket goes in, reachable by this user and nobody else.
@@ -172,7 +184,7 @@ mod platform {
 
 #[cfg(windows)]
 mod platform {
-    use std::io;
+    use std::{io, time::SystemTime};
 
     use interprocess::local_socket::{GenericNamespaced, Name, prelude::*};
 
@@ -206,9 +218,17 @@ mod platform {
     pub fn remove() -> io::Result<()> {
         Ok(())
     }
+
+    /// A named pipe is not a file, so there is nothing whose age says when the core started.
+    pub fn bound_at() -> io::Result<SystemTime> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "a named pipe does not say when it was made",
+        ))
+    }
 }
 
-pub use platform::{Alone, clear_if_dead, hold_alone, name, prepare, remove};
+pub use platform::{Alone, bound_at, clear_if_dead, hold_alone, name, prepare, remove};
 /// The same steps, for a directory named rather than read out of the environment.
 #[cfg(all(unix, test))]
 pub(crate) use platform::{clear_if_dead_at, hold_alone_at, named, prepare_at};

@@ -20,6 +20,8 @@ Every command reaches the core, which owns what is stored. A command that finds 
 
 The core is looked for beside the command line and then on the `PATH`. A command that cannot start one, or that starts one which stops before answering, says so and exits with code 5.
 
+A core of the same version may still be an older build of it, since a version does not carry a build. `--version` says so where it can tell: the socket is made as a core starts, so a core program written after that socket was made is one no running core has ever run. That is a line on stderr rather than a failure, and the exit code stays 0. Restarting the core is what clears it.
+
 What the core writes goes to `$XDG_STATE_HOME/cistern/daemon.log`, or `~/.local/state/cistern/daemon.log` when that variable is unset. A core started by hand writes to the terminal instead.
 
 ### Exit codes
