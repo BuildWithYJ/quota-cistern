@@ -2,8 +2,8 @@
 
 use crate::core::{
     domain::{
-        Backlog, Consumption, Disposition, NotABacklog, Observation, Readiness, RemovalRefused,
-        Repository, Restored, SessionId, Task, TaskId, TaskState,
+        Backlog, Consumption, Disposition, Instruction, NotABacklog, Observation, Readiness,
+        RemovalRefused, Repository, Restored, SessionId, Task, TaskId, TaskState,
     },
     port::{
         inbound::{
@@ -127,6 +127,9 @@ impl BacklogUseCase for BacklogService<'_> {
         // when the repository cannot settle it. Nothing is written for a run that could not have
         // gone anywhere.
         let instruction = self.readied(given.instruction, given.force, &root)?;
+        // Kept only when the run is given something other than what the author typed, so that its
+        // presence is what says a fill happened, and a task written whole carries nothing extra.
+        let original = (instruction != given.instruction).then(|| given.instruction.to_owned());
 
         change(self.store, |backlog| {
             if let Some(after) = after
@@ -139,7 +142,10 @@ impl BacklogUseCase for BacklogService<'_> {
 
             let registered = backlog.add(
                 given.title.to_owned(),
-                instruction,
+                Instruction {
+                    given: instruction,
+                    original,
+                },
                 given.branch.map(str::to_owned),
                 after,
                 given.model.map(str::to_owned),
@@ -193,6 +199,8 @@ impl BacklogUseCase for BacklogService<'_> {
             session: task.session().map(|id| id.labelled()),
             state: task.state().to_string(),
             title: task.title().to_owned(),
+            instruction: task.instruction().to_owned(),
+            original: task.original().map(str::to_owned),
             base_branch: task.base_branch(),
             after: task.after().map(|after| after.labelled()),
             model: task.model().map(str::to_owned),
@@ -305,6 +313,7 @@ fn restored_from(held: StoredTask) -> Result<Restored, Refusal> {
         id: stored_id("id", &held.id)?,
         title: held.title,
         instruction: held.instruction,
+        original: held.original,
         branch: held.branch,
         after: held
             .after
@@ -365,6 +374,7 @@ fn written(backlog: &Backlog) -> StoredBacklog {
                     id: task.id().to_string(),
                     title: task.title().to_owned(),
                     instruction: task.instruction().to_owned(),
+                    original: task.original().map(str::to_owned),
                     branch: task.branch().map(str::to_owned),
                     after: task.after().map(|after| after.to_string()),
                     model: task.model().map(str::to_owned),
@@ -829,6 +839,72 @@ mod tests {
         );
     }
 
+    /// The run is given the filled-in instruction; the author's own text is kept beside it.
+    #[test]
+    fn a_filled_in_task_keeps_what_the_author_wrote() {
+        let tasks = Remembered::default();
+        let editing = Around {
+            changed: vec!["src/search.rs".to_owned()],
+            holds: Vec::new(),
+        };
+        let service =
+            BacklogService::new(&tasks, &IN_A_REPOSITORY, &NO_BRANCH, &editing, &NO_MODEL);
+
+        let mut given = registering("first");
+        let wrote = "make it stop double-counting; cargo test search passes";
+        given.instruction = wrote;
+
+        service.add(given).unwrap();
+        let held = tasks.stored.lock().unwrap();
+        assert_ne!(held.tasks[0].instruction, wrote);
+        assert_eq!(held.tasks[0].original.as_deref(), Some(wrote));
+    }
+
+    /// A task the author wrote whole carries no separate original to compare it against.
+    #[test]
+    fn a_task_written_whole_keeps_no_original() {
+        let tasks = Remembered::default();
+        let service = BacklogService::new(
+            &tasks,
+            &IN_A_REPOSITORY,
+            &NO_BRANCH,
+            &NOTHING_AROUND,
+            &NO_MODEL,
+        );
+
+        let mut given = registering("first");
+        given.instruction = "fix parse() in src/util.rs; cargo test util passes";
+
+        service.add(given).unwrap();
+        let held = tasks.stored.lock().unwrap();
+        assert_eq!(held.tasks[0].original, None);
+    }
+
+    /// What a reviewer reads: the instruction the run is given, and the text it grew from.
+    #[test]
+    fn showing_a_filled_in_task_surfaces_both() {
+        let tasks = Remembered::default();
+        let editing = Around {
+            changed: vec!["src/search.rs".to_owned()],
+            holds: Vec::new(),
+        };
+        let service =
+            BacklogService::new(&tasks, &IN_A_REPOSITORY, &NO_BRANCH, &editing, &NO_MODEL);
+
+        let mut given = registering("first");
+        let wrote = "make it stop double-counting; cargo test search passes";
+        given.instruction = wrote;
+        let added = service.add(given).unwrap();
+
+        let shown = service.show(&added.id).unwrap();
+        assert!(
+            shown.instruction.contains("src/search.rs"),
+            "{}",
+            shown.instruction
+        );
+        assert_eq!(shown.original.as_deref(), Some(wrote));
+    }
+
     /// When nothing is being edited, a loose instruction is filled in with a file the repository
     /// holds by the word it used.
     #[test]
@@ -1088,6 +1164,7 @@ mod tests {
                 id: "1".to_owned(),
                 title: "first".to_owned(),
                 instruction: "do it".to_owned(),
+                original: None,
                 branch: None,
                 after: Some("2".to_owned()),
                 model: None,
@@ -1109,6 +1186,7 @@ mod tests {
                 id: "2".to_owned(),
                 title: "second".to_owned(),
                 instruction: "do it".to_owned(),
+                original: None,
                 branch: None,
                 after: Some("1".to_owned()),
                 model: None,
@@ -1151,6 +1229,7 @@ mod tests {
             id: "1".to_owned(),
             title: "first".to_owned(),
             instruction: "do it".to_owned(),
+            original: None,
             branch: None,
             after: None,
             model: None,
@@ -1190,6 +1269,7 @@ mod tests {
             id: "1".to_owned(),
             title: "first".to_owned(),
             instruction: "do it".to_owned(),
+            original: None,
             branch: None,
             after: None,
             model: None,

@@ -17,6 +17,8 @@ pub struct StoredTask {
     pub id: String,
     pub title: String,
     pub instruction: String,
+    /// What the author wrote, for a task whose instruction was filled in from something else.
+    pub original: Option<String>,
     /// The branch that was named, if one was.
     pub branch: Option<String>,
     /// The predecessor that was named, if one was.
