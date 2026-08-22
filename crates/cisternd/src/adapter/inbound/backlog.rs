@@ -22,6 +22,13 @@ pub fn respond(backlog: &impl BacklogUseCase, request: Request) -> Result<Respon
 }
 
 fn add(backlog: &impl BacklogUseCase, request: Request) -> Response {
+    // Read before the rest, because a flag that cannot be read is the envelope's business and
+    // says nothing about whether the arguments beside it are there.
+    let force = match flag(&request, "force") {
+        Ok(force) => force,
+        Err(refusal) => return answer(request.command, Err(refusal)),
+    };
+
     // cwd is not an argument a user types.
     // A surface adds it, so a request without one was built wrong rather than typed wrong.
     let given = match (
@@ -36,7 +43,7 @@ fn add(backlog: &impl BacklogUseCase, request: Request) -> Response {
             branch: text(&request, "branch"),
             after: text(&request, "after"),
             model: text(&request, "model"),
-            force: flag(&request, "force"),
+            force,
         },
         _ => return missing("task_add takes cwd, title, and instruction, all strings"),
     };
@@ -142,13 +149,15 @@ mod tests {
         /// What every command ends in, when it is meant to end badly.
         refuses: Option<Refusal>,
         reached: Cell<bool>,
+        /// What `force` was, on the registration this core was given.
+        forced: Cell<Option<bool>>,
     }
 
     impl Core {
         fn refusing(refusal: Refusal) -> Self {
             Core {
                 refuses: Some(refusal),
-                reached: Cell::new(false),
+                ..Core::default()
             }
         }
 
@@ -160,6 +169,7 @@ mod tests {
 
     impl BacklogUseCase for Core {
         fn add(&self, given: Registration<'_>) -> Result<Added, Refusal> {
+            self.forced.set(Some(given.force));
             self.refused().unwrap_or(Ok(Added {
                 id: "task:1".to_owned(),
                 title: given.title.to_owned(),
@@ -213,6 +223,13 @@ mod tests {
         serde_json::json!({ "cwd": "/work/api/src", "title": title, "instruction": "do it" })
     }
 
+    /// The same, with whatever a surface put in `force`.
+    fn registering_with_force(force: Value) -> Value {
+        let mut params = registering("refactor X");
+        params["force"] = force;
+        params
+    }
+
     fn answered(core: &Core, command: &str, params: Value) -> Response {
         match respond(core, asked(command, params)) {
             Ok(response) => response,
@@ -230,6 +247,86 @@ mod tests {
         assert_eq!(data["base_branch"], "main");
         assert_eq!(data["repository"], "/work/api");
         assert_eq!(data["state"], "Pending");
+    }
+
+    /// The path from the envelope to the registration, which nothing else crosses.
+    #[test]
+    fn a_force_that_is_a_boolean_reaches_the_core_as_one() {
+        let core = Core::default();
+        data(answered(
+            &core,
+            "task_add",
+            registering_with_force(Value::Bool(true)),
+        ));
+        assert_eq!(core.forced.get(), Some(true));
+
+        let core = Core::default();
+        data(answered(
+            &core,
+            "task_add",
+            registering_with_force(Value::Bool(false)),
+        ));
+        assert_eq!(core.forced.get(), Some(false));
+    }
+
+    /// An argument nobody gave is absent, or null where a surface writes one.
+    #[test]
+    fn a_force_nobody_gave_reaches_the_core_as_false() {
+        let core = Core::default();
+        data(answered(&core, "task_add", registering("refactor X")));
+        assert_eq!(core.forced.get(), Some(false));
+
+        let core = Core::default();
+        data(answered(
+            &core,
+            "task_add",
+            registering_with_force(Value::Null),
+        ));
+        assert_eq!(core.forced.get(), Some(false));
+    }
+
+    /// Reading it as false would turn the task back with nothing said about the value.
+    #[test]
+    fn a_force_that_is_not_a_boolean_never_reaches_the_core() {
+        for value in [
+            Value::String("true".to_owned()),
+            serde_json::json!(1),
+            serde_json::json!([]),
+        ] {
+            let core = Core::default();
+            let refused = failure(answered(
+                &core,
+                "task_add",
+                registering_with_force(value.clone()),
+            ));
+
+            assert_eq!(refused.code, USAGE_ERROR, "{value}");
+            assert!(refused.message.contains("force"), "{}", refused.message);
+            assert!(
+                refused.message.contains(&value.to_string()),
+                "{}",
+                refused.message
+            );
+            assert!(!core.reached.get(), "the core was reached with {value}");
+            assert_eq!(core.forced.get(), None, "{value}");
+        }
+    }
+
+    /// What `docs/ipc.md` promises about a value of the wrong type, held for both kinds.
+    ///
+    /// A flag is refused. A string argument is read as one nobody gave, which is what `text`
+    /// does and what the page now says it does, so a `branch` that arrived as a number leaves
+    /// the task on its default base rather than turning the command back.
+    #[test]
+    fn a_string_argument_of_another_type_reads_as_one_nobody_gave() {
+        let core = Core::default();
+        let mut params = registering("refactor X");
+        params["branch"] = serde_json::json!(7);
+
+        let registered = data(answered(&core, "task_add", params));
+
+        assert!(core.reached.get(), "the core was never reached");
+        assert_eq!(registered["base_branch"], "main");
     }
 
     #[test]

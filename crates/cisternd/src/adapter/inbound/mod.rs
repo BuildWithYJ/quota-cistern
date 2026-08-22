@@ -29,13 +29,23 @@ pub(super) fn text<'a>(request: &'a Request, field: &str) -> Option<&'a str> {
     request.params.get(field)?.as_str()
 }
 
-/// One field of the envelope, when it holds a boolean. Absent reads as false.
-pub(super) fn flag(request: &Request, field: &str) -> bool {
-    request
-        .params
-        .get(field)
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
+/// One field of the envelope, when it holds a boolean.
+///
+/// Absent reads as false, and so does null, which is how a surface writes an argument that was
+/// not given. A value that is there and is not a boolean is refused instead of read as false: the
+/// surface that sent it meant something by it, and reading it as false turns the task back
+/// without a word about the value that went unread.
+///
+/// This is the code half of what `docs/ipc.md` says about a flag. [`text`] is the other half,
+/// and answers differently: a string argument of another type reads as one nobody gave.
+pub(super) fn flag(request: &Request, field: &str) -> Result<bool, Refusal> {
+    match request.params.get(field) {
+        None | Some(Value::Null) => Ok(false),
+        Some(value) => value.as_bool().ok_or_else(|| Refusal::BadValue {
+            key: field.to_owned(),
+            value: value.to_string(),
+        }),
+    }
 }
 
 /// A request whose envelope does not carry what the command needs.
