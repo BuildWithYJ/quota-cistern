@@ -5,7 +5,9 @@
 
 use std::{env, ffi::OsString, io::Read, process::ExitCode};
 
-use cistern_contract::{Response, code::CORE_ERROR, code::USAGE_ERROR, exchange};
+use cistern_contract::{
+    Response, code::CORE_ERROR, code::GENERAL_FAILURE, code::USAGE_ERROR, exchange,
+};
 use serde_json::Value;
 
 use crate::cli::TaskCommand;
@@ -58,7 +60,7 @@ fn add(
         }
     };
 
-    send(
+    send_noting(
         "task_add",
         serde_json::json!({
             "cwd": cwd.display().to_string(),
@@ -70,7 +72,18 @@ fn add(
             "force": force,
         }),
         added,
+        way_past,
     )
+}
+
+/// What to say after a refusal `task add` gets, beyond what the refusal says itself.
+///
+/// Section 2.2 of `docs/cli.md` gives `task add` one refusal at code 1: the instruction carries
+/// too little to run unattended. It names what it did not find, which leaves the author who meant
+/// the instruction as they wrote it with nowhere to go. The way past is `--force`, spelled on this
+/// surface and nowhere else, so the line is added here rather than by the core.
+fn way_past(code: u8) -> Option<&'static str> {
+    (code == GENERAL_FAILURE).then_some("--force registers it as written")
 }
 
 /// `docs/cli.md` gives `-` the meaning of standard input.
@@ -181,6 +194,16 @@ fn clock_of(at: &str) -> String {
 
 /// Asks the core and prints what came back.
 fn send(command: &str, params: Value, print: fn(&Value)) -> ExitCode {
+    send_noting(command, params, print, |_| None)
+}
+
+/// The same, with a second line for a refusal this command has more to say about.
+fn send_noting(
+    command: &str,
+    params: Value,
+    print: fn(&Value),
+    note: fn(u8) -> Option<&'static str>,
+) -> ExitCode {
     match exchange::ask(command, params) {
         Ok(Response::Data(answer)) => {
             print(&answer.data);
@@ -188,6 +211,9 @@ fn send(command: &str, params: Value, print: fn(&Value)) -> ExitCode {
         }
         Ok(Response::Error(failure)) => {
             eprintln!("cistern: {}", failure.message);
+            if let Some(note) = note(failure.code) {
+                eprintln!("  {note}");
+            }
             ExitCode::from(failure.code)
         }
         Err(e) => {
@@ -366,5 +392,22 @@ mod tests {
     #[test]
     fn no_home_leaves_every_path_alone() {
         assert_eq!(under_home("/home/a/work/api", None), "/home/a/work/api");
+    }
+
+    /// The one refusal `task add` answers with at code 1 is a turned-back instruction.
+    #[test]
+    fn a_turned_back_instruction_is_told_how_to_be_registered() {
+        assert_eq!(
+            way_past(GENERAL_FAILURE),
+            Some("--force registers it as written")
+        );
+    }
+
+    /// Every other refusal has nothing this surface can add.
+    #[test]
+    fn another_refusal_is_left_as_the_core_put_it() {
+        for code in [USAGE_ERROR, 3, 4, CORE_ERROR] {
+            assert_eq!(way_past(code), None, "code {code}");
+        }
     }
 }
