@@ -19,14 +19,14 @@
 //! turns on hands it over rather than acting on it, so that two callers cannot come to
 //! different answers about one session.
 
-use super::{Before, Policy, StoppedReason, TaskId, Timing};
+use super::{Before, StoppedReason, TaskId, Timing};
 
 /// Whether a run of this model would finish before the session's time runs out.
 ///
 /// Starting one that would not spends what it spends and leaves nothing. A model nothing has
 /// been timed on holds nothing back.
 fn fits_the_clock(standing: &Standing, model: Option<&str>) -> bool {
-    match standing.policy.timing {
+    match standing.timing {
         Timing::Any => true,
         Timing::Fits => !standing
             .before
@@ -121,8 +121,9 @@ pub struct Standing {
     pub blocked: bool,
     /// Whether what it consumed could no longer be read.
     pub unreadable: bool,
-    /// How this session is being run.
-    pub policy: Policy,
+    /// Whether a run is held back for the clock, which is the one figure of how this session
+    /// is run that a decision reads.
+    pub timing: Timing,
 }
 /// What follows from how a session stands.
 #[derive(Debug, Clone, PartialEq, Eq)]

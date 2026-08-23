@@ -19,7 +19,7 @@ pub use session::{
     Budget, Held, NotASessionSet, NotOpened, Opening, Session, SessionId, SessionState, Sessions,
     Span, StoppedReason, Usage,
 };
-pub use sizing::{Before, Priced, Sizings, moved_per_millionth, sampled};
+pub use sizing::{Before, Priced, Rule, Sizings, moved_per_millionth, sampled};
 pub use spending::{HUNDREDTHS, Spending};
 pub use supervision::{Decision, Standing, decide, done_waiting};
 pub use task::{

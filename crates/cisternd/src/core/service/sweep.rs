@@ -31,7 +31,7 @@
 //! this runs. A turn of somebody's conversation is not one and is left out.
 
 use crate::core::{
-    domain::{Policy, Timing},
+    domain::{Policy, Rule, Timing},
     port::{
         inbound::{Carrying, ExecutionUseCase},
         outbound::{BacklogStore, StoredTask},
@@ -355,22 +355,54 @@ fn sweeping_the_rule() {
     let shipped = Policy::default();
     let policies: Vec<(String, Policy)> = [0, 1, 2, 3, 4]
         .into_iter()
-        .map(|widen| (format!("widen {widen}"), Policy { widen, ..shipped }))
-        .chain(
-            [50, 75, 90, 95, 100]
-                .into_iter()
-                .map(|busy| (format!("busy {busy}"), Policy { busy, ..shipped })),
-        )
-        .chain(
-            [0, 25, 50, 75, 100]
-                .into_iter()
-                .map(|alone| (format!("alone {alone}"), Policy { alone, ..shipped })),
-        )
-        .chain(
-            [0, 1, 2, 4]
-                .into_iter()
-                .map(|lift| (format!("lift {lift}"), Policy { lift, ..shipped })),
-        )
+        .map(|widen| {
+            (
+                format!("widen {widen}"),
+                Policy {
+                    sizing: Rule {
+                        widen,
+                        ..shipped.sizing
+                    },
+                    ..shipped
+                },
+            )
+        })
+        .chain([50, 75, 90, 95, 100].into_iter().map(|busy| {
+            (
+                format!("busy {busy}"),
+                Policy {
+                    sizing: Rule {
+                        busy,
+                        ..shipped.sizing
+                    },
+                    ..shipped
+                },
+            )
+        }))
+        .chain([0, 25, 50, 75, 100].into_iter().map(|alone| {
+            (
+                format!("alone {alone}"),
+                Policy {
+                    sizing: Rule {
+                        alone,
+                        ..shipped.sizing
+                    },
+                    ..shipped
+                },
+            )
+        }))
+        .chain([0, 1, 2, 4].into_iter().map(|lift| {
+            (
+                format!("lift {lift}"),
+                Policy {
+                    sizing: Rule {
+                        lift,
+                        ..shipped.sizing
+                    },
+                    ..shipped
+                },
+            )
+        }))
         .chain(
             [Timing::Fits, Timing::Any]
                 .into_iter()

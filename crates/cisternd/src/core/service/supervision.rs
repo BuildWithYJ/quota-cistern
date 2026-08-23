@@ -11,7 +11,7 @@
 use crate::core::{
     domain::{
         AT_CEILING, Backlog, Before, Consumption, Decision, HUNDREDTHS, Observation, Policy,
-        Priced, Session, SessionId, SessionState, Sizings, Spending, Standing, StoppedReason,
+        Priced, Rule, Session, SessionId, SessionState, Sizings, Spending, Standing, StoppedReason,
         TaskId, TaskState, Timing, Usage, decide, done_waiting, moved_per_millionth, sampled,
     },
     port::{
@@ -211,7 +211,7 @@ impl Supervisor<'_> {
                     &held,
                     spent,
                     &before,
-                    self.policy,
+                    self.policy.timing,
                     now,
                     unread,
                 )) {
@@ -317,7 +317,7 @@ impl Supervisor<'_> {
             },
             Usage::Tokens(_) => None,
         };
-        sized(self.policy, held, |run| {
+        sized(self.policy.sizing, held, |run| {
             let counted = backlog::counted(run.spent.as_ref()?)?;
             match per_millionth {
                 None => Some(counted.tokens()),
@@ -331,7 +331,7 @@ impl Supervisor<'_> {
     /// Told apart the same way as what runs cost: a run stopped part way through took less
     /// time than its task needs, for the same reason it spent less.
     fn lasting(&self, held: &[Run]) -> Sizings {
-        sized(self.policy, held, |run| {
+        sized(self.policy.sizing, held, |run| {
             let started = run.started_at.parse::<u64>().ok()?;
             let ended = run.ended_at.parse::<u64>().ok()?;
             ended.checked_sub(started)
@@ -464,9 +464,9 @@ impl Settled {
 /// Two questions of the same ledger, what a run cost and how long it took, and the same runs
 /// answer both. A run that finished says what its task takes; one stopped at its ceiling says
 /// only where it was stopped, which the sizing holds as a floor; the rest say neither.
-fn sized(policy: Policy, held: &[Run], figure: impl Fn(&Run) -> Option<u64>) -> Sizings {
+fn sized(rule: Rule, held: &[Run], figure: impl Fn(&Run) -> Option<u64>) -> Sizings {
     Sizings::under(
-        policy,
+        rule,
         held.iter().filter_map(|run| {
             let ran = sampled(
                 TaskState::parse(&run.outcome)?,
@@ -503,7 +503,7 @@ fn standing(
     held: &Session,
     spent: Spending,
     before: &Before,
-    policy: Policy,
+    timing: Timing,
     now: u64,
     unread: bool,
 ) -> Standing {
@@ -519,7 +519,7 @@ fn standing(
         // Either way of becoming unmeasurable: a share the vendor would not answer for, or a
         // task whose own count did not read.
         unreadable: unread || matches!(tasks.consumed_by(session), Observation::Unreadable { .. }),
-        policy,
+        timing,
     }
 }
 

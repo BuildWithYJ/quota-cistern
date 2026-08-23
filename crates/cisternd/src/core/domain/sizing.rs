@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{Policy, TaskState};
+use super::TaskState;
 
 /// What runs of one model have cost.
 ///
@@ -89,7 +89,7 @@ impl Sizings {
     /// Split by model, since what one model's runs cost differs from another's by several
     /// times over. Runs that were stopped lift the estimate rather than being averaged into
     /// it, and a model with nothing but stopped runs has no figure at all.
-    pub fn under(policy: Policy, runs: impl IntoIterator<Item = Ran>) -> Self {
+    pub fn under(rule: Rule, runs: impl IntoIterator<Item = Ran>) -> Self {
         let mut apart: BTreeMap<Option<String>, (Vec<u64>, u64)> = BTreeMap::new();
         for run in runs {
             let (finished, floor) = apart.entry(run.model).or_default();
@@ -105,10 +105,10 @@ impl Sizings {
             }
             costs.sort_unstable();
             let sizing = Sizing {
-                estimate: at(&costs, policy.busy).max(floor.saturating_mul(policy.lift)),
-                fallback: at(&costs, policy.alone),
+                estimate: at(&costs, rule.busy).max(floor.saturating_mul(rule.lift)),
+                fallback: at(&costs, rule.alone),
                 over: costs.len(),
-                widen: policy.widen,
+                widen: rule.widen,
             };
             match model {
                 Some(model) => {
@@ -159,6 +159,61 @@ fn at(sorted: &[u64], per_cent: u64) -> u64 {
     // Between 1 and n - 1 inclusive, since h is over 300 and under 300n.
     let under = (h / 300) as usize;
     sorted[under - 1] + (sorted[under] - sorted[under - 1]) * (h % 300) / 300
+}
+
+/// Which quantile a run is sized at while others are going, in whole percent.
+///
+/// The third quarter. Others are going, so a run that goes over eats budget they were counting
+/// on, and a size three runs in four come in under is far enough up to make that rare.
+const BUSY: u64 = 75;
+
+/// Which quantile a run is sized at when nothing else is going, in whole percent.
+///
+/// The first quarter. With nothing else going there is nobody to take budget from, so a session
+/// that would otherwise stop with budget in hand starts one more and is optimistic about it.
+/// This is the only place a session is.
+const ALONE: u64 = 25;
+
+/// How far a stopped run lifts the estimate above where it was stopped.
+///
+/// Twice, which is how a backfilling scheduler grows a prediction its job has already outlived.
+const LIFT: u64 = 2;
+
+/// How far an estimate is widened for how little it was worked out from.
+///
+/// One, so an estimate from a single run allows twice it and one from four allows a quarter
+/// more. What this should be is not something four sessions on a real repository could say:
+/// none of their runs came within half of its ceiling, so any figure here would have ended them
+/// the same way. It is a number to sweep rather than one to argue about.
+const WIDEN: u64 = 1;
+
+/// The figures a sizing is worked out by.
+///
+/// Held apart from the figure the clock is asked for, because these four are read here and that
+/// one is read where a decision is made. A rule that took the whole of `Policy` would be taking
+/// three fields it never looks at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rule {
+    /// Which quantile a run is sized at while others are going.
+    pub busy: u64,
+    /// Which quantile it is sized at when nothing else is going.
+    pub alone: u64,
+    /// How far the size is widened for how few runs it came from: `size x (1 + widen/over)`.
+    pub widen: u64,
+    /// How far a run that was stopped lifts the size above what it spent. Nothing leaves
+    /// stopped runs out altogether.
+    pub lift: u64,
+}
+
+impl Default for Rule {
+    fn default() -> Self {
+        Rule {
+            busy: BUSY,
+            alone: ALONE,
+            widen: WIDEN,
+            lift: LIFT,
+        }
+    }
 }
 
 /// Which kind of sample a run is, or nothing where it is neither.

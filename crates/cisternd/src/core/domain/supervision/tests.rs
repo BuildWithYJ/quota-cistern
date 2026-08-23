@@ -1,4 +1,4 @@
-use crate::core::domain::sizing::Ran;
+use crate::core::domain::sizing::{Ran, Rule};
 use crate::core::domain::{Before, Budget, Sizings, Span, Spending, Usage};
 
 use super::*;
@@ -20,7 +20,7 @@ fn standing() -> Standing {
         left: 1_000,
         booked: 0,
         before: Before {
-            cost: Sizings::under(Policy::default(), [Ran::finished(Some("opus"), 100)]),
+            cost: Sizings::under(Rule::default(), [Ran::finished(Some("opus"), 100)]),
             // Nothing has been timed, so the clock lets everything start. The tests that are
             // about the clock say what runs have taken.
             lasting: Sizings::default(),
@@ -33,7 +33,7 @@ fn standing() -> Standing {
         running: 1,
         blocked: false,
         unreadable: false,
-        policy: Policy::default(),
+        timing: Timing::Fits,
     }
 }
 
@@ -53,7 +53,7 @@ fn ceilings(decision: Decision) -> Vec<u64> {
 fn a_policy_of_someones_own_is_what_a_session_is_run_under() {
     let out_of_reach = || Standing {
         before: Before {
-            lasting: Sizings::under(Policy::default(), [Ran::finished(Some("opus"), 9_000)]),
+            lasting: Sizings::under(Rule::default(), [Ran::finished(Some("opus"), 9_000)]),
             ..standing().before
         },
         time_left: 100,
@@ -67,10 +67,7 @@ fn a_policy_of_someones_own_is_what_a_session_is_run_under() {
     );
     assert_eq!(
         ceilings(decide(&Standing {
-            policy: Policy {
-                timing: Timing::Any,
-                ..Policy::default()
-            },
+            timing: Timing::Any,
             ..out_of_reach()
         }))
         .len(),
@@ -261,7 +258,7 @@ fn a_session_with_nothing_running_lowers_its_bar_to_what_a_cheap_run_costs() {
             running: 0,
             before: Before {
                 cost: Sizings::under(
-                    Policy::default(),
+                    Rule::default(),
                     [
                         Ran::finished(Some("opus"), 50),
                         Ran::finished(Some("opus"), 100),
@@ -284,7 +281,7 @@ fn a_session_that_cannot_cover_a_cheap_run_stops() {
             running: 0,
             before: Before {
                 cost: Sizings::under(
-                    Policy::default(),
+                    Rule::default(),
                     [
                         Ran::finished(Some("opus"), 50),
                         Ran::finished(Some("opus"), 100),
@@ -306,7 +303,7 @@ fn a_task_that_cannot_finish_in_the_time_left_does_not_start() {
     assert_eq!(
         decide(&Standing {
             before: Before {
-                lasting: Sizings::under(Policy::default(), [Ran::finished(Some("opus"), 900)]),
+                lasting: Sizings::under(Rule::default(), [Ran::finished(Some("opus"), 900)]),
                 ..standing().before
             },
             time_left: 600,
@@ -321,7 +318,7 @@ fn a_task_that_fits_the_time_left_starts() {
     assert_eq!(
         ceilings(decide(&Standing {
             before: Before {
-                lasting: Sizings::under(Policy::default(), [Ran::finished(Some("opus"), 900)]),
+                lasting: Sizings::under(Rule::default(), [Ran::finished(Some("opus"), 900)]),
                 ..standing().before
             },
             time_left: 3_600,
@@ -339,7 +336,7 @@ fn a_session_with_nothing_running_and_no_time_for_another_run_stops() {
         decide(&Standing {
             running: 0,
             before: Before {
-                lasting: Sizings::under(Policy::default(), [Ran::finished(Some("opus"), 900)]),
+                lasting: Sizings::under(Rule::default(), [Ran::finished(Some("opus"), 900)]),
                 ..standing().before
             },
             time_left: 600,
@@ -356,7 +353,7 @@ fn a_model_nothing_has_been_timed_on_starts_whatever_the_time_left() {
     assert_eq!(
         ceilings(decide(&Standing {
             before: Before {
-                lasting: Sizings::under(Policy::default(), [Ran::finished(Some("haiku"), 900)]),
+                lasting: Sizings::under(Rule::default(), [Ran::finished(Some("haiku"), 900)]),
                 ..standing().before
             },
             time_left: 1,
@@ -375,7 +372,7 @@ fn the_bar_is_not_lowered_while_something_runs() {
             left: 60,
             before: Before {
                 cost: Sizings::under(
-                    Policy::default(),
+                    Rule::default(),
                     [
                         Ran::finished(Some("opus"), 50),
                         Ran::finished(Some("opus"), 100),

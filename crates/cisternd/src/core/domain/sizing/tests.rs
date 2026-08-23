@@ -6,7 +6,7 @@ use super::*;
 #[test]
 fn each_model_is_worked_out_from_its_own_runs() {
     let sizings = Sizings::under(
-        Policy::default(),
+        Rule::default(),
         [
             Ran::finished(Some("haiku"), 10),
             Ran::finished(Some("haiku"), 20),
@@ -25,7 +25,7 @@ fn each_model_is_worked_out_from_its_own_runs() {
 #[test]
 fn runs_that_named_no_model_are_their_own() {
     let sizings = Sizings::under(
-        Policy::default(),
+        Rule::default(),
         [Ran::finished(None, 7), Ran::finished(Some("opus"), 900)],
     );
 
@@ -43,7 +43,7 @@ fn runs_that_named_no_model_are_their_own() {
 #[test]
 fn the_figures_are_read_between_the_runs() {
     let sizings = Sizings::under(
-        Policy::default(),
+        Rule::default(),
         [
             Ran::finished(Some("opus"), 100),
             Ran::finished(Some("opus"), 200),
@@ -66,7 +66,7 @@ fn the_figures_are_read_between_the_runs() {
 fn the_estimate_only_falls_under_the_dearest_run_once_there_are_runs_enough() {
     let costs = |over: u64| {
         Sizings::under(
-            Policy::default(),
+            Rule::default(),
             (1..=over).map(|each| Ran::finished(Some("opus"), each * 100)),
         )
         .model(Some("opus"))
@@ -87,16 +87,16 @@ fn a_rule_of_someones_own_is_what_a_sizing_is_worked_out_by() {
     let runs = || (1..=4).map(|each| Ran::finished(Some("opus"), each * 100));
     let sized = |policy| Sizings::under(policy, runs()).model(Some("opus")).unwrap();
 
-    let shipped = Sizings::under(Policy::default(), runs())
+    let shipped = Sizings::under(Rule::default(), runs())
         .model(Some("opus"))
         .unwrap();
-    let wider = sized(Policy {
+    let wider = sized(Rule {
         widen: 4,
-        ..Policy::default()
+        ..Rule::default()
     });
-    let lower = sized(Policy {
+    let lower = sized(Rule {
         busy: 50,
-        ..Policy::default()
+        ..Rule::default()
     });
 
     assert_eq!((shipped.estimate, shipped.allowing()), (358, 447));
@@ -107,7 +107,7 @@ fn a_rule_of_someones_own_is_what_a_sizing_is_worked_out_by() {
 #[test]
 fn a_run_that_was_stopped_is_not_counted_as_what_its_task_costs() {
     let sizings = Sizings::under(
-        Policy::default(),
+        Rule::default(),
         [
             Ran::finished(Some("opus"), 300),
             Ran::finished(Some("opus"), 400),
@@ -127,7 +127,7 @@ fn a_run_that_was_stopped_is_not_counted_as_what_its_task_costs() {
 #[test]
 fn a_run_that_was_stopped_lifts_the_estimate_past_where_it_stopped() {
     let sizings = Sizings::under(
-        Policy::default(),
+        Rule::default(),
         [
             Ran::finished(Some("opus"), 300),
             Ran::finished(Some("opus"), 400),
@@ -143,14 +143,14 @@ fn a_run_that_was_stopped_lifts_the_estimate_past_where_it_stopped() {
 /// whole of what is left, which is more room than the floor would have given it.
 #[test]
 fn a_model_that_has_only_been_stopped_has_no_figure() {
-    let sizings = Sizings::under(Policy::default(), [Ran::stopped(Some("opus"), 900)]);
+    let sizings = Sizings::under(Rule::default(), [Ran::stopped(Some("opus"), 900)]);
 
     assert_eq!(sizings.model(Some("opus")), None);
 }
 
 #[test]
 fn one_run_is_both_figures() {
-    let sizings = Sizings::under(Policy::default(), [Ran::finished(Some("opus"), 42)]);
+    let sizings = Sizings::under(Rule::default(), [Ran::finished(Some("opus"), 42)]);
     let sizing = sizings.model(Some("opus")).unwrap();
 
     assert_eq!((sizing.estimate, sizing.fallback, sizing.over), (42, 42, 1));
