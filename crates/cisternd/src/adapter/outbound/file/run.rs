@@ -129,16 +129,19 @@ impl Runs for FileRuns {
     }
 
     fn read(&self) -> Result<Vec<Run>, Unavailable> {
-        let written = match fs::read_to_string(&self.at) {
+        // Bytes rather than text. A core killed part way through a line can be killed part way
+        // through a letter, and a file holding half of one is not a string: read as text the
+        // whole ledger would be refused over the one line nobody can read anyway.
+        let written = match fs::read(&self.at) {
             Ok(written) => written,
             // Nothing has run yet, which is not a failure.
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(e) => return Err(self.failing(&self.at, e)),
         };
         Ok(written
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .filter_map(|line| serde_json::from_str::<Entry>(line).ok())
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.iter().all(u8::is_ascii_whitespace))
+            .filter_map(|line| serde_json::from_slice::<Entry>(line).ok())
             .map(held)
             .collect())
     }
@@ -415,6 +418,27 @@ mod tests {
         let at = dir.path().join("cistern").join(NAMED);
         let mut held = fs::OpenOptions::new().append(true).open(&at).unwrap();
         held.write_all(br#"{"task":"2","started_"#).unwrap();
+        drop(held);
+
+        runs.append(a_run("3")).unwrap();
+
+        let held = runs.read().unwrap();
+        let named: Vec<&str> = held.iter().map(|run| run.task.as_str()).collect();
+        assert_eq!(named, ["1", "3"], "{held:?}");
+    }
+
+    /// A line can be cut in the middle of a letter, and a file holding half of one is not a
+    /// string. Read as text, the whole ledger would be refused over the one line nobody can
+    /// read anyway.
+    #[test]
+    fn a_letter_cut_in_half_costs_only_the_line_it_is_in() {
+        let (dir, runs) = in_a_temporary_directory();
+        runs.append(a_run("1")).unwrap();
+        let at = dir.path().join("cistern").join(NAMED);
+        let mut held = fs::OpenOptions::new().append(true).open(&at).unwrap();
+        let cut = "\u{d55c}".as_bytes();
+        held.write_all(br#"{"task":"2","title":""#).unwrap();
+        held.write_all(&cut[..1]).unwrap();
         drop(held);
 
         runs.append(a_run("3")).unwrap();
