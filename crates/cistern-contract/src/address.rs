@@ -182,6 +182,12 @@ mod platform {
     }
 }
 
+/// Written down, and not run.
+///
+/// `docs/ipc.md` records the address for both, so that the envelope is one document rather
+/// than two. The core itself is Unix: the requirements say macOS or Linux and the vendor's
+/// limit is read through a pseudo-terminal. These arms keep the document honest about what
+/// the address would be; they are not an offer to run there.
 #[cfg(windows)]
 mod platform {
     use std::{io, time::SystemTime};

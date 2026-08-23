@@ -96,6 +96,8 @@ impl ProgramAgent {
     }
 }
 
+/// One argument with `{name}` replaced by what was given for it.
+///
 /// One pass, so that what is written stands. Filling each name in turn over the whole string
 /// would leave a value written for one name open to the names that follow, and a task's
 /// instruction goes in among them: an instruction holding the text `{model}` would come out

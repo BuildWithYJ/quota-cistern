@@ -1,0 +1,145 @@
+name: release
+
+# The tag is the release. The changelog is written and the milestone closed before it is
+# pushed, so there is nothing left for anyone to approve afterwards.
+on:
+  push:
+    tags: ["v*"]
+
+# One run per tag, and never cancelled part way. Two runs over one tag can have `publish` take
+# the draft state off a release the other is still uploading to.
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  # Made once and before the builds, so that two runners do not each make one and leave two
+  # releases for the tag. It is a draft until the files are on it.
+  open:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # Whether it is a draft rather than whether it exists. Cutting the release through the
+      # web pushes the tag, which starts this run against a release that is already public and
+      # has nothing on it, and `releases/latest/download/<name>` answers 404 for as long as the
+      # builds take. That is the address the README tells people to install from.
+      - name: A draft release for this tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null || echo missing)
+          case "$draft" in
+            true) ;;
+            false) gh release edit "$TAG" --draft=true ;;
+            *) gh release create "$TAG" --draft --title "$TAG" --notes "" ;;
+          esac
+
+  attach:
+    needs: open
+    strategy:
+      # A leg that fails should not take the other down with it. Cancelled, the healthy leg
+      # has to be built again by a re-run that would otherwise have rebuilt only the broken one.
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+      # What signing the build's provenance needs.
+      id-token: write
+      attestations: write
+    steps:
+      # Nothing here reaches the repository over git: the build takes what `Cargo.lock` names
+      # and `gh` takes its token from the environment. Left on, the token this job is given
+      # would sit in the checkout's git configuration while dependencies' build scripts run.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # rust-toolchain.toml pins the version, so this installs that one.
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          rustflags: ""
+          target: ${{ matrix.target }}
+          # Every tag is a ref of its own, so a cache saved here matches no later key. It would
+          # be written against the repository's quota and read by nobody.
+          cache: false
+
+      # Named rather than left to the host, so that the target in the file name is the target
+      # that was built and a row added later cannot quietly say one thing and build another.
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+
+      # A tag naming a version the workspace does not carry would ship binaries that answer
+      # with another one, and `--version` is how a reader tells the two sides apart.
+      - name: The version built is the version tagged
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # `--version` ends with 5 where no core is running, which is the case here, and it
+          # says what this side is on the first line either way.
+          said=$(./target/${{ matrix.target }}/release/cistern --version 2>&1 || true)
+          built=$(printf '%s\n' "$said" | head -1 | cut -d' ' -f2)
+          [ "v$built" = "$TAG" ] || {
+            echo "the tag is $TAG and the build answers ${built:-nothing}"
+            exit 1
+          }
+
+      # The two together, since the command line looks for the daemon beside itself, and
+      # nothing else, so that unpacking into a directory on the PATH puts only them there.
+      # The name carries no version: `releases/latest/download/<name>` needs a fixed one for
+      # the README to give a command anyone can paste.
+      - name: Gather them
+        run: tar -czf "cistern-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" cistern cisternd
+
+      # Says which workflow, over which commit, built the file. `gh attestation verify` is what
+      # a reader checks it with, and it is the only thing on a release that a checksum written
+      # by the same run could not be.
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: cistern-${{ matrix.target }}.tar.gz
+
+      - name: Attach it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "$TAG" "cistern-${{ matrix.target }}.tar.gz" --clobber
+
+  # Once both archives are on it. A release is never public without them, and nobody has to
+  # press anything for it to become public with them.
+  publish:
+    needs: attach
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # The README sends macOS users to `curl` so that the download does not carry Gatekeeper's
+      # quarantine, which is to say it tells people to run a binary nothing checked. This is
+      # what they check it with: `sha256sum -c SHA256SUMS`.
+      #
+      # Written here rather than in each leg, so that one file covers every archive and is made
+      # from what is actually on the release.
+      - name: A checksum for each archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release download "$TAG" --pattern "*.tar.gz" --dir .
+          sha256sum *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$TAG" SHA256SUMS --clobber
+
+      - name: Let it out
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "$TAG" --draft=false

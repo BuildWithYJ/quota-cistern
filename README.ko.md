@@ -18,11 +18,14 @@ quota-cistern은 그 제약을 없앱니다. 위임할 작업을 등록하고 �
 
 ## 시작하기
 
-설치하면 `cisternd`와 `cistern` 두 명령이 생깁니다.
+설치하면 `cisternd`와 `cistern` 두 명령이 생깁니다. 기계에 맞는 압축 파일을 받아 `PATH`에 있는 디렉터리에 풉니다. 명령줄이 데몬을 자기 옆에서 찾으므로 둘이 같은 디렉터리에 있어야 합니다.
 
 ```console
-$ cargo install --git https://github.com/BuildWithYJ/quota-cistern cistern cisternd
+$ mkdir -p ~/.local/bin
+$ curl -L https://github.com/BuildWithYJ/quota-cistern/releases/latest/download/cistern-aarch64-apple-darwin.tar.gz | tar -xz -C ~/.local/bin
 ```
+
+리눅스에서는 `cistern-x86_64-unknown-linux-gnu.tar.gz`를 받습니다. 이후 `cistern`을 찾지 못하면 그 디렉터리가 `PATH`에 없는 것이므로 `PATH`에 있는 디렉터리에 풉니다. macOS에서는 브라우저 대신 `curl`로 받는 것이 중요합니다. 브라우저로 받은 파일에는 표시가 붙고 macOS가 서명 없는 그런 파일의 실행을 거부합니다.
 
 `cisternd`는 작업을 실행하고 상태를 보관하는 데몬입니다. 첫 `cistern` 명령이 데몬을 실행하고 그 데몬은 이후에도 계속 실행되므로 직접 띄울 것은 없습니다. 데몬이 출력하는 내용은 `~/.local/state/cistern/daemon.log`에 기록합니다.
 
@@ -111,7 +114,7 @@ task:1 applied to working tree
 
 ## 알려진 제약
 
-- 비율로 선언한 예산은 벤더의 한도를 상태줄에서 읽으므로 `run --usage 50%`와 `interrupt`가 최대 90초 대기하며, 그동안 데몬은 다른 명령에도 응답하지 않습니다. 토큰으로 선언하면 한도를 읽지 않습니다.
+- 비율로 선언한 예산은 벤더의 한도를 상태줄에서 읽으므로 `run --usage 50%`와 `interrupt`가 최대 90초 대기합니다. 토큰으로 선언하면 한도를 읽지 않습니다.
 - 이 읽기는 Claude Code가 한도를 표시하는 방식에 의존합니다. 기다릴 문구와 값이 있는 자리는 벤더 정의에 있으므로, 그것이 바뀌면 릴리스를 기다리지 않고 파일을 고치면 됩니다.
 - 작업 공간은 데이터 디렉터리 아래에 남고 결과 브랜치도 남습니다. 둘 다 정리하는 명령은 없습니다.
 
