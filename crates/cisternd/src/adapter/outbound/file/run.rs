@@ -7,7 +7,7 @@
 
 use std::{
     env, fs,
-    io::{self, Write as _},
+    io::{self, Read as _, Seek as _, SeekFrom, Write as _},
     path::{Path, PathBuf},
     sync::{Mutex, PoisonError},
 };
@@ -111,10 +111,20 @@ impl Runs for FileRuns {
         let _writing = self.writing.lock().unwrap_or_else(PoisonError::into_inner);
         let mut held = fs::OpenOptions::new()
             .create(true)
+            .read(true)
             .append(true)
             .open(&self.at)
             .map_err(|e| self.failing(&self.at, e))?;
-        held.write_all(format!("{line}\n").as_bytes())
+
+        // A core killed part way through a line leaves one without its newline. Ending it
+        // before this record rather than writing on the end of it: glued together the two are
+        // one line that reads as neither, so a death that cost one run's line would cost the
+        // next run's as well.
+        let line = match unfinished(&mut held) {
+            true => format!("\n{line}\n"),
+            false => format!("{line}\n"),
+        };
+        held.write_all(line.as_bytes())
             .map_err(|e| self.failing(&self.at, e))
     }
 
@@ -132,6 +142,25 @@ impl Runs for FileRuns {
             .map(held)
             .collect())
     }
+}
+
+/// Whether the file ends part way through a line.
+///
+/// Read from the handle the append is about to be made through, so that nothing else can put a
+/// line in between the asking and the writing. Appending writes at the end whatever this seeks
+/// to, so looking does not move where the record lands.
+///
+/// A file that cannot be seeked or read is left to the write that follows, which reports what
+/// went wrong.
+fn unfinished(held: &mut fs::File) -> bool {
+    if held.seek(SeekFrom::End(0)).is_ok_and(|at| at == 0) {
+        return false;
+    }
+    if held.seek(SeekFrom::End(-1)).is_err() {
+        return false;
+    }
+    let mut last = [0u8; 1];
+    held.read_exact(&mut last).is_ok() && last[0] != b'\n'
 }
 
 /// What the file holds, as the core takes it.
@@ -373,5 +402,25 @@ mod tests {
             held.iter().map(|run| run.task.as_str()).collect::<Vec<_>>(),
             ["1", "3"]
         );
+    }
+
+    /// A core killed part way through a line costs that line and no more.
+    ///
+    /// The next run's record would otherwise be written on the end of the partial one, and the
+    /// line that made would read as neither: one death, two runs lost.
+    #[test]
+    fn a_line_left_unfinished_does_not_take_the_next_one_with_it() {
+        let (dir, runs) = in_a_temporary_directory();
+        runs.append(a_run("1")).unwrap();
+        let at = dir.path().join("cistern").join(NAMED);
+        let mut held = fs::OpenOptions::new().append(true).open(&at).unwrap();
+        held.write_all(br#"{"task":"2","started_"#).unwrap();
+        drop(held);
+
+        runs.append(a_run("3")).unwrap();
+
+        let held = runs.read().unwrap();
+        let named: Vec<&str> = held.iter().map(|run| run.task.as_str()).collect();
+        assert_eq!(named, ["1", "3"], "{held:?}");
     }
 }
