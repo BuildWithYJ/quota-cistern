@@ -228,7 +228,13 @@ impl Supervisor<'_> {
                             .iter()
                             .take(self.at_once.saturating_sub(tasks.running_in(session)))
                             .filter_map(|allowance| {
-                                tasks.assign(allowance.task, session, allowance.ceiling, now)
+                                tasks.assign(
+                                    allowance.task,
+                                    session,
+                                    allowance.ceiling,
+                                    now,
+                                    held.model(),
+                                )
                             })
                             .collect(),
                     ),

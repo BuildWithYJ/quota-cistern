@@ -316,7 +316,7 @@ fn two_tasks_carried_on_at_once_each_end_in_their_own_place() {
     let opened = SessionId::parse("1").unwrap();
     backlog::change(&tasks, |held| {
         let waiting = held.next_to_assign().unwrap();
-        Ok(held.assign(waiting, opened, u64::MAX, 0))
+        Ok(held.assign(waiting, opened, u64::MAX, 0, None))
     })
     .unwrap();
 

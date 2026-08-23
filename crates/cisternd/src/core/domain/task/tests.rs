@@ -261,7 +261,7 @@ const AT: u64 = 1_700_000_000;
 fn assigned(backlog: &mut Backlog, to: SessionId) -> TaskId {
     registered(backlog, None, None);
     let waiting = backlog.next_to_assign().unwrap();
-    backlog.assign(waiting, to, 0, AT).unwrap()
+    backlog.assign(waiting, to, 0, AT, None).unwrap()
 }
 
 fn a_session() -> SessionId {
@@ -281,6 +281,44 @@ fn a_task_carries_when_its_run_started_and_when_it_stopped() {
     assert_eq!(backlog.find(id).unwrap().ended_at(), Some(AT + 900));
 }
 
+/// Section 2.2 of `docs/cli.md` says a session's `--model` is what a task that named none
+/// falls back to, and section 2.1 says a task reports the model it ran on. Both are settled
+/// here, where what a task runs on stops being open.
+///
+/// A task that named one keeps it. A session does not override an author.
+#[test]
+fn a_task_that_named_no_model_takes_the_session_s() {
+    let mut backlog = Backlog::default();
+    let session = a_session();
+
+    let bare = registered(&mut backlog, None, None);
+    backlog.assign(bare, session, 0, AT, Some("haiku")).unwrap();
+    assert_eq!(backlog.find(bare).unwrap().model(), Some("haiku"));
+
+    let named = backlog
+        .add(
+            "a task of its own".to_owned(),
+            "do it".to_owned(),
+            None,
+            None,
+            Some("opus".to_owned()),
+            Repository::new("/work/api"),
+        )
+        .id();
+    backlog
+        .assign(named, session, 0, AT, Some("haiku"))
+        .unwrap();
+    assert_eq!(backlog.find(named).unwrap().model(), Some("opus"));
+}
+
+/// A session that named none leaves a bare task bare, and the vendor's own default runs.
+#[test]
+fn a_session_that_named_no_model_leaves_a_task_without_one() {
+    let mut backlog = Backlog::default();
+    let id = assigned(&mut backlog, a_session());
+    assert_eq!(backlog.find(id).unwrap().model(), None);
+}
+
 /// A task the vendor turned away runs again, and the second run is the one to measure.
 #[test]
 fn a_task_assigned_again_is_stamped_with_the_run_it_is_starting_now() {
@@ -291,7 +329,7 @@ fn a_task_assigned_again_is_stamped_with_the_run_it_is_starting_now() {
     backlog.wait_again(id, AT + 60);
     assert_eq!(backlog.find(id).unwrap().ended_at(), Some(AT + 60));
 
-    assert_eq!(backlog.assign(id, session, 0, AT + 300), Some(id));
+    assert_eq!(backlog.assign(id, session, 0, AT + 300, None), Some(id));
     let held = backlog.find(id).unwrap();
     assert_eq!(held.started_at(), Some(AT + 300));
     assert_eq!(held.ended_at(), None);
@@ -321,7 +359,7 @@ fn a_task_assigned_again_counts_against_the_session_that_took_it() {
     backlog.wait_again(id, AT + 60);
 
     let next = SessionId::parse("2").unwrap();
-    assert_eq!(backlog.assign(id, next, 0, AT + 300), Some(id));
+    assert_eq!(backlog.assign(id, next, 0, AT + 300, None), Some(id));
     assert_eq!(backlog.consumed_by(first), spent(0));
     assert_eq!(backlog.consumed_by(next), spent(40));
 }
@@ -575,7 +613,7 @@ fn every_assignment_is_counted() {
 
     backlog.finish(id, TaskState::Interrupted, None, AT + 60);
     backlog.try_again(id).unwrap();
-    backlog.assign(id, session, 0, AT + 120);
+    backlog.assign(id, session, 0, AT + 120, None);
 
     assert_eq!(backlog.find(id).unwrap().attempts(), 2);
 }
@@ -587,7 +625,7 @@ fn a_backlog_whose_successors_all_wait_on_a_task_that_did_not_complete_is_blocke
     let first = registered(&mut backlog, None, None);
     let second = registered(&mut backlog, None, Some(first));
     let session = a_session();
-    backlog.assign(first, session, 0, AT);
+    backlog.assign(first, session, 0, AT, None);
     backlog.finish(first, TaskState::Interrupted, None, AT + 60);
 
     assert_eq!(backlog.next_to_assign(), None);

@@ -457,7 +457,14 @@ impl Backlog {
     ///
     /// Named rather than taken from the front, since what each may take was decided over the
     /// whole list and the decision says which ones.
-    pub fn assign(&mut self, id: TaskId, to: SessionId, ceiling: u64, now: u64) -> Option<TaskId> {
+    pub fn assign(
+        &mut self,
+        id: TaskId,
+        to: SessionId,
+        ceiling: u64,
+        now: u64,
+        fallback: Option<&str>,
+    ) -> Option<TaskId> {
         let held = self
             .tasks
             .iter_mut()
@@ -466,6 +473,14 @@ impl Backlog {
         held.session = Some(to);
         held.ceiling = Some(ceiling);
         held.attempts += 1;
+        // Section 2.2 of `docs/cli.md` says a session's `--model` is what a task that named
+        // none falls back to, and section 2.1 says a task reports the model it ran on. Written
+        // down here, where what it runs on is settled, rather than read again everywhere a run
+        // is started or recorded: the run that follows and the line the ledger keeps for it
+        // then say the same thing, which is what the sizing reads them for.
+        if held.model.is_none() {
+            held.model = fallback.map(str::to_owned);
+        }
         // A task the vendor turned away is assigned again, and the run that
         // starts now is the one these two describe.
         held.started_at = Some(now);
