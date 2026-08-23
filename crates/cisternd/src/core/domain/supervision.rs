@@ -141,6 +141,22 @@ pub enum Decision {
 pub fn done_waiting(time_left: u64, running: usize) -> bool {
     time_left == 0 && running == 0
 }
+/// Why a session with nothing running and nothing it may start stops.
+///
+/// A backlog that emptied is done whatever else is true of the session. The clock and the
+/// budget running out are what stops one that still had tasks it could have run, and telling a
+/// person the budget locked when the work simply finished says the wrong thing about both.
+///
+/// Asked here rather than worked out twice: a decision reaches this state when a task ends,
+/// and the clock reaches it when a session outlives its deadline with nothing going.
+pub fn nothing_more(waiting: bool, blocked: bool) -> StoppedReason {
+    match (waiting, blocked) {
+        (true, _) => StoppedReason::BudgetHardlock,
+        (false, true) => StoppedReason::Blocked,
+        (false, false) => StoppedReason::AllDone,
+    }
+}
+
 /// What to do about a session, from how it stands.
 ///
 /// Nothing here reaches outside, so the whole of the rule is in one place and a test of it
@@ -165,16 +181,7 @@ pub fn decide(standing: &Standing) -> Decision {
     // Nothing more fits and nothing is running that would make room.
     // Waiting for a task that will never start is not carrying on.
     if standing.running == 0 && starting.is_empty() {
-        if done_waiting(standing.time_left, standing.running) {
-            return Decision::Stop(StoppedReason::BudgetHardlock);
-        }
-        return Decision::Stop(match (standing.pending.is_empty(), standing.blocked) {
-            // Tasks that may start and nothing to start them with.
-            (false, _) => StoppedReason::BudgetHardlock,
-            // Tasks left, and every one of them waits on one that did not complete.
-            (true, true) => StoppedReason::Blocked,
-            (true, false) => StoppedReason::AllDone,
-        });
+        return Decision::Stop(nothing_more(!standing.pending.is_empty(), standing.blocked));
     }
     Decision::Start(starting)
 }

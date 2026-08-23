@@ -37,6 +37,24 @@ impl GitWorktrees {
 
 impl GitWorktrees {
     /// The branch a work area already has checked out, or nothing where there is no work area.
+    /// The repository a work area belongs to, as git names it.
+    ///
+    /// The common directory rather than the path a caller wrote, so that two ways of naming one
+    /// repository answer alike.
+    fn belongs_to(&self, at: &Path) -> Option<String> {
+        let done = git(&[
+            "-C",
+            &at.display().to_string(),
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ])
+        .ok()?;
+        done.status
+            .success()
+            .then(|| String::from_utf8_lossy(&done.stdout).trim().to_owned())
+    }
+
     fn on(&self, at: &Path) -> Option<String> {
         if !at.exists() {
             return None;
@@ -61,6 +79,21 @@ impl GitWorktrees {
     }
 }
 
+impl GitWorktrees {
+    /// Whether a work area is a checkout of this repository.
+    ///
+    /// Answered by git rather than by comparing the paths a caller wrote, since a repository
+    /// reached through a link or through a relative path is the same repository.
+    fn of(&self, repository: &str, at: &Path) -> bool {
+        match (self.belongs_to(at), self.belongs_to(Path::new(repository))) {
+            (Some(theirs), Some(ours)) => theirs == ours,
+            // A repository git will not answer for is one nothing can be checked against, and
+            // the command that follows fails on it anyway.
+            _ => false,
+        }
+    }
+}
+
 impl Worktrees for GitWorktrees {
     fn prepare(&self, cut: Cut<'_>) -> Result<String, Unavailable> {
         let at = self.under.join(cut.task);
@@ -69,8 +102,22 @@ impl Worktrees for GitWorktrees {
         // A task the vendor turned away runs again, and section 2.4 keeps its branch either way.
         // The work area it ran in is where that branch is checked out, so a second run carries on
         // in it rather than being refused for finding its own work behind.
+        //
+        // Which task a work area is for is its directory name, and a task number belongs to one
+        // backlog rather than to one repository. Two repositories can hold a task of that number
+        // and a branch of that name, so the branch alone does not say this work area is this
+        // task's: the repository has to answer as well, or a run would be handed the other
+        // repository's checkout and change it.
         match self.on(Path::new(&at)) {
-            Some(on) if on == cut.branch => return Ok(at),
+            Some(on) if on == cut.branch && self.of(cut.repository, Path::new(&at)) => {
+                return Ok(at);
+            }
+            Some(on) if on == cut.branch => {
+                return Err(Unavailable::new(format!(
+                    "the work area for {} is a checkout of another repository, not of {}",
+                    cut.task, cut.repository
+                )));
+            }
             Some(on) => {
                 return Err(Unavailable::new(format!(
                     "the work area for {} is on {on}, not on {}",

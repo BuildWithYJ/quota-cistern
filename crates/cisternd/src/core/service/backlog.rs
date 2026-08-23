@@ -301,9 +301,9 @@ fn restored_from(held: StoredTask) -> Result<Restored, Refusal> {
         attempts: held
             .attempts
             .as_deref()
-            .map(|at| stored_count("attempts", at))
+            .map(|at| stored_number("attempts", at))
             .transpose()?
-            .unwrap_or_default() as u32,
+            .unwrap_or_default(),
         ceiling: held
             .ceiling
             .as_deref()

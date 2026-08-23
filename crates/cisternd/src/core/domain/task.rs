@@ -450,13 +450,13 @@ impl Backlog {
         Ok(removed)
     }
 
-    /// Hands the first task that may start to a session, and says which.
-    ///
-    /// Nothing is answered when none may start, which an empty backlog and a blocked one both look like from here.
     /// Hands one named task to a session, with what its run may take.
     ///
     /// Named rather than taken from the front, since what each may take was decided over the
     /// whole list and the decision says which ones.
+    ///
+    /// Nothing is answered for a task the backlog does not hold, and for one that is not
+    /// waiting: a task another thread took first is not this session's to assign.
     pub fn assign(
         &mut self,
         id: TaskId,
@@ -537,30 +537,23 @@ impl Backlog {
         }
     }
 
-    /// The tasks whose work areas may be taken away, each with where it is.
+    /// Takes the work areas off the tasks nobody needs them for, and says which they were.
     ///
-    /// A task that has ended and been disposed of. Ended, because a run going is in there.
-    /// Disposed of, because until then the work area is what a person opens to look at what
-    /// was done, and because a task that ended may be put back in the backlog and carries on
-    /// in the work area its last run left.
-    ///
-    /// Section 2.1 reports the place as null once it is gone, and section 2.4 keeps the branch
-    /// whatever happens to the work area, so nothing a run committed goes with it.
-    pub fn tidyable(&self) -> Vec<(TaskId, String)> {
-        self.tasks
-            .iter()
-            .filter(|task| task.state.ended() && task.disposition.is_some())
-            .filter_map(|task| Some((task.id, task.worktree.clone()?)))
-            .collect()
-    }
-
-    /// Forgets where a task worked, for one whose work area has been taken away.
-    pub fn work_area_gone(&mut self, id: TaskId) {
+    /// Taken rather than read, because taking them away on disk is slow and a task can be put
+    /// back in the backlog while it happens. A task whose work area this has taken no longer
+    /// claims one, so a `retry` arriving meanwhile prepares a fresh one instead of being handed
+    /// a directory that is about to go. What git would not remove is given back by the caller.
+    pub fn tidying(&mut self) -> Vec<(TaskId, String, String)> {
+        let mut taken = Vec::new();
         for task in &mut self.tasks {
-            if task.id == id {
-                task.worktree = None;
+            if !(task.state.ended() && task.disposition.is_some()) {
+                continue;
+            }
+            if let Some(at) = task.worktree.take() {
+                taken.push((task.id, task.repository.to_string(), at));
             }
         }
+        taken
     }
 
     /// Moves a task to the state it ended in, leaving the branch alone.

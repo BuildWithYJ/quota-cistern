@@ -107,6 +107,23 @@ fn a_session_out_of_time_takes_nothing_more_on() {
     );
 }
 
+/// A backlog that emptied is done, and the clock does not make it anything else.
+///
+/// The reason reaches a person. Saying the budget locked where the work simply finished is
+/// wrong about the budget and about the work.
+#[test]
+fn a_session_out_of_time_with_nothing_left_to_do_is_all_done() {
+    assert_eq!(
+        decide(&Standing {
+            time_left: 0,
+            running: 0,
+            pending: Vec::new(),
+            ..standing()
+        }),
+        Decision::Stop(StoppedReason::AllDone)
+    );
+}
+
 /// And it stops once what it had going has ended.
 #[test]
 fn a_session_out_of_time_with_nothing_going_stops_with_budget_left() {

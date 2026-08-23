@@ -12,7 +12,8 @@ use crate::core::{
     domain::{
         AT_CEILING, Backlog, Before, Consumption, Decision, HUNDREDTHS, Observation, Policy,
         Priced, Rule, Session, SessionId, SessionState, Sizings, Spending, Standing, StoppedReason,
-        TaskId, TaskState, Timing, Usage, decide, done_waiting, moved_per_millionth, sampled,
+        TaskId, TaskState, Timing, Usage, decide, done_waiting, moved_per_millionth, nothing_more,
+        sampled,
     },
     port::{
         inbound::Refusal,
@@ -374,16 +375,18 @@ impl Supervisor<'_> {
             return Ok(());
         };
         let session = held.id();
-        // The same rule the decision a task's ending reaches asks, so that the two cannot come
-        // to different answers about one session.
-        if !done_waiting(
-            held.time_left(now),
-            backlog::read(self.outside.tasks)?.running_in(session),
-        ) {
+        let tasks = backlog::read(self.outside.tasks)?;
+        // The same two rules the decision a task's ending reaches asks, so that the two cannot
+        // come to different answers about one session: whether there is anything left to wait
+        // for, and what to call the stopping.
+        if !done_waiting(held.time_left(now), tasks.running_in(session)) {
             return Ok(());
         }
-        self.stop(session, StoppedReason::BudgetHardlock)
-            .map(|_| ())
+        self.stop(
+            session,
+            nothing_more(!tasks.waiting().is_empty(), tasks.blocked()),
+        )
+        .map(|_| ())
     }
 
     /// How far the vendor's limit was spent when this session last looked.

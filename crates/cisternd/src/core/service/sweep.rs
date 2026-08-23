@@ -69,6 +69,7 @@ const GUARD: u64 = 4;
 struct Drawn(u64);
 
 impl Drawn {
+    /// A draw that starts where the seed says, so a row of the table can be read again.
     fn seeded(seed: u64) -> Self {
         Drawn(seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1))
     }
@@ -122,6 +123,8 @@ enum Costs {
 }
 
 impl Costs {
+    /// What to call this set of costs in the table, made-up shapes by their shape and real
+    /// runs by how many there were.
     fn named(&self) -> String {
         match self {
             Costs::Made(shape) => shape.named().to_owned(),
@@ -185,6 +188,7 @@ fn over() -> Vec<Costs> {
 }
 
 impl Shape {
+    /// What to call this shape in the table.
     fn named(self) -> &'static str {
         match self {
             Shape::Alike => "alike",
@@ -244,6 +248,8 @@ struct Came {
 }
 
 impl Came {
+    /// What two sessions came to together, added figure by figure, so that a row of the table
+    /// is one running total rather than a list to fold at the end.
     fn and(mut self, other: Came) -> Came {
         self.finished += other.finished;
         self.stopped += other.stopped;

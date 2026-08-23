@@ -186,6 +186,7 @@ fn a_reason_reads_back_as_it_was_written() {
         StoppedReason::ObservationUnreadable,
         StoppedReason::Interrupted,
         StoppedReason::AllDone,
+        StoppedReason::Blocked,
         StoppedReason::Error,
     ] {
         assert_eq!(StoppedReason::parse(&reason.to_string()), Some(reason));

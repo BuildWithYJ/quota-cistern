@@ -21,7 +21,7 @@ pub use session::{
 };
 pub use sizing::{Before, Priced, Rule, Sizings, moved_per_millionth, sampled};
 pub use spending::{HUNDREDTHS, Spending};
-pub use supervision::{Decision, Standing, decide, done_waiting};
+pub use supervision::{Decision, Standing, decide, done_waiting, nothing_more};
 pub use task::{
     AT_CEILING, Backlog, DisposalRefused, Disposition, NotABacklog, RemovalRefused, Repository,
     Restored, Task, TaskId, TaskState,

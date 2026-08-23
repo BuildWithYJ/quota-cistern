@@ -9,6 +9,7 @@ use std::{
     env, fs,
     io::{self, Write as _},
     path::{Path, PathBuf},
+    sync::{Mutex, PoisonError},
 };
 
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,13 @@ const NAMED: &str = "runs.jsonl";
 /// The ledger, kept as one JSON object to a line at a path fixed when this is built.
 pub struct FileRuns {
     at: PathBuf,
+    /// Held across a whole append, so that two runs ending at once cannot interleave.
+    ///
+    /// Appending is atomic in where it writes and not in how many writes it takes, so a record
+    /// and the newline that ends it can be split by another writer's record. A line that comes
+    /// out of that is not JSON, and reading drops it: two runs end and the ledger keeps
+    /// neither. One core holds the socket, so one lock in this process is the whole of it.
+    writing: Mutex<()>,
 }
 
 /// One line, as JSON sees it.
@@ -70,7 +78,10 @@ impl FileRuns {
     /// Takes the path it is given.
     /// This is how a test reaches a temporary one.
     pub fn at(path: PathBuf) -> Self {
-        FileRuns { at: path }
+        FileRuns {
+            at: path,
+            writing: Mutex::new(()),
+        }
     }
 
     /// Beside the backlog, under the directory `docs/cli.md` names.
@@ -91,14 +102,20 @@ impl Runs for FileRuns {
         if let Some(dir) = self.at.parent() {
             fs::create_dir_all(dir).map_err(|e| self.failing(dir, e))?;
         }
+
+        // The record and the newline that ends it, as one buffer and one call, under a hold
+        // kept until that call returns. Appending puts a write at the end of the file whatever
+        // else is writing, but says nothing about a record that takes more than one write: the
+        // next writer's record can land between this one and its newline, and the line that
+        // comes out is not JSON. Reading drops it, so two runs end and neither is kept.
+        let _writing = self.writing.lock().unwrap_or_else(PoisonError::into_inner);
         let mut held = fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.at)
             .map_err(|e| self.failing(&self.at, e))?;
-
-        // One write of one line, so that two runs ending at once do not interleave.
-        writeln!(held, "{line}").map_err(|e| self.failing(&self.at, e))
+        held.write_all(format!("{line}\n").as_bytes())
+            .map_err(|e| self.failing(&self.at, e))
     }
 
     fn read(&self) -> Result<Vec<Run>, Unavailable> {

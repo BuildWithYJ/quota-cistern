@@ -202,12 +202,12 @@ impl ReviewUseCase for ReviewService<'_> {
     /// A work area git would not remove is left where it is and says why. Section 2.4 keeps the
     /// branch either way, so nothing a run committed goes with a work area that does go.
     fn tidy(&self) -> Result<Tidying, Refusal> {
-        let backlog = read(self.tasks)?;
-        let asked: Vec<(TaskId, String, String)> = backlog
-            .tidyable()
-            .into_iter()
-            .filter_map(|(id, at)| Some((id, backlog.find(id)?.repository().to_string(), at)))
-            .collect();
+        // Taken from the tasks before any of it is taken off the disk. Removing is slow and a
+        // task can be put back in the backlog while it happens; one whose work area this has
+        // already taken no longer claims it, so a `retry` arriving meanwhile prepares a fresh
+        // one rather than being handed a directory about to go.
+        let asked: Vec<(TaskId, String, String)> =
+            change(self.tasks, |backlog| Ok(backlog.tidying()))?;
 
         let tidied: Vec<(TaskId, Tidied)> = asked
             .into_iter()
@@ -228,9 +228,12 @@ impl ReviewUseCase for ReviewService<'_> {
             })
             .collect();
 
+        // What git would not remove is still there, so the task that had it has it again. A
+        // task somebody put back meanwhile is running in that directory now, and giving it the
+        // same path it already prepared changes nothing.
         change(self.tasks, |backlog| {
-            for (id, _) in tidied.iter().filter(|(_, one)| one.kept.is_none()) {
-                backlog.work_area_gone(*id);
+            for (id, one) in tidied.iter().filter(|(_, one)| one.kept.is_some()) {
+                backlog.work_area(*id, one.worktree.clone());
             }
             Ok(Tidying {
                 items: tidied.iter().map(|(_, one)| one.clone()).collect(),
