@@ -1,14 +1,7 @@
 use crate::core::domain::sizing::{Ran, Rule};
-use crate::core::domain::{Before, Budget, Sizings, Span, Spending, Usage};
+use crate::core::domain::{Before, Locking, Pacing, Sizings};
 
 use super::*;
-
-fn declaring(usage: Usage) -> Budget {
-    Budget {
-        usage,
-        time: Span::parse("8h").unwrap(),
-    }
-}
 
 fn task(n: u32) -> TaskId {
     TaskId::parse(&n.to_string()).unwrap()
@@ -17,7 +10,12 @@ fn task(n: u32) -> TaskId {
 /// A session with room, nothing wrong, one task running, and two waiting.
 fn standing() -> Standing {
     Standing {
-        left: 1_000,
+        declared: 1_000,
+        // Nothing spent and no time gone, so the rate the budget is going at says nothing and
+        // the gate that reads it holds nothing back. The tests that are about that gate say
+        // what has been spent.
+        spent: 0,
+        elapsed: 0,
         booked: 0,
         before: Before {
             cost: Sizings::under(Rule::default(), [Ran::finished(Some("opus"), 100)]),
@@ -34,6 +32,8 @@ fn standing() -> Standing {
         blocked: false,
         unreadable: false,
         timing: Timing::Fits,
+        locking: Locking::Waits,
+        pacing: Pacing::Holds,
     }
 }
 
@@ -142,7 +142,7 @@ fn a_session_out_of_time_with_nothing_going_stops_with_budget_left() {
 fn nothing_running_and_no_room_is_the_end_of_the_budget() {
     assert_eq!(
         decide(&Standing {
-            left: 0,
+            declared: 0,
             running: 0,
             ..standing()
         }),
@@ -178,7 +178,7 @@ fn a_session_with_nothing_waiting_carries_on_while_one_runs() {
 fn a_session_with_no_room_left_starts_none_while_one_runs() {
     assert_eq!(
         decide(&Standing {
-            left: 0,
+            declared: 0,
             ..standing()
         }),
         Decision::Start(Vec::new())
@@ -201,7 +201,7 @@ fn a_task_is_allowed_more_than_runs_of_its_model_have_cost() {
 fn what_is_already_allowed_is_held_against_the_budget() {
     assert_eq!(
         ceilings(decide(&Standing {
-            left: 500,
+            declared: 500,
             booked: 200,
             ..standing()
         })),
@@ -219,7 +219,7 @@ fn what_is_already_allowed_is_held_against_the_budget() {
 fn what_is_left_runs_out_partway_down_the_list() {
     assert_eq!(
         ceilings(decide(&Standing {
-            left: 500,
+            declared: 500,
             pending: vec![
                 (task(1), Some("opus".to_owned())),
                 (task(2), Some("opus".to_owned())),
@@ -271,7 +271,7 @@ fn a_session_with_nothing_running_lowers_its_bar_to_what_a_cheap_run_costs() {
     assert_eq!(
         ceilings(decide(&Standing {
             // Under a whole reservation, over what a run of this model in four comes in under.
-            left: 110,
+            declared: 110,
             running: 0,
             before: Before {
                 cost: Sizings::under(
@@ -294,7 +294,7 @@ fn a_session_with_nothing_running_lowers_its_bar_to_what_a_cheap_run_costs() {
 fn a_session_that_cannot_cover_a_cheap_run_stops() {
     assert_eq!(
         decide(&Standing {
-            left: 40,
+            declared: 40,
             running: 0,
             before: Before {
                 cost: Sizings::under(
@@ -386,7 +386,7 @@ fn a_model_nothing_has_been_timed_on_starts_whatever_the_time_left() {
 fn the_bar_is_not_lowered_while_something_runs() {
     assert_eq!(
         decide(&Standing {
-            left: 60,
+            declared: 60,
             before: Before {
                 cost: Sizings::under(
                     Rule::default(),
@@ -403,11 +403,95 @@ fn the_bar_is_not_lowered_while_something_runs() {
     );
 }
 
+/// What is left is what was declared less what was spent, and nothing once more was spent
+/// than declared. A session can pass its figure between two decisions, since a decision is
+/// reached when a task ends and not while one runs.
+#[test]
+fn what_is_left_is_what_was_declared_less_what_was_spent() {
+    let standing = |spent| Standing {
+        declared: 1_000,
+        spent,
+        ..standing()
+    };
+    assert_eq!(standing(400).left(), 600);
+    assert_eq!(standing(4_000).left(), 0);
+}
+
+/// A run that the budget will not outlast is not started.
+///
+/// The session has spent 900 of 1000 in an hour, so the last hundred lasts six minutes at that
+/// rate. A run of this model takes ten, and starting it would have it cut off with what it
+/// spent since its last commit lost.
+#[test]
+fn a_run_the_budget_will_not_outlast_does_not_start() {
+    assert_eq!(
+        decide(&Standing {
+            spent: 900,
+            elapsed: 3_600,
+            running: 0,
+            before: Before {
+                lasting: Sizings::under(Rule::default(), [Ran::finished(Some("opus"), 600)]),
+                ..standing().before
+            },
+            ..standing()
+        }),
+        Decision::Stop(StoppedReason::BudgetHardlock)
+    );
+}
+
+/// The same session early on, where the same rate leaves the budget lasting longer than the
+/// run. A rate is not a reason on its own; what it is asked is whether this run outlives the
+/// budget.
+#[test]
+fn the_same_rate_early_on_starts_the_same_run() {
+    assert!(matches!(
+        decide(&Standing {
+            spent: 100,
+            elapsed: 400,
+            running: 0,
+            before: Before {
+                lasting: Sizings::under(Rule::default(), [Ran::finished(Some("opus"), 600)]),
+                ..standing().before
+            },
+            ..standing()
+        }),
+        Decision::Start(allowed) if !allowed.is_empty()
+    ));
+}
+
+/// A session that has spent what it declared stops, and `Cuts` stops it while runs are going.
+///
+/// What a person declared is a figure. `Waits` is the other answer: the runs finish and the
+/// session spends past it by however far they had to go.
+#[test]
+fn a_session_that_spent_what_it_declared_cuts_what_is_going() {
+    let over = || Standing {
+        spent: 1_000,
+        elapsed: 600,
+        running: 2,
+        ..standing()
+    };
+    assert_eq!(
+        decide(&Standing {
+            locking: Locking::Cuts,
+            ..over()
+        }),
+        Decision::Stop(StoppedReason::BudgetHardlock)
+    );
+    assert_eq!(
+        decide(&Standing {
+            locking: Locking::Waits,
+            ..over()
+        }),
+        Decision::Start(Vec::new())
+    );
+}
+
 #[test]
 fn what_the_budget_covers_is_what_starts_however_many_wait() {
-    let starting = |left| {
+    let starting = |declared| {
         ceilings(decide(&Standing {
-            left,
+            declared,
             running: 0,
             pending: (1..=10)
                 .map(|n| (task(n), Some("opus".to_owned())))
@@ -424,18 +508,6 @@ fn what_the_budget_covers_is_what_starts_however_many_wait() {
 }
 
 // what a model's runs have cost
-
-#[test]
-fn nothing_is_left_when_the_unit_is_not_the_one_declared() {
-    let budget = declaring(Usage::Share(50));
-    assert_eq!(budget.left(Spending::Tokens(1)), 0);
-}
-
-#[test]
-fn spending_more_of_a_share_than_was_declared_leaves_nothing() {
-    let budget = declaring(Usage::Share(1));
-    assert_eq!(budget.left(Spending::Share(4_000)), 0);
-}
 
 /// Tasks are left and every one of them waits on one that did not complete.
 ///

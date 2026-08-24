@@ -31,7 +31,7 @@
 //! this runs. A turn of somebody's conversation is not one and is left out.
 
 use crate::core::{
-    domain::{Policy, Rule, Timing},
+    domain::{Locking, Pacing, Policy, Rule, Timing},
     port::{
         inbound::{Carrying, ExecutionUseCase},
         outbound::{BacklogStore, StoredTask},
@@ -40,6 +40,12 @@ use crate::core::{
 
 use super::fixtures::*;
 use super::{ExecutionService, Outside, Supervisor, WorkService};
+
+/// How long a run of the middle of a shape takes, in seconds.
+///
+/// The figure itself decides nothing. Every length here is proportional to it, and what the
+/// budget gate reads is one length against another.
+const MIDDLE_LASTS: u64 = 600;
 
 /// How many sessions each rule is read over, per shape and budget.
 const SESSIONS: u64 = 100;
@@ -299,13 +305,25 @@ fn one_session(
     // Every run is held to the guard the definition carries, which a person set and which does
     // not move with the budget. Four times the middle of the shape, which is about where the
     // twenty dollars that ships sits against the runs a real session has had.
-    let agent = Costing::taking(costs.clone()).guarded_at(middle * guard);
+    // How long a run takes, taken as proportional to what it costs. Both scale with the turns
+    // a run took -- tokens as turns to the 1.31 and seconds as turns to the 1.44, over 163 runs
+    // that were actually run -- so a run that costs twice as much takes about twice as long.
+    // The constant of proportionality is arbitrary and cancels: what the gate reads is a run's
+    // length against how long the budget lasts, and both are in the same seconds.
+    let lasting: Vec<u64> = costs
+        .iter()
+        .map(|cost| (cost * MIDDLE_LASTS / middle.max(1)).max(1))
+        .collect();
+    let agent = Costing::taking(costs.clone())
+        .lasting(lasting)
+        .guarded_at(middle * guard);
+    let clock = Moved::from(1_000);
     let outside = Outside {
         sessions: &sessions,
         tasks: &held,
         worktrees: &areas,
         agent: &agent,
-        clock: &STILL,
+        clock: &clock,
         limit: &UNTOUCHED,
         traces: &NOTHING_KEPT,
         runs,
@@ -319,13 +337,28 @@ fn one_session(
     execution
         .run(declaring(&declared.to_string(), "8h"))
         .unwrap();
-    // A session assigns as tasks end, so what is running is looked at again each time.
+    // Runs go at once and end in the order their lengths say, with the clock moved to each
+    // ending in turn. A session assigns as tasks end, so what is running is looked at again
+    // each time, and a decision reached while others are still going sees them.
     for _ in 0..TASKS * 4 {
         let stored = held.load().unwrap();
-        let Some(running) = stored.tasks.iter().find(|task| task.state == "Running") else {
+        let Some((id, ends)) = stored
+            .tasks
+            .iter()
+            .filter(|task| task.state == "Running")
+            .filter_map(|task| {
+                let started: u64 = task.started_at.as_deref()?.parse().ok()?;
+                Some((
+                    task.id.clone(),
+                    started + agent.lasts(&task.id).unwrap_or_default(),
+                ))
+            })
+            .min_by_key(|(_, ends)| *ends)
+        else {
             break;
         };
-        work.carry_on(&format!("task:{}", running.id)).unwrap();
+        clock.to(ends);
+        work.carry_on(&format!("task:{id}")).unwrap();
     }
 
     let mut came = Came {
@@ -413,6 +446,16 @@ fn sweeping_the_rule() {
             [Timing::Fits, Timing::Any]
                 .into_iter()
                 .map(|timing| (format!("timing {timing:?}"), Policy { timing, ..shipped })),
+        )
+        .chain(
+            [Pacing::Any, Pacing::Holds]
+                .into_iter()
+                .map(|pacing| (format!("pacing {pacing}"), Policy { pacing, ..shipped })),
+        )
+        .chain(
+            [Locking::Waits, Locking::Cuts]
+                .into_iter()
+                .map(|locking| (format!("locking {locking}"), Policy { locking, ..shipped })),
         )
         .collect();
 

@@ -280,6 +280,31 @@ impl Clock for Frozen {
 
 pub(super) static STILL: Frozen = Frozen(1_000);
 
+/// A clock a test moves by hand.
+///
+/// For the one thing a still clock and a ticking one both refuse: putting several runs in
+/// front of a session at once and ending them in the order they would actually end. A run
+/// starts when it is assigned and ends when the clock says it does, so whoever drives the
+/// session sets the moment before each ending.
+pub(super) struct Moved(Mutex<u64>);
+
+impl Moved {
+    pub(super) fn from(at: u64) -> Self {
+        Moved(Mutex::new(at))
+    }
+
+    /// Puts the clock at a moment, which is where it stays until moved again.
+    pub(super) fn to(&self, at: u64) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = at;
+    }
+}
+
+impl Clock for Moved {
+    fn now(&self) -> u64 {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
 /// A clock that moves a second every time it is read.
 ///
 /// For the one question a still clock cannot answer: whether a moment was taken before
@@ -463,6 +488,12 @@ impl Agent for Answering {
 pub(super) struct Costing {
     /// What each task takes, by the task it belongs to.
     pub(super) takes: BTreeMap<String, u64>,
+    /// How long each task takes, by the task it belongs to, in seconds.
+    ///
+    /// Apart from what it costs, because a session reads the two for different things: what a
+    /// run costs decides whether the budget covers it, and how long it takes decides whether
+    /// the session is still going when it ends. A task nothing says a length for takes none.
+    pub(super) lasts: BTreeMap<String, u64>,
     /// What the vendor holds every run to, as a definition carries one.
     ///
     /// The session's own figure never reaches the vendor: it is worked out from a meter that
@@ -481,8 +512,26 @@ impl Costing {
                 .enumerate()
                 .map(|(at, takes)| ((at + 1).to_string(), takes))
                 .collect(),
+            lasts: BTreeMap::new(),
             guard: None,
         }
+    }
+
+    /// The same, with how long each task takes beside what it costs.
+    pub(super) fn lasting(self, each: impl IntoIterator<Item = u64>) -> Self {
+        Costing {
+            lasts: each
+                .into_iter()
+                .enumerate()
+                .map(|(at, lasts)| ((at + 1).to_string(), lasts))
+                .collect(),
+            ..self
+        }
+    }
+
+    /// How long a task takes, or nothing where nothing was said for it.
+    pub(super) fn lasts(&self, task: &str) -> Option<u64> {
+        self.lasts.get(task).copied()
     }
 
     /// The same, with the guard a definition carries.

@@ -16,6 +16,12 @@
 //!                                  anything
 //! timing  hold a run back or not   nothing. No real session has been held back by it, which
 //!                                  is why `config set timing` can turn it off
+//! pacing  hold a run back the      the sweep, which is what a harness may answer: with it off,
+//!         budget will not outlast  a third of sessions of one shape spend past what they
+//!                                  declared, and no other figure here changes that. What it
+//!                                  costs differs by shape, so it ships off
+//! locking end runs at the line     none yet. The sweep does not reach the state it acts in,
+//!         or let them finish       so it ships as what a session already did
 //! ```
 //!
 //! A figure that rests on nothing is not left as the only way a session can be run. `config
@@ -25,6 +31,74 @@
 use std::fmt::{self, Display};
 
 use super::Rule;
+
+/// What a session does about a run the budget will not outlast.
+///
+/// A run still going when the budget runs out is ended, and what it did since its last commit
+/// buys nothing. One ending that way is a session spending what it declared; four is the same
+/// figure spent and four results lost, so what this decides is really how many runs a session
+/// puts in front of a budget it is close to finishing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pacing {
+    /// Hold it back. What is left goes to a run that can finish inside it.
+    Holds,
+    /// Start it anyway, and let the budget end where it ends.
+    Any,
+}
+
+impl Pacing {
+    /// Reads what `config set pacing` was given.
+    pub fn parse(pacing: &str) -> Option<Self> {
+        match pacing {
+            "holds" => Some(Pacing::Holds),
+            "any" => Some(Pacing::Any),
+            _ => None,
+        }
+    }
+}
+
+impl Display for Pacing {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Pacing::Holds => "holds",
+            Pacing::Any => "any",
+        })
+    }
+}
+
+/// What a session does when it has spent what it declared and runs are still going.
+///
+/// Section 2.2 of `docs/cli.md` says a session stops at whichever runs out first. What it did
+/// not say is whether stopping ends a run that is going. Both answers cost something: cutting
+/// them loses what they spent up to their last commit, and letting them finish spends past the
+/// figure a person declared, by however much they had left to go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Locking {
+    /// End them. The declared figure is a line, and a session does not cross it.
+    Cuts,
+    /// Let them finish. What they spend past the line is spent, and nothing they did is lost.
+    Waits,
+}
+
+impl Locking {
+    /// Reads what `config set locking` was given.
+    pub fn parse(locking: &str) -> Option<Self> {
+        match locking {
+            "cuts" => Some(Locking::Cuts),
+            "waits" => Some(Locking::Waits),
+            _ => None,
+        }
+    }
+}
+
+impl Display for Locking {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Locking::Cuts => "cuts",
+            Locking::Waits => "waits",
+        })
+    }
+}
 
 /// How a session is run. One value, swapped whole.
 ///
@@ -38,6 +112,10 @@ pub struct Policy {
     /// Whether a run is held back for the clock, which the decision reads and nothing else
     /// does.
     pub timing: Timing,
+    /// What a session does about runs still going once it has spent what it declared.
+    pub locking: Locking,
+    /// What a session does about a run the budget will not outlast.
+    pub pacing: Pacing,
 }
 /// What a session does about a run that the clock may not let finish.
 ///
@@ -76,6 +154,8 @@ impl Default for Policy {
         Policy {
             sizing: Rule::default(),
             timing: Timing::Fits,
+            locking: Locking::Waits,
+            pacing: Pacing::Any,
         }
     }
 }

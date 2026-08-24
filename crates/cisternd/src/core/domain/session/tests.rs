@@ -349,7 +349,7 @@ fn a_session_that_crosses_a_reset_still_runs_out_of_what_it_declared() {
     let spent = sessions.measured(id, 1_000, None, 3_000).unwrap();
 
     assert_eq!(spent, Spending::Share(5_000));
-    assert_eq!(a_budget().left(spent), 0);
+    assert_eq!(a_budget().declared(), 5_000);
 }
 
 #[test]

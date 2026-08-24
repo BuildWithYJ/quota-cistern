@@ -6,7 +6,7 @@
 
 use std::fmt::{self, Display};
 
-use super::Timing;
+use super::{Locking, Pacing, Timing};
 
 /// The name of an agent to run.
 ///
@@ -29,6 +29,8 @@ pub struct Known(Vec<String>);
 pub enum Key {
     Vendor,
     Timing,
+    Pacing,
+    Locking,
 }
 
 /// A key together with a value that key takes.
@@ -38,6 +40,8 @@ pub enum Key {
 pub enum Setting {
     Vendor(VendorName),
     Timing(Timing),
+    Pacing(Pacing),
+    Locking(Locking),
 }
 
 /// What is stored.
@@ -48,6 +52,8 @@ pub enum Setting {
 pub struct Configuration {
     vendor: Option<VendorName>,
     timing: Option<Timing>,
+    pacing: Option<Pacing>,
+    locking: Option<Locking>,
 }
 
 impl Key {
@@ -56,6 +62,8 @@ impl Key {
         match key {
             "vendor" => Some(Key::Vendor),
             "timing" => Some(Key::Timing),
+            "pacing" => Some(Key::Pacing),
+            "locking" => Some(Key::Locking),
             _ => None,
         }
     }
@@ -66,6 +74,8 @@ impl Display for Key {
         f.write_str(match self {
             Key::Vendor => "vendor",
             Key::Timing => "timing",
+            Key::Pacing => "pacing",
+            Key::Locking => "locking",
         })
     }
 }
@@ -103,6 +113,8 @@ impl Setting {
         match key {
             Key::Vendor => known.read(value).map(Setting::Vendor),
             Key::Timing => Timing::parse(value).map(Setting::Timing),
+            Key::Pacing => Pacing::parse(value).map(Setting::Pacing),
+            Key::Locking => Locking::parse(value).map(Setting::Locking),
         }
     }
 }
@@ -113,6 +125,8 @@ impl Configuration {
         match setting {
             Setting::Vendor(vendor) => self.vendor = Some(vendor),
             Setting::Timing(timing) => self.timing = Some(timing),
+            Setting::Pacing(pacing) => self.pacing = Some(pacing),
+            Setting::Locking(locking) => self.locking = Some(locking),
         }
     }
 
@@ -121,12 +135,14 @@ impl Configuration {
         match key {
             Key::Vendor => self.vendor.as_ref().map(VendorName::to_string),
             Key::Timing => self.timing.map(|timing| timing.to_string()),
+            Key::Pacing => self.pacing.map(|pacing| pacing.to_string()),
+            Key::Locking => self.locking.map(|locking| locking.to_string()),
         }
     }
 
     /// Every key that holds something, in the order `docs/cli.md` lists them.
     pub fn entries(&self) -> Vec<(Key, String)> {
-        [Key::Vendor, Key::Timing]
+        [Key::Vendor, Key::Timing, Key::Pacing, Key::Locking]
             .into_iter()
             .filter_map(|key| self.value_of(key).map(|value| (key, value)))
             .collect()

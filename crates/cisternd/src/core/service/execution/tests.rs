@@ -1,7 +1,7 @@
 use std::sync::{Mutex, PoisonError};
 
 use crate::core::{
-    domain::HUNDREDTHS,
+    domain::{HUNDREDTHS, Policy},
     port::{
         inbound::{Carrying, ExecutionUseCase},
         outbound::{Ended, Outcome, StoredSession, StoredSessions, StoredTask},
@@ -20,7 +20,7 @@ fn a_session_opens_and_answers_what_it_was_declared_with() {
     let agent = Answering::finishing();
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
 
     let started = execution.run(declaring("50%", "8h")).unwrap();
@@ -39,7 +39,7 @@ fn what_was_opened_is_there_for_the_next_command_to_read() {
     let agent = Answering::finishing();
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
     execution.run(declaring("2M", "30m")).unwrap();
 
@@ -60,7 +60,7 @@ fn the_task_that_was_assigned_says_which_session_took_it() {
     let agent = Answering::finishing();
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
     execution.run(declaring("50%", "8h")).unwrap();
 
@@ -77,7 +77,7 @@ fn a_second_session_is_refused_while_one_is_running() {
     let agent = Answering::finishing();
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
     execution.run(declaring("50%", "8h")).unwrap();
 
@@ -98,7 +98,7 @@ fn a_run_with_nothing_to_start_is_refused_and_opens_no_session() {
     let agent = Answering::finishing();
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
 
     assert_eq!(
@@ -116,7 +116,7 @@ fn a_declaration_that_cannot_be_read_is_refused_as_a_bad_argument() {
     let agent = Answering::finishing();
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
 
     assert_eq!(
@@ -159,7 +159,7 @@ fn a_stored_session_that_cannot_be_read_fails_as_a_store() {
     let agent = Answering::finishing();
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
 
     let refused = execution.run(declaring("50%", "8h")).unwrap_err();
@@ -174,7 +174,7 @@ fn a_page_that_is_not_a_page_is_refused_as_a_bad_argument() {
     let agent = Answering::finishing();
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
 
     for (page, limit) in [(Some("0"), None), (None, Some("0")), (Some("one"), None)] {
@@ -193,7 +193,7 @@ fn nothing_has_run_and_the_list_is_empty() {
     let agent = Answering::finishing();
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
 
     assert_eq!(execution.sessions(None, None).unwrap().sessions, Vec::new());
@@ -208,7 +208,7 @@ fn a_running_session_says_nothing_about_why_it_stopped() {
     let agent = Answering::finishing();
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
 
     execution.run(declaring("2M", "8h")).unwrap();
@@ -227,7 +227,7 @@ fn a_session_nobody_opened_is_not_there() {
     let agent = Answering::finishing();
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
 
     assert_eq!(
@@ -246,7 +246,7 @@ fn interrupting_stops_the_session_and_ends_what_was_running() {
     let agent = Answering::finishing();
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
 
     execution.run(declaring("2M", "8h")).unwrap();
@@ -273,7 +273,7 @@ fn interrupting_ends_the_run_of_every_task_it_interrupts() {
     let agent = Answering::finishing();
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
 
     execution.run(declaring("2M", "8h")).unwrap();
@@ -297,7 +297,7 @@ fn interrupting_with_nothing_running_says_so() {
     let agent = Answering::finishing();
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
 
     assert_eq!(execution.interrupt(), Err(Refusal::NoSessionRunning));
@@ -313,7 +313,7 @@ fn a_session_out_of_time_stops_and_interrupts_what_was_running() {
     let late = Frozen(1_000 + 8 * 3_600);
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let on_time = Supervisor::new(outside, AT_ONCE);
+    let on_time = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     ExecutionService::new(outside, &on_time)
         .run(declaring("2M", "8h"))
         .unwrap();
@@ -323,7 +323,7 @@ fn a_session_out_of_time_stops_and_interrupts_what_was_running() {
         clock: &late,
         ..stand_ins(&sessions, &tasks, &areas, &agent, &runs)
     };
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let assigned = WorkService::new(outside, &supervisor)
         .carry_on("task:1")
         .unwrap();
@@ -349,7 +349,7 @@ fn a_trace_says_whether_it_can_still_grow() {
     let agent = Answering::finishing();
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
 
     assert!(!execution.trace("1", None).unwrap().done);
@@ -366,7 +366,7 @@ fn the_trace_of_a_task_nobody_registered_says_so() {
     let agent = Answering::finishing();
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
 
     assert_eq!(
@@ -386,7 +386,7 @@ fn sessions_are_listed_newest_first() {
     let agent = Answering::finishing();
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
     let work = WorkService::new(outside, &supervisor);
 
@@ -411,7 +411,7 @@ fn a_page_holds_what_it_was_given_room_for() {
     let agent = Answering::finishing();
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
     let work = WorkService::new(outside, &supervisor);
 
@@ -432,7 +432,7 @@ fn a_session_reports_what_it_declared_beside_what_it_consumed() {
     let agent = Answering::finishing();
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
     let work = WorkService::new(outside, &supervisor);
 
@@ -469,7 +469,7 @@ fn a_share_that_stopped_for_another_reason_says_nothing_about_the_limit_starting
         limit: &moving,
         ..stand_ins(&sessions, &tasks, &areas, &agent, &runs)
     };
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
     let work = WorkService::new(outside, &supervisor);
 
@@ -508,7 +508,7 @@ fn a_session_the_vendor_turned_away_says_when_the_limit_starts_over() {
         limit: &full,
         ..stand_ins(&sessions, &tasks, &areas, &agent, &runs)
     };
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
     let work = WorkService::new(outside, &supervisor);
 
@@ -536,7 +536,7 @@ fn what_the_agent_says_afterwards_does_not_undo_the_interruption() {
     });
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
     let work = WorkService::new(outside, &supervisor);
 

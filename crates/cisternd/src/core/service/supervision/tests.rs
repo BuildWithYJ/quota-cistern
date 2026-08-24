@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 
 use crate::core::{
-    domain::{SessionId, StoppedReason},
+    domain::{Policy, SessionId, StoppedReason},
     port::{
         inbound::{Carrying, ExecutionUseCase},
         outbound::{BacklogStore, Ended, Observed, Outcome},
@@ -11,10 +11,11 @@ use crate::core::{
 use super::super::fixtures::*;
 use super::super::{ExecutionService, Outside, Supervisor, WorkService};
 
-/// A person may choose how a session treats the clock, and a word nobody knows is refused by
-/// name rather than quietly ignored.
+/// A person may choose how a session is run, and a word nobody knows is refused by name
+/// rather than quietly ignored. A key this does not name is left alone, since a configuration
+/// holds keys that are not this one's.
 #[test]
-fn what_a_person_chose_about_the_clock_is_read_or_refused() {
+fn what_a_person_chose_is_read_or_refused() {
     let sessions = Remembered::empty();
     let tasks = Tasks::holding(vec![a_pending_task()]);
     let areas = Areas::default();
@@ -22,12 +23,22 @@ fn what_a_person_chose_about_the_clock_is_read_or_refused() {
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
 
-    assert!(Supervisor::timed_by(outside, AT_ONCE, None).is_ok());
-    assert!(Supervisor::timed_by(outside, AT_ONCE, Some("fits")).is_ok());
-    assert!(Supervisor::timed_by(outside, AT_ONCE, Some("any")).is_ok());
+    let chosen = |key: &str, said: &str| {
+        Supervisor::chosen_by(outside, AT_ONCE, &[(key.to_owned(), said.to_owned())])
+    };
+
+    assert!(Supervisor::chosen_by(outside, AT_ONCE, &[]).is_ok());
+    assert!(chosen("timing", "any").is_ok());
+    assert!(chosen("pacing", "holds").is_ok());
+    assert!(chosen("locking", "cuts").is_ok());
+    assert!(chosen("vendor", "claude").is_ok());
     assert_eq!(
-        Supervisor::timed_by(outside, AT_ONCE, Some("sometimes")).err(),
-        Some("the configuration says timing sometimes, which is neither fits nor any".to_owned())
+        chosen("timing", "sometimes").err(),
+        Some("the configuration says timing sometimes, which it does not take".to_owned())
+    );
+    assert_eq!(
+        chosen("pacing", "sometimes").err(),
+        Some("the configuration says pacing sometimes, which it does not take".to_owned())
     );
 }
 
@@ -49,7 +60,7 @@ fn a_session_whose_count_could_not_be_read_stops_and_says_so() {
     });
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
     let work = WorkService::new(outside, &supervisor);
 
@@ -120,7 +131,7 @@ fn a_session_carries_tasks_that_take_more_than_the_ones_before_them() {
     let agent = Costing::taking([100, 200, 300, 400, 400]);
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, 1);
+    let supervisor = Supervisor::running_by(outside, 1, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
     let work = WorkService::new(outside, &supervisor);
 
@@ -152,7 +163,7 @@ fn a_run_that_was_cut_leaves_a_floor_under_what_its_kind_is_sized_at() {
     let agent = Costing::taking([100, 400, 400]).guarded_at(200);
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, 1);
+    let supervisor = Supervisor::running_by(outside, 1, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
     let work = WorkService::new(outside, &supervisor);
 
@@ -183,7 +194,7 @@ fn a_session_that_spent_what_it_declared_stops_and_says_so() {
     let agent = Answering::finishing();
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
     let work = WorkService::new(outside, &supervisor);
 
@@ -224,7 +235,7 @@ fn a_share_starts_several_once_it_knows_what_a_task_costs() {
         limit: &moving,
         ..stand_ins(&sessions, &tasks, &areas, &agent, &runs)
     };
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
     let work = WorkService::new(outside, &supervisor);
 
@@ -255,7 +266,7 @@ fn a_share_that_reached_what_it_declared_stops() {
         limit: &moving,
         ..stand_ins(&sessions, &tasks, &areas, &agent, &runs)
     };
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
     let work = WorkService::new(outside, &supervisor);
 
@@ -286,7 +297,7 @@ fn a_share_that_crosses_a_window_counts_both_of_them() {
         limit: &turning,
         ..stand_ins(&sessions, &tasks, &areas, &agent, &runs)
     };
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
     let work = WorkService::new(outside, &supervisor);
 
@@ -325,7 +336,7 @@ fn two_runs_of_a_size_are_sized_alike_however_the_readings_split() {
         a_run_of("2", 500_000, ("1900", "2000")),
     ]));
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
 
     // A thousand points over a million millionths, so half a million is 500 points. Both
@@ -355,7 +366,7 @@ fn two_runs_of_a_price_are_sized_alike_however_far_apart_their_counts_are() {
         a_run_costing("2", 100_000, 500_000, ("1900", "2000")),
     ]));
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
 
     // The same thousand points over the same million millionths, so both runs are 500 and the
@@ -394,7 +405,7 @@ fn a_run_that_crossed_a_window_is_no_sample_at_all() {
         limit: &turning,
         ..stand_ins(&sessions, &tasks, &areas, &agent, &runs)
     };
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
     let work = WorkService::new(outside, &supervisor);
 
@@ -426,7 +437,7 @@ fn two_tasks_ending_at_once_do_not_start_more_than_the_machine_takes() {
         let agent = Answering::finishing();
         let runs = Ledger::default();
         let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-        let supervisor = Supervisor::new(outside, AT_ONCE);
+        let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
         let execution = ExecutionService::new(outside, &supervisor);
         let work = WorkService::new(outside, &supervisor);
 
@@ -468,7 +479,7 @@ fn two_tasks_ending_at_once_do_not_assign_past_what_is_left() {
         let runs = Ledger::default();
         let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
         // Room enough that what is left is what decides, not the machine.
-        let supervisor = Supervisor::new(outside, 8);
+        let supervisor = Supervisor::running_by(outside, 8, Policy::default());
         let execution = ExecutionService::new(outside, &supervisor);
         let work = WorkService::new(outside, &supervisor);
 
@@ -513,7 +524,7 @@ fn a_share_whose_limit_stops_being_readable_stops_the_session() {
         limit: &limit,
         ..stand_ins(&sessions, &tasks, &areas, &agent, &runs)
     };
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     let execution = ExecutionService::new(outside, &supervisor);
     let work = WorkService::new(outside, &supervisor);
     execution.run(declaring("50%", "8h")).unwrap();
@@ -541,7 +552,7 @@ fn stopping_a_session_ends_the_runs_it_still_had_going() {
     let agent = Answering::finishing();
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     ExecutionService::new(outside, &supervisor)
         .run(declaring("2M", "8h"))
         .unwrap();
@@ -575,19 +586,23 @@ fn a_session_past_the_time_it_declared_takes_nothing_more_on_and_ends_nothing() 
         traces: &NOTHING_KEPT,
         runs: &runs,
     };
-    ExecutionService::new(opened, &Supervisor::new(opened, AT_ONCE))
-        .run(declaring("2M", "8h"))
-        .unwrap();
+    ExecutionService::new(
+        opened,
+        &Supervisor::running_by(opened, AT_ONCE, Policy::default()),
+    )
+    .run(declaring("2M", "8h"))
+    .unwrap();
     assert_eq!(sessions.load().sessions[0].state, "running");
 
     // Eight hours on, with nothing having ended in between.
     let late = Frozen(1_000 + 8 * 3_600);
-    let now = Supervisor::new(
+    let now = Supervisor::running_by(
         Outside {
             clock: &late,
             ..opened
         },
         AT_ONCE,
+        Policy::default(),
     );
     assert_eq!(now.time_left().unwrap(), Some(0));
     now.stop_if_out_of_time().unwrap();
@@ -625,7 +640,7 @@ fn a_session_with_time_left_is_left_alone() {
     let agent = Answering::finishing();
     let runs = Ledger::default();
     let outside = stand_ins(&sessions, &tasks, &areas, &agent, &runs);
-    let supervisor = Supervisor::new(outside, AT_ONCE);
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, Policy::default());
     ExecutionService::new(outside, &supervisor)
         .run(declaring("2M", "8h"))
         .unwrap();
@@ -644,18 +659,10 @@ fn nothing_running_has_no_deadline_to_wait_on() {
     let areas = Areas::default();
     let agent = Answering::finishing();
     let runs = Ledger::default();
-    let supervisor = Supervisor::new(
-        Outside {
-            sessions: &sessions,
-            tasks: &tasks,
-            worktrees: &areas,
-            agent: &agent,
-            clock: &STILL,
-            limit: &UNTOUCHED,
-            traces: &NOTHING_KEPT,
-            runs: &runs,
-        },
+    let supervisor = Supervisor::running_by(
+        stand_ins(&sessions, &tasks, &areas, &agent, &runs),
         AT_ONCE,
+        Policy::default(),
     );
 
     assert_eq!(supervisor.time_left().unwrap(), None);

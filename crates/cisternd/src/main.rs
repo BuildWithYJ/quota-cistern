@@ -65,10 +65,16 @@ fn main() -> ExitCode {
     let Some(worktrees) = outbound::git::worktree::GitWorktrees::in_data_home() else {
         return quit("neither XDG_DATA_HOME nor HOME is set");
     };
+    // Read once and handed to both of the things that ask it something, so a file changed
+    // between two reads cannot leave the daemon started under two different configurations.
+    let held = match configuration_store.load() {
+        Ok(held) => held,
+        Err(e) => return quit(e.reason),
+    };
     // The names there is a definition for, whether it ships or the user placed it.
     // Adding a vendor is a file; nothing here and nothing in the core is touched.
     let known = outbound::program::Definition::known();
-    let named = match chosen(&configuration_store, &known) {
+    let named = match chosen(&held, &known) {
         Ok(named) => named,
         Err(e) => return quit(e),
     };
@@ -111,9 +117,7 @@ fn main() -> ExitCode {
 
     // One judgement, asked by the commands that need a decision and by the workers that carry
     // out what one assigned.
-    let supervisor = match setting(&configuration_store, "timing")
-        .and_then(|timing| Supervisor::timed_by(outside, AT_ONCE, timing.as_deref()))
-    {
+    let supervisor = match Supervisor::chosen_by(outside, AT_ONCE, &held) {
         Ok(supervisor) => supervisor,
         Err(e) => return quit(e),
     };
@@ -229,8 +233,7 @@ impl<S: Carrying> Carrying for Queueing<'_, S> {
 /// Which vendor to run, refusing a name nothing defines.
 ///
 /// Failing once here beats failing on every task a session assigns.
-fn chosen(store: &dyn ConfigurationStore, known: &[String]) -> Result<String, String> {
-    let held = store.load().map_err(|e| e.reason)?;
+fn chosen(held: &[(String, String)], known: &[String]) -> Result<String, String> {
     let Some((_, name)) = held.iter().find(|(key, _)| key == "vendor") else {
         return Ok(BY_DEFAULT.to_owned());
     };
@@ -241,16 +244,6 @@ fn chosen(store: &dyn ConfigurationStore, known: &[String]) -> Result<String, St
         "the configuration says vendor {name}, which nothing defines; there is {}",
         known.join(", ")
     ))
-}
-
-/// What the configuration says a key holds, if anything.
-fn setting(store: &dyn ConfigurationStore, key: &str) -> Result<Option<String>, String> {
-    Ok(store
-        .load()
-        .map_err(|e| e.reason)?
-        .into_iter()
-        .find(|(held, _)| held == key)
-        .map(|(_, value)| value))
 }
 
 /// What a worker says when a task could not be carried on.

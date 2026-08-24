@@ -26,6 +26,20 @@ pub enum Spending {
     Tokens(u64),
 }
 impl Spending {
+    /// The figure itself, where it is in the unit a budget was declared in.
+    ///
+    /// Nothing where it is not. A session is measured in the unit it was declared in, and
+    /// whoever read the spending read it for this session, so the other pairing is a figure
+    /// about something else. Nothing left is what a session in that state is given, which
+    /// stops it rather than measuring it against a figure that is not its own.
+    pub fn against(&self, usage: Usage) -> Option<u64> {
+        match (usage, self) {
+            (Usage::Share(_), Spending::Share(figure))
+            | (Usage::Tokens(_), Spending::Tokens(figure)) => Some(*figure),
+            _ => None,
+        }
+    }
+
     /// Whether this figure was read before the one it is put beside.
     ///
     /// A session only ever spends more, so the lower of two figures of the same kind is the
@@ -58,19 +72,14 @@ impl Display for Spending {
     }
 }
 impl Budget {
-    /// What is left of the usage declared, in the unit it was declared in.
+    /// What was declared, in the unit it was declared in.
     ///
-    /// Nothing is left when more was spent than declared.
-    /// Which is what a session that passed its budget between two decisions looks like.
-    pub fn left(&self, spent: Spending) -> u64 {
-        match (self.usage, spent) {
-            (Usage::Share(declared), Spending::Share(spent)) => {
-                (u64::from(declared) * HUNDREDTHS).saturating_sub(spent)
-            }
-            (Usage::Tokens(declared), Spending::Tokens(spent)) => declared.saturating_sub(spent),
-            // A session is measured in the unit it was declared in.
-            // Whoever read the spending read it for this session.
-            _ => 0,
+    /// A share as hundredths of a percent and a count as the count, which is the unit
+    /// everything measured against it is kept in.
+    pub fn declared(&self) -> u64 {
+        match self.usage {
+            Usage::Share(declared) => u64::from(declared) * HUNDREDTHS,
+            Usage::Tokens(declared) => declared,
         }
     }
 }

@@ -14,7 +14,7 @@ mod task;
 
 pub use configuration::{Configuration, Key, Known, Setting};
 pub use consumption::{Consumption, Observation};
-pub use policy::{Policy, Timing};
+pub use policy::{Locking, Pacing, Policy, Timing};
 pub use session::{
     Budget, Held, NotASessionSet, NotOpened, Opening, Session, SessionId, SessionState, Sessions,
     Span, StoppedReason, Usage,

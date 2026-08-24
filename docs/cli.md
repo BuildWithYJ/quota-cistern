@@ -745,6 +745,8 @@ cistern config get [<key>]
 | Key | Value | Description |
 | --- | --- | --- |
 | `vendor` | a name a definition exists for | The agent to run. `claude` ships with the daemon, and a file at `$XDG_CONFIG_HOME/cistern/vendors/<name>.toml` adds a name or lays over one that ships, `claude` included. A file laid over another replaces an array whole rather than adding to it, so an override that changes `args` has to keep whatever `answer.reader` reads |
+| `pacing` | `holds` · `any` | What a session does about a task a run of whose model the budget will not outlast at the rate it is going. `holds` keeps it back, since a run still going when the budget runs out is ended and what it did since its last commit buys nothing; four of them ending that way is the same figure spent and four results lost. `any` starts it and lets the budget end where it ends. Defaults to `any` |
+| `locking` | `cuts` · `waits` | What a session does about runs still going once it has spent what it declared. `cuts` ends them, so the declared figure is a line the session does not cross. `waits` lets them finish, so nothing they did is lost and the session spends past the figure by however far they had to go. Defaults to `waits` |
 | `timing` | `fits` · `any` | What a session does about a task a run of whose model has taken longer than the session has left. `fits` holds it back rather than starting something the session will not see the end of. `any` starts it anyway. Neither ends a run: a session past its deadline takes nothing more on and lets what is going finish. Defaults to `fits` |
 
 Configuration is stored at `$XDG_CONFIG_HOME/cistern/config.toml`, or `~/.config/cistern/config.toml` when that variable is unset.

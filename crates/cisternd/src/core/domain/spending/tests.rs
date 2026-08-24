@@ -22,23 +22,26 @@ fn a_count_is_shown_as_the_count() {
     assert_eq!(Spending::Tokens(2_000_000).to_string(), "2000000");
 }
 
+/// A count is declared in the unit it is measured in, and a share is declared in whole
+/// percent and measured in hundredths of one.
 #[test]
-fn what_is_left_is_what_was_declared_less_what_was_spent() {
-    let budget = declaring(Usage::Tokens(1_000));
-    assert_eq!(budget.left(Spending::Tokens(400)), 600);
+fn what_was_declared_reads_in_the_unit_it_is_measured_in() {
+    assert_eq!(declaring(Usage::Tokens(1_000)).declared(), 1_000);
+    assert_eq!(declaring(Usage::Share(50)).declared(), 5_000);
 }
 
-/// A share is declared in whole percent and measured in hundredths.
+/// A figure read for a session is in the unit that session declared. The other pairing is a
+/// figure about something else, and a session is not measured against one.
 #[test]
-fn a_share_is_left_over_in_hundredths_of_a_percent() {
-    let budget = declaring(Usage::Share(50));
-    assert_eq!(budget.left(Spending::Share(2_000)), 3_000);
-}
-
-/// A session can pass its budget between two decisions.
-/// A decision is made when a task ends and not while one runs.
-#[test]
-fn spending_more_than_was_declared_leaves_nothing() {
-    let budget = declaring(Usage::Tokens(1_000));
-    assert_eq!(budget.left(Spending::Tokens(4_000)), 0);
+fn a_figure_of_another_unit_is_no_figure_at_all() {
+    assert_eq!(
+        Spending::Share(2_000).against(Usage::Share(50)),
+        Some(2_000)
+    );
+    assert_eq!(
+        Spending::Tokens(400).against(Usage::Tokens(1_000)),
+        Some(400)
+    );
+    assert_eq!(Spending::Tokens(1).against(Usage::Share(50)), None);
+    assert_eq!(Spending::Share(1).against(Usage::Tokens(50)), None);
 }

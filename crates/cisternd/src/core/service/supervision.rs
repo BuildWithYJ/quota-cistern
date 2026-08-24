@@ -10,10 +10,10 @@
 
 use crate::core::{
     domain::{
-        AT_CEILING, Backlog, Before, Consumption, Decision, HUNDREDTHS, Observation, Policy,
-        Priced, Rule, Session, SessionId, SessionState, Sizings, Spending, Standing, StoppedReason,
-        TaskId, TaskState, Timing, Usage, decide, done_waiting, moved_per_millionth, nothing_more,
-        sampled,
+        AT_CEILING, Backlog, Before, Consumption, Decision, HUNDREDTHS, Locking, Observation,
+        Pacing, Policy, Priced, Rule, Session, SessionId, SessionState, Sizings, Spending,
+        Standing, StoppedReason, TaskId, TaskState, Timing, Usage, decide, done_waiting,
+        moved_per_millionth, nothing_more, sampled,
     },
     port::{
         inbound::Refusal,
@@ -68,11 +68,7 @@ pub struct Supervisor<'a> {
 }
 
 impl<'a> Supervisor<'a> {
-    pub fn new(outside: Outside<'a>, at_once: usize) -> Self {
-        Self::running_by(outside, at_once, Policy::default())
-    }
-
-    /// The same, run by a policy other than the one that ships.
+    /// One run by a policy of somebody's own, which is how a sweep compares two of them.
     pub(super) fn running_by(outside: Outside<'a>, at_once: usize, policy: Policy) -> Self {
         Supervisor {
             outside,
@@ -84,29 +80,28 @@ impl<'a> Supervisor<'a> {
     /// The same, told what a person chose in the words they wrote it in.
     ///
     /// Text because the domain is private to the core, which is how the vendor's name reaches
-    /// `ConfigurationService`. Nothing chosen leaves the policy as it ships, and a word this
-    /// does not know is refused by name rather than ignored.
-    pub fn timed_by(
+    /// `ConfigurationService`. A key nothing here names is left alone, since the configuration
+    /// holds keys that are not this one's. A key this names holding a word it does not know
+    /// stops the daemon rather than being ignored: a person who wrote it meant it, and a
+    /// session run under something other than what they wrote is worse than one that does not
+    /// start.
+    ///
+    /// What is not chosen is what ships.
+    pub fn chosen_by(
         outside: Outside<'a>,
         at_once: usize,
-        timing: Option<&str>,
+        held: &[(String, String)],
     ) -> Result<Self, String> {
-        let Some(said) = timing else {
-            return Ok(Supervisor::new(outside, at_once));
-        };
-        let Some(timing) = Timing::parse(said) else {
-            return Err(format!(
-                "the configuration says timing {said}, which is neither fits nor any"
-            ));
-        };
-        Ok(Supervisor::running_by(
-            outside,
-            at_once,
-            Policy {
-                timing,
-                ..Policy::default()
-            },
-        ))
+        let mut policy = Policy::default();
+        for (key, said) in held {
+            match key.as_str() {
+                "timing" => policy.timing = read(key, said, Timing::parse(said))?,
+                "pacing" => policy.pacing = read(key, said, Pacing::parse(said))?,
+                "locking" => policy.locking = read(key, said, Locking::parse(said))?,
+                _ => {}
+            }
+        }
+        Ok(Supervisor::running_by(outside, at_once, policy))
     }
 }
 
@@ -212,7 +207,7 @@ impl Supervisor<'_> {
                     &held,
                     spent,
                     &before,
-                    self.policy.timing,
+                    self.policy,
                     now,
                     unread,
                 )) {
@@ -468,6 +463,14 @@ impl Settled {
     }
 }
 
+/// A word a person wrote for a key, read as what that key takes.
+///
+/// Says which key and what was written, since a person reading this is looking for the line
+/// they typed rather than for the name of a type.
+fn read<T>(key: &str, said: &str, held: Option<T>) -> Result<T, String> {
+    held.ok_or_else(|| format!("the configuration says {key} {said}, which it does not take"))
+}
+
 /// What runs come to, by the model that ran them, under one figure taken from each.
 ///
 /// Two questions of the same ledger, what a run cost and how long it took, and the same runs
@@ -512,13 +515,19 @@ fn standing(
     held: &Session,
     spent: Spending,
     before: &Before,
-    timing: Timing,
+    policy: Policy,
     now: u64,
     unread: bool,
 ) -> Standing {
     let session = held.id();
     Standing {
-        left: held.budget().left(spent),
+        declared: held.budget().declared(),
+        // Nothing left where the figure is not in the unit this session declared, which stops
+        // it rather than measuring it against something that is not its own.
+        spent: spent
+            .against(held.budget().usage)
+            .unwrap_or_else(|| held.budget().declared()),
+        elapsed: now.saturating_sub(held.started_at()),
         booked: tasks.booked_in(session),
         before: before.clone(),
         time_left: held.time_left(now),
@@ -528,7 +537,9 @@ fn standing(
         // Either way of becoming unmeasurable: a share the vendor would not answer for, or a
         // task whose own count did not read.
         unreadable: unread || matches!(tasks.consumed_by(session), Observation::Unreadable { .. }),
-        timing,
+        timing: policy.timing,
+        locking: policy.locking,
+        pacing: policy.pacing,
     }
 }
 
