@@ -420,14 +420,36 @@ fn what_is_left_is_what_was_declared_less_what_was_spent() {
     assert_eq!(standing(4_000).left(), 0);
 }
 
-/// A run that the budget will not outlast is not started.
+/// A run added to others that the budget will not outlast is not started.
 ///
 /// The session has spent 900 of 1000 in an hour, so the last hundred lasts six minutes at that
-/// rate. A run of this model takes ten, and starting it would have it cut off with what it
-/// spent since its last commit lost.
+/// rate. A run of this model takes ten, and adding it to the one already going would have both
+/// cut off with what each did since its last commit lost.
 #[test]
-fn a_run_the_budget_will_not_outlast_does_not_start() {
+fn a_run_the_budget_will_not_outlast_is_not_added_to_the_others() {
     assert_eq!(
+        decide(&Standing {
+            spent: 900,
+            elapsed: 3_600,
+            running: 1,
+            before: Before {
+                lasting: Sizings::under(Rule::default(), [Ran::finished(Some("opus"), 600)]),
+                ..standing().before
+            },
+            ..standing()
+        }),
+        Decision::Start(Vec::new())
+    );
+}
+
+/// The same session with nothing going starts it anyway.
+///
+/// One run ending at the budget is a session spending what it declared and keeping what that
+/// run committed. Holding it back leaves the budget unspent and nothing done, which is the
+/// worse of the two.
+#[test]
+fn a_session_with_nothing_going_starts_one_whatever_the_rate() {
+    assert!(matches!(
         decide(&Standing {
             spent: 900,
             elapsed: 3_600,
@@ -438,8 +460,8 @@ fn a_run_the_budget_will_not_outlast_does_not_start() {
             },
             ..standing()
         }),
-        Decision::Stop(StoppedReason::BudgetHardlock)
-    );
+        Decision::Start(allowed) if !allowed.is_empty()
+    ));
 }
 
 /// The same session early on, where the same rate leaves the budget lasting longer than the

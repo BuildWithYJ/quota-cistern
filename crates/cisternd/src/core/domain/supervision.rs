@@ -37,24 +37,30 @@ fn fits_the_clock(standing: &Standing, model: Option<&str>) -> bool {
 }
 /// Whether the budget outlasts a run of this model at the rate it is going.
 ///
-/// A run that is still going when the budget runs out is ended, and what it spent past its last
-/// commit buys nothing. One run ending that way is the session spending what it declared; four
-/// is the same figure spent and four results lost, so what this guards against grows with how
-/// many are going.
+/// What this guards against is not spending fast. It is how many runs stand in front of a
+/// budget about to end, since every one of them is ended there and loses what it did since its
+/// last commit. One run ending that way is a session spending what it declared and keeping
+/// what that run committed, which is the outcome a person asked for; four is the same figure
+/// spent and four results cut short.
 ///
-/// A high rate early is not what this asks about. Early on there is budget enough that the rate
-/// does not matter, and this passes whatever the rate; late there is not, and only a short run
-/// gets through. The rate is the session's own, wall clock, so runs going at once are already
-/// in it.
+/// So it is asked only of a run that would be added to others. A session with nothing going
+/// starts one whatever the rate says: holding that one back leaves the budget unspent and no
+/// work done, which is worse than the one ending it would have had. The same asymmetry `alone`
+/// is written for, in the same place, one line apart.
+///
+/// A high rate early is not what this asks about either. Early on there is budget enough that
+/// the rate does not matter and this passes whatever it is; late there is not, and only a short
+/// run gets through. The rate is the session's own, wall clock, so runs going at once are
+/// already in it.
 ///
 /// Asked at the widened figure rather than at the middle, since the two ways of being wrong do
 /// not cost the same: a run held back that would have fitted leaves budget unspent, and a run
-/// started that does not fit spends and leaves nothing.
+/// started that does not fit is cut and leaves what it had not committed.
 ///
 /// A model nothing has been timed on holds nothing back, and neither does a session that has
 /// yet to spend anything: the first run is what makes the figure this reads.
-fn fits_the_budget(standing: &Standing, model: Option<&str>) -> bool {
-    if standing.pacing == Pacing::Any {
+fn fits_the_budget(standing: &Standing, model: Option<&str>, alone: bool) -> bool {
+    if standing.pacing == Pacing::Any || alone {
         return true;
     }
     let Some(until_gone) = standing.until_gone() else {
@@ -101,7 +107,7 @@ fn allow(standing: &Standing) -> Vec<Allowance> {
         let alone = standing.running == 0 && given.is_empty();
         if free == 0
             || !fits_the_clock(standing, model.as_deref())
-            || !fits_the_budget(standing, model.as_deref())
+            || !fits_the_budget(standing, model.as_deref(), alone)
         {
             break;
         }

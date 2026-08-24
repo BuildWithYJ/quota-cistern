@@ -16,10 +16,13 @@
 //!                                  anything
 //! timing  hold a run back or not   nothing. No real session has been held back by it, which
 //!                                  is why `config set timing` can turn it off
-//! pacing  hold a run back the      the sweep, which is what a harness may answer: with it off,
-//!         budget will not outlast  a third of sessions of one shape spend past what they
-//!                                  declared, and no other figure here changes that. What it
-//!                                  costs differs by shape, so it ships off
+//! pacing  hold a run back the      the shape of the loss. A run ended at the budget keeps
+//!         budget will not outlast  what it committed, so one ending there is a session
+//!                                  spending what it declared; four is four cut short for the
+//!                                  same figure. What it costs is nearly nothing where the
+//!                                  sweep can read it, and what it saves the sweep cannot
+//!                                  read: a decision there is rarely reached with anything
+//!                                  going, which is the only state this acts in
 //! locking end runs at the line     the specification. A person declares a figure and a
 //!         or let them finish       session does not spend past it, which is the one thing
 //!                                  section 2.2 asks of a budget. What it costs is not
@@ -159,7 +162,7 @@ impl Default for Policy {
             sizing: Rule::default(),
             timing: Timing::Fits,
             locking: Locking::Cuts,
-            pacing: Pacing::Any,
+            pacing: Pacing::Holds,
         }
     }
 }
