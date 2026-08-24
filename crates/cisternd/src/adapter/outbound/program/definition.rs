@@ -123,6 +123,15 @@ pub struct Answer {
     /// A name rather than a description, because reading a shape is code. A shape nobody
     /// has written yet is the one thing here that a file cannot add.
     pub reader: Reader,
+    /// Which of the lines the answer is on, for a shape that writes more than one.
+    ///
+    /// The last line is not always it. A hook of the user's outlives a run that ends sooner
+    /// than the hook does, and its response is written after the answer. Reading that line
+    /// as the answer leaves a run that finished looking like one that reported nothing, and
+    /// a session with no figure for what a run consumed stops.
+    ///
+    /// Left out, the last line is the answer, which is what a vendor writing one line needs.
+    pub marks: Option<Marks>,
     /// Where the word for how the run ended is.
     pub outcome: String,
     /// The words that mean the run hit a ceiling, and what to report for each.
@@ -133,13 +142,37 @@ pub struct Answer {
     pub at_ceiling: BTreeMap<String, String>,
     /// Where what the run said about itself is, for a run that failed.
     pub said: String,
-    /// Where the price is, and what to multiply it by to reach millionths.
+    /// Where the conversation the run was in is, for a vendor that names one.
+    ///
+    /// Left out by a vendor whose runs cannot be carried on. A task of that vendor's that is
+    /// asked to be carried on starts a conversation instead, which is the work being done
+    /// over rather than anything failing.
+    #[serde(default)]
+    pub conversation: Option<String>,
+    /// Where the count of turns is, for a vendor that counts them.
+    ///
+    /// Worth having beside the tokens. A turn is what the vendor is told to hold a run to, so
+    /// it needs no converting; and in what runs here have done, the count of turns says what a
+    /// run cost to within a hair. Left out by a vendor that does not count them.
+    #[serde(default)]
+    pub turns: Option<String>,
     pub cost: String,
     pub cost_scale: f64,
     pub input: String,
     pub output: String,
     pub cache_written: String,
     pub cache_read: String,
+}
+
+/// How a line says whether it is the answer.
+///
+/// Two halves of one question, so a definition naming one has to name the other.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Marks {
+    /// Where a line says what it is.
+    pub at: String,
+    /// What a line says there when it is the answer.
+    pub is: String,
 }
 
 /// The shapes an answer arrives in.

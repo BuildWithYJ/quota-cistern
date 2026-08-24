@@ -236,6 +236,7 @@ fn detailed(data: &Value) {
     line(DETAILED, "branch", text(data, "branch"));
     line(DETAILED, "reason", text(data, "reason"));
     line(DETAILED, "worktree", text(data, "worktree"));
+    line(DETAILED, "carries on", text(data, "conversation"));
     made(data);
     line(DETAILED, "disposition", text(data, "disposition"));
 }

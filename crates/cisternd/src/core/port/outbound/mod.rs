@@ -8,6 +8,7 @@ mod backlog;
 mod clock;
 mod configuration;
 mod repository;
+mod run;
 mod session;
 mod trace;
 mod vendor;
@@ -18,6 +19,7 @@ pub use configuration::ConfigurationStore;
 pub use repository::{
     Between, Changes, Commit, Counts, Cut, NotApplied, RepositoryRoots, Results, Touched, Worktrees,
 };
+pub use run::{Run, Runs};
 pub use session::{SessionStore, StoredSession, StoredSessions};
 pub use trace::{Event, Keeping, Read, Traces};
 pub use vendor::{Agent, Ended, Limit, Observed, Outcome, Reading, Spent, Work};

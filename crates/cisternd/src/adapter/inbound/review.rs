@@ -4,7 +4,7 @@ use cistern_contract::{Request, Response};
 use serde_json::Value;
 
 use crate::core::port::inbound::{
-    Changed, Difference, Dropped, Queue, Refusal, ReviewUseCase, Taken,
+    Changed, Difference, Dropped, Queue, Refusal, Requeued, ReviewUseCase, Taken, Tidying,
 };
 
 use super::{answer, missing, text};
@@ -16,6 +16,9 @@ pub fn respond(review: &impl ReviewUseCase, request: Request) -> Result<Response
         "review_ls" => Ok(list(review, request)),
         "apply" => Ok(about(request, |id| review.apply(id).map(applied))),
         "discard" => Ok(about(request, |id| review.discard(id).map(discarded))),
+        "retry" => Ok(about(request, |id| review.retry(id).map(requeued))),
+        "resume" => Ok(about(request, |id| review.resume(id).map(requeued))),
+        "tidy" => Ok(answer(request.command, review.tidy().map(tidied))),
         _ => Err(request),
     }
 }
@@ -25,7 +28,7 @@ fn list(review: &impl ReviewUseCase, request: Request) -> Response {
     answer(request.command, outcome)
 }
 
-/// The three commands that take a task and nothing else.
+/// The commands that take a task and nothing else.
 fn about(request: Request, ask: impl FnOnce(&str) -> Result<Value, Refusal>) -> Response {
     let Some(id) = text(&request, "task") else {
         return missing(&format!("{} takes a task, as a string", request.command));
@@ -74,6 +77,29 @@ fn discarded(dropped: Dropped) -> Value {
     serde_json::json!({ "task": dropped.task, "branch": dropped.branch })
 }
 
+fn tidied(tidying: Tidying) -> Value {
+    serde_json::json!({
+        "items": tidying
+            .items
+            .iter()
+            .map(|one| serde_json::json!({
+                "task": one.task,
+                "worktree": one.worktree,
+                "kept": one.kept,
+            }))
+            .collect::<Vec<Value>>(),
+    })
+}
+
+fn requeued(waiting: Requeued) -> Value {
+    serde_json::json!({
+        "task": waiting.task,
+        "branch": waiting.branch,
+        "attempts": waiting.attempts,
+        "carries_on": waiting.carries_on,
+    })
+}
+
 fn files(changed: Vec<Changed>) -> Vec<Value> {
     changed
         .into_iter()
@@ -94,7 +120,7 @@ mod tests {
     use cistern_contract::code::{GENERAL_FAILURE, NOT_FOUND, STATE_CONFLICT, USAGE_ERROR};
 
     use super::super::tests::{asked, data, failure};
-    use crate::core::port::inbound::{Awaiting, Refusal};
+    use crate::core::port::inbound::{Awaiting, Refusal, Tidied};
 
     use super::*;
 
@@ -161,6 +187,34 @@ mod tests {
                 task: id.to_owned(),
                 branch: "cistern/5".to_owned(),
             }))
+        }
+
+        fn retry(&self, id: &str) -> Result<Requeued, Refusal> {
+            self.refused().unwrap_or(Ok(Requeued {
+                task: id.to_owned(),
+                branch: "cistern/5".to_owned(),
+                attempts: "2".to_owned(),
+                carries_on: false,
+            }))
+        }
+
+        fn resume(&self, id: &str) -> Result<Requeued, Refusal> {
+            self.refused().unwrap_or(Ok(Requeued {
+                task: id.to_owned(),
+                branch: "cistern/5".to_owned(),
+                attempts: "2".to_owned(),
+                carries_on: true,
+            }))
+        }
+
+        fn tidy(&self) -> Result<Tidying, Refusal> {
+            Ok(Tidying {
+                items: vec![Tidied {
+                    task: "task:1".to_owned(),
+                    worktree: "/areas/1".to_owned(),
+                    kept: None,
+                }],
+            })
         }
     }
 

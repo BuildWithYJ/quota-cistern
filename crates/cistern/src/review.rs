@@ -62,6 +62,18 @@ pub fn discard(task: &str) -> ExitCode {
     send("discard", serde_json::json!({ "task": task }), dropped)
 }
 
+pub fn retry(task: &str) -> ExitCode {
+    send("retry", serde_json::json!({ "task": task }), requeued)
+}
+
+pub fn resume(task: &str) -> ExitCode {
+    send("resume", serde_json::json!({ "task": task }), requeued)
+}
+
+pub fn tidy() -> ExitCode {
+    send("tidy", serde_json::json!({}), tidied)
+}
+
 /// Asks the core and hands back what it answered, or the code to exit with.
 fn ask(command: &str, params: Value) -> Result<Value, ExitCode> {
     match daemon::ask(command, params) {
@@ -179,6 +191,52 @@ fn dropped(data: &Value) {
     if let Some(branch) = text(data, "branch") {
         println!("  branch {branch} is kept");
     }
+}
+
+fn tidied(data: &Value) {
+    let items = array(data, "items");
+    if items.is_empty() {
+        println!("nothing to tidy up");
+        return;
+    }
+    // A work area that was taken away says nothing about why it was kept; one that was left
+    // says why. That is the only thing telling the two apart, so it is asked once here and
+    // again below rather than the two being matched by value.
+    let taken = |one: &Value| one.get("kept").is_none_or(Value::is_null);
+    let named: Vec<&str> = items
+        .iter()
+        .filter(|one| taken(one))
+        .filter_map(|one| text(one, "task"))
+        .collect();
+    if !named.is_empty() {
+        println!("tidied up  {}", named.join("  "));
+    }
+    for one in items.iter().filter(|one| !taken(one)) {
+        let (Some(task), Some(kept)) = (text(one, "task"), text(one, "kept")) else {
+            continue;
+        };
+        println!("left       {task}  {kept}");
+    }
+}
+
+fn requeued(data: &Value) {
+    let Some(task) = text(data, "task") else {
+        return;
+    };
+    println!("{task} is waiting again");
+    if let Some(branch) = text(data, "branch") {
+        println!("  branch {branch} is kept, and the next run starts from it");
+    }
+    if let Some(attempts) = text(data, "attempts") {
+        println!("  assigned {attempts} time(s) so far");
+    }
+    println!(
+        "  the next run {}",
+        match data.get("carries_on").and_then(Value::as_bool) {
+            Some(true) => "carries on the conversation the last one was in",
+            _ => "starts a conversation of its own",
+        }
+    );
 }
 
 /// How wide the bar beside a file may grow.

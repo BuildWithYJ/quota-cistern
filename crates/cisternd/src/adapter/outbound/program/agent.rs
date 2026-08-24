@@ -23,7 +23,11 @@ use crate::core::port::outbound::{
     Agent, Ended, Keeping, Observed, Outcome, Spent, Unavailable, Work,
 };
 
-use super::{Definition, definition::Reader, path};
+use super::{
+    Definition,
+    definition::{Marks, Reader},
+    path,
+};
 
 /// How long a run has to end on its own before it is made to.
 ///
@@ -131,6 +135,9 @@ impl Agent for ProgramAgent {
         let mut filling = self.its_own().to_vec();
         filling.push(("instruction", work.instruction));
         filling.push(("model", work.model.unwrap_or_default()));
+        // A group holding a place nobody filled is dropped whole, so a run with no
+        // conversation to carry on loses the argument that would have named one.
+        filling.push(("conversation", work.conversation.unwrap_or_default()));
 
         let mut running = Command::new(program);
         running
@@ -157,6 +164,7 @@ impl Agent for ProgramAgent {
             child.stdout.take(),
             work.trace,
             self.definition.answer.reader,
+            self.definition.answer.marks.clone(),
         );
         let stderr = reading(child.stderr.take());
 
@@ -176,14 +184,19 @@ impl Agent for ProgramAgent {
         // One of them failing must not lose the other.
         let answer = serde_json::from_slice::<Value>(&stdout).ok();
 
-        let outcome = self.outcome_of(status.success(), answer.as_ref());
+        // What the run consumed is read before how it ended, since a run that consumed
+        // nothing did not do the work whatever it exited with.
+        let observed = self.observed(answer.as_ref());
+        let outcome = self.outcome_of(status.success(), answer.as_ref(), &observed);
         Ok(Ended {
             outcome,
             reason: match outcome {
                 Outcome::Finished => None,
                 _ => Some(self.said(&status, &stderr, answer.as_ref())),
             },
-            observed: self.observed(answer.as_ref()),
+            observed,
+            conversation: self.conversation(answer.as_ref()),
+            turns: self.turns(answer.as_ref()),
         })
     }
 
@@ -200,9 +213,16 @@ impl ProgramAgent {
     ///
     /// The name the program gives for stopping is what tells a ceiling from a failure, and
     /// which names mean a ceiling is the definition's to say.
-    fn outcome_of(&self, finished: bool, answer: Option<&Value>) -> Outcome {
+    ///
+    /// A run that exited well but counted nothing is not one that finished. A vendor turns
+    /// away a prompt it will not take by answering as a success that did no work, and taking
+    /// that word leaves a task stored as done on a branch with nothing on it.
+    fn outcome_of(&self, finished: bool, answer: Option<&Value>, observed: &Observed) -> Outcome {
         if finished {
-            return Outcome::Finished;
+            return match observed {
+                Observed::Spent(spent) if counted_nothing(spent) => Outcome::Failed,
+                _ => Outcome::Finished,
+            };
         }
         match self.stopping_word(answer) {
             Some(word) if self.definition.answer.at_ceiling.contains_key(&word) => {
@@ -210,6 +230,18 @@ impl ProgramAgent {
             }
             _ => Outcome::Failed,
         }
+    }
+
+    /// The conversation the run was in, where the definition says where to find one.
+    fn conversation(&self, answer: Option<&Value>) -> Option<String> {
+        let at = self.definition.answer.conversation.as_deref()?;
+        path::text(answer?, at).filter(|named| !named.trim().is_empty())
+    }
+
+    /// How many turns the run took, where the definition says where to find the count.
+    fn turns(&self, answer: Option<&Value>) -> Option<String> {
+        let at = self.definition.answer.turns.as_deref()?;
+        path::total(answer?, at).map(|counted| whole(counted).to_string())
     }
 
     fn stopping_word(&self, answer: Option<&Value>) -> Option<String> {
@@ -286,6 +318,30 @@ impl ProgramAgent {
     }
 }
 
+/// Whether the run counted nothing at all.
+///
+/// Not a run that was cheap. A call that left no message still reads what it was given, so a
+/// run that reached the vendor counted something under one of these. All of them at nothing
+/// is a run that never reached it.
+///
+/// A figure this cannot read is not a figure of nothing, and leaves the run counted as having
+/// done something rather than as having done none.
+fn counted_nothing(spent: &Spent) -> bool {
+    [
+        &spent.input,
+        &spent.output,
+        &spent.cache_written,
+        &spent.cache_read,
+    ]
+    .iter()
+    .all(|counted| counted.parse::<u64>().is_ok_and(|figure| figure == 0))
+}
+
+/// A figure the vendor wrote as a number, as a count.
+fn whole(of: f64) -> u64 {
+    of.round().max(0.0) as u64
+}
+
 fn unreadable(why: &str) -> Observed {
     Observed::Unreadable {
         why: why.to_owned(),
@@ -331,6 +387,7 @@ fn keeping<R: std::io::Read + Send + 'static>(
     held: Option<R>,
     mut into: Keeping,
     reader: Reader,
+    marks: Option<Marks>,
 ) -> thread::JoinHandle<Vec<u8>> {
     use std::io::{BufRead, BufReader};
 
@@ -346,11 +403,26 @@ fn keeping<R: std::io::Read + Send + 'static>(
             }
             into(&line);
             match reader {
-                Reader::LastJsonLine => answer = line,
+                Reader::LastJsonLine if marked(&line, marks.as_ref()) => answer = line,
+                Reader::LastJsonLine => {}
             }
         }
         answer.into_bytes()
     })
+}
+
+/// Whether this line is the one the answer is on.
+///
+/// A definition that does not say takes every line, so the last one written is the answer.
+/// One that says takes only the lines saying so, and a line this cannot read says nothing.
+fn marked(line: &str, marks: Option<&Marks>) -> bool {
+    let Some(marks) = marks else {
+        return true;
+    };
+    serde_json::from_str::<Value>(line)
+        .ok()
+        .and_then(|one| path::text(&one, &marks.at))
+        .is_some_and(|says| says == marks.is)
 }
 
 /// Reads one of the run's pipes on a thread of its own.

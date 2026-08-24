@@ -1,10 +1,15 @@
 //! What `diff`, `review ls`, `apply`, and `discard` do.
 
+use std::sync::{Mutex, PoisonError};
+
 use crate::core::{
     domain::{Backlog, DisposalRefused, Disposition, Task, TaskId},
     port::{
-        inbound::{Awaiting, Changed, Difference, Dropped, Queue, Refusal, ReviewUseCase, Taken},
-        outbound::{BacklogStore, Between, Changes, NotApplied, Results, Touched},
+        inbound::{
+            Awaiting, Changed, Difference, Dropped, Queue, Refusal, Requeued, ReviewUseCase, Taken,
+            Tidied, Tidying,
+        },
+        outbound::{BacklogStore, Between, Changes, NotApplied, Results, Touched, Worktrees},
     },
 };
 
@@ -14,6 +19,15 @@ use super::backlog::{change, read};
 pub struct ReviewService<'a> {
     tasks: &'a dyn BacklogStore,
     results: &'a dyn Results,
+    worktrees: &'a dyn Worktrees,
+    /// Held for the whole of a tidying.
+    ///
+    /// A work area is taken off the disk and only then forgotten, so between the two it is
+    /// still the task's as far as the backlog says. What must not happen in that gap is a
+    /// `retry` handing that task's directory to a run. One core holds the socket, so a hold
+    /// here covers every caller, and unlike a mark written down it cannot be left behind by a
+    /// core that was killed.
+    tidying: Mutex<()>,
 }
 
 /// The three names a question about a result takes.
@@ -46,8 +60,17 @@ impl Lies {
 }
 
 impl<'a> ReviewService<'a> {
-    pub fn new(tasks: &'a dyn BacklogStore, results: &'a dyn Results) -> Self {
-        ReviewService { tasks, results }
+    pub fn new(
+        tasks: &'a dyn BacklogStore,
+        results: &'a dyn Results,
+        worktrees: &'a dyn Worktrees,
+    ) -> Self {
+        ReviewService {
+            tasks,
+            results,
+            worktrees,
+            tidying: Mutex::new(()),
+        }
     }
 
     /// What a task changed, or why it could not be read.
@@ -172,6 +195,98 @@ impl ReviewUseCase for ReviewService<'_> {
             })
         })
     }
+
+    fn retry(&self, id: &str) -> Result<Requeued, Refusal> {
+        self.waits_again(id, Backlog::try_again)
+    }
+
+    fn resume(&self, id: &str) -> Result<Requeued, Refusal> {
+        self.waits_again(id, Backlog::carries_on)
+    }
+
+    /// Takes away the work areas of tasks that have been disposed of.
+    ///
+    /// Which ones may go is the backlog's to say. Taking one away runs git, which is slow and
+    /// may be refused, so it happens between two holds rather than under one: the list is read,
+    /// the work areas are taken away, and only what actually went is written down.
+    ///
+    /// A work area git would not remove is left where it is and says why. Section 2.4 keeps the
+    /// branch either way, so nothing a run committed goes with a work area that does go.
+    fn tidy(&self) -> Result<Tidying, Refusal> {
+        // Held for as long as this runs, so a `retry` arriving meanwhile is not handed a
+        // directory about to go. A hold rather than a mark written to the backlog: one core
+        // holds the socket, so this covers every caller there is, and a crash part way through
+        // leaves nothing behind that has to be undone.
+        let _tidying = self.tidying.lock().unwrap_or_else(PoisonError::into_inner);
+        let asked: Vec<(TaskId, String, String)> = read(self.tasks)?.tidyable();
+
+        let tidied: Vec<(TaskId, Tidied)> = asked
+            .into_iter()
+            .map(|(id, repository, at)| {
+                let kept = self
+                    .worktrees
+                    .remove(&repository, &at)
+                    .err()
+                    .map(|why| why.reason);
+                (
+                    id,
+                    Tidied {
+                        task: id.labelled(),
+                        worktree: at,
+                        kept,
+                    },
+                )
+            })
+            .collect();
+
+        // Only what actually went is forgotten. What git would not remove is still there and
+        // still the task's, and a run of this that ended part way through has forgotten only
+        // the directories it had already taken away.
+        change(self.tasks, |backlog| {
+            for (id, _) in tidied.iter().filter(|(_, one)| one.kept.is_none()) {
+                backlog.work_area_gone(*id);
+            }
+            Ok(Tidying {
+                items: tidied.iter().map(|(_, one)| one.clone()).collect(),
+            })
+        })
+    }
+}
+
+impl ReviewService<'_> {
+    /// Puts a task that ended back in the backlog, by the rule the caller names.
+    ///
+    /// The two callers differ by that rule and by nothing else: what is checked, what is
+    /// reported, and what is left alone are the same whether the work is done over or carried
+    /// on.
+    fn waits_again(
+        &self,
+        id: &str,
+        putting: fn(&mut Backlog, TaskId) -> Result<(), DisposalRefused>,
+    ) -> Result<Requeued, Refusal> {
+        let wanted = identifier(id)?;
+
+        change(self.tasks, |backlog| {
+            let task = held(backlog, wanted)?;
+            let branch = ended(task, wanted)?;
+            let attempts = task.attempts();
+
+            putting(backlog, wanted).map_err(|refused| match refused {
+                DisposalRefused::NoSuchTask => Refusal::NoSuchTask {
+                    id: wanted.labelled(),
+                },
+                DisposalRefused::NotEnded => Refusal::NotEnded {
+                    id: wanted.labelled(),
+                },
+            })?;
+            Ok(Requeued {
+                task: wanted.labelled(),
+                branch,
+                attempts: attempts.to_string(),
+                carries_on: held(backlog, wanted)?.conversation().is_some(),
+            })
+        })
+    }
 }
 
 /// The branch a task's result is on, for a task whose run is over.
@@ -233,395 +348,4 @@ fn count(written: &str) -> Option<u64> {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::Mutex;
-
-    use crate::core::port::outbound::{Commit, Counts, StoredBacklog, StoredTask, Unavailable};
-
-    use super::*;
-
-    /// A backlog held in memory, so the steps can be checked without a file.
-    #[derive(Default)]
-    struct Remembered {
-        stored: Mutex<StoredBacklog>,
-    }
-
-    impl BacklogStore for Remembered {
-        fn load(&self) -> Result<StoredBacklog, Unavailable> {
-            Ok(self.stored.lock().unwrap().clone())
-        }
-
-        fn update(
-            &self,
-            change: &mut dyn FnMut(&mut StoredBacklog) -> bool,
-        ) -> Result<(), Unavailable> {
-            let mut held = self.stored.lock().unwrap();
-            let mut backlog = held.clone();
-            if change(&mut backlog) {
-                *held = backlog;
-            }
-            Ok(())
-        }
-    }
-
-    fn holding(tasks: Vec<StoredTask>) -> Remembered {
-        Remembered {
-            stored: Mutex::new(StoredBacklog {
-                next_id: "9".to_owned(),
-                tasks,
-            }),
-        }
-    }
-
-    fn a_task(id: &str, state: &str) -> StoredTask {
-        StoredTask {
-            id: id.to_owned(),
-            title: "verify webhook signature".to_owned(),
-            instruction: "do it".to_owned(),
-            branch: None,
-            after: None,
-            model: None,
-            repository: "/work/api".to_owned(),
-            state: state.to_owned(),
-            session: Some("1".to_owned()),
-            worktree: None,
-            started_at: None,
-            ended_at: None,
-            reason: None,
-            consumed: None,
-            unreadable: None,
-            disposition: None,
-        }
-    }
-
-    /// A repository that answers, standing in for git.
-    ///
-    /// What it was asked is kept, so a test can show that the base and the branch reached it as the task holds them.
-    struct Repository {
-        changes: Option<Changes>,
-        counts: Option<Counts>,
-        applies: Option<NotApplied>,
-        reachable: bool,
-        asked: Mutex<Vec<String>>,
-    }
-
-    impl Default for Repository {
-        fn default() -> Self {
-            Repository {
-                changes: Some(Changes {
-                    files: vec![Touched {
-                        path: "src/webhook/verify.ts".to_owned(),
-                        added: "64".to_owned(),
-                        removed: "3".to_owned(),
-                    }],
-                    patch: "diff --git a b".to_owned(),
-                }),
-                counts: Some(Counts {
-                    commits: "3".to_owned(),
-                    base_ahead: "2".to_owned(),
-                }),
-                applies: None,
-                reachable: true,
-                asked: Mutex::new(Vec::new()),
-            }
-        }
-    }
-
-    impl Repository {
-        fn holding_nothing() -> Self {
-            Repository {
-                changes: None,
-                counts: None,
-                ..Default::default()
-            }
-        }
-
-        fn refusing(why: NotApplied) -> Self {
-            Repository {
-                applies: Some(why),
-                ..Default::default()
-            }
-        }
-    }
-
-    impl Results for Repository {
-        fn made(&self, _between: Between<'_>) -> Option<Vec<Commit>> {
-            Some(Vec::new())
-        }
-
-        fn counts(&self, between: Between<'_>) -> Option<Counts> {
-            self.asked.lock().unwrap().push(format!(
-                "counts {} {}..{}",
-                between.repository, between.base, between.branch
-            ));
-            self.counts.clone()
-        }
-
-        fn changes(&self, between: Between<'_>) -> Option<Changes> {
-            self.asked.lock().unwrap().push(format!(
-                "changes {} {}..{}",
-                between.repository, between.base, between.branch
-            ));
-            self.changes.clone()
-        }
-
-        fn apply(&self, between: Between<'_>) -> Result<Vec<Touched>, NotApplied> {
-            self.asked.lock().unwrap().push(format!(
-                "apply {} {}..{}",
-                between.repository, between.base, between.branch
-            ));
-            match self.applies.clone() {
-                Some(why) => Err(why),
-                None => Ok(self.changes.clone().unwrap_or_default().files),
-            }
-        }
-
-        fn reachable(&self, _repository: &str) -> Result<(), Unavailable> {
-            match self.reachable {
-                true => Ok(()),
-                false => Err(Unavailable::new("no such repository")),
-            }
-        }
-    }
-
-    fn disposition_of(tasks: &Remembered, id: &str) -> Option<String> {
-        tasks
-            .stored
-            .lock()
-            .unwrap()
-            .tasks
-            .iter()
-            .find(|task| task.id == id)
-            .and_then(|task| task.disposition.clone())
-    }
-
-    #[test]
-    fn the_queue_holds_what_ended_and_nothing_else() {
-        let tasks = holding(vec![
-            a_task("1", "Pending"),
-            a_task("2", "Running"),
-            a_task("3", "Completed"),
-            a_task("4", "Interrupted"),
-            a_task("5", "Error"),
-        ]);
-        let git = Repository::default();
-
-        let queue = ReviewService::new(&tasks, &git).queue().unwrap();
-        let ids: Vec<&str> = queue.items.iter().map(|item| item.id.as_str()).collect();
-        assert_eq!(ids, ["task:3", "task:4", "task:5"]);
-        assert_eq!(queue.items[0].commit_count, Some(3));
-        assert_eq!(queue.items[0].base_ahead, Some(2));
-        assert_eq!(queue.items[0].branch.as_deref(), Some("cistern/3"));
-    }
-
-    /// A list says how many commits a branch holds and never shows what is in them.
-    /// It must not build the patch to find out.
-    #[test]
-    fn listing_the_queue_asks_only_for_the_counts() {
-        let tasks = holding(vec![a_task("1", "Completed"), a_task("2", "Error")]);
-        let git = Repository::default();
-
-        ReviewService::new(&tasks, &git).queue().unwrap();
-        assert_eq!(
-            git.asked.lock().unwrap().as_slice(),
-            [
-                "counts /work/api main..cistern/1",
-                "counts /work/api main..cistern/2"
-            ]
-        );
-    }
-
-    /// The repository belongs to whoever is using this, and a task they left no branch for still has to appear.
-    #[test]
-    fn a_task_whose_branch_cannot_be_read_is_listed_without_counts() {
-        let tasks = holding(vec![a_task("1", "Completed")]);
-        let git = Repository::holding_nothing();
-
-        let queue = ReviewService::new(&tasks, &git).queue().unwrap();
-        assert_eq!(queue.items.len(), 1);
-        assert_eq!(queue.items[0].commit_count, None);
-        assert_eq!(queue.items[0].base_ahead, None);
-    }
-
-    #[test]
-    fn a_task_that_was_never_assigned_changed_nothing() {
-        let tasks = holding(vec![a_task("1", "Pending")]);
-        let git = Repository::default();
-
-        let difference = ReviewService::new(&tasks, &git).diff("1").unwrap();
-        assert_eq!(difference.branch, None);
-        assert_eq!(difference.files, Vec::new());
-        assert_eq!(difference.patch, "");
-    }
-
-    #[test]
-    fn what_a_task_changed_is_asked_for_between_its_base_and_its_branch() {
-        let tasks = holding(vec![a_task("1", "Completed")]);
-        let git = Repository::default();
-
-        let difference = ReviewService::new(&tasks, &git).diff("1").unwrap();
-        assert_eq!(difference.base, "main");
-        assert_eq!(difference.branch.as_deref(), Some("cistern/1"));
-        assert_eq!(difference.files[0].added, Some(64));
-        assert_eq!(
-            git.asked.lock().unwrap().as_slice(),
-            ["changes /work/api main..cistern/1"]
-        );
-    }
-
-    /// A branch the user deleted and a repository they moved are put right differently.
-    /// They are not answered the same way.
-    #[test]
-    fn a_branch_that_is_gone_is_told_apart_from_a_repository_that_is_gone() {
-        let tasks = holding(vec![a_task("1", "Completed")]);
-
-        let gone = Repository::holding_nothing();
-        assert!(matches!(
-            ReviewService::new(&tasks, &gone).diff("1"),
-            Err(Refusal::NoResult { .. })
-        ));
-
-        let moved = Repository {
-            reachable: false,
-            ..Repository::holding_nothing()
-        };
-        assert!(matches!(
-            ReviewService::new(&tasks, &moved).diff("1"),
-            Err(Refusal::NoRepository { .. })
-        ));
-    }
-
-    #[test]
-    fn applying_a_result_records_it_and_takes_the_task_out_of_the_queue() {
-        let tasks = holding(vec![a_task("1", "Completed")]);
-        let git = Repository::default();
-        let review = ReviewService::new(&tasks, &git);
-
-        let taken = review.apply("1").unwrap();
-        assert_eq!(taken.task, "task:1");
-        assert_eq!(taken.branch, "cistern/1");
-        assert_eq!(taken.files[0].path, "src/webhook/verify.ts");
-
-        assert!(review.queue().unwrap().items.is_empty());
-        assert_eq!(disposition_of(&tasks, "1").as_deref(), Some("applied"));
-    }
-
-    #[test]
-    fn discarding_a_result_leaves_the_branch_and_the_state_where_they_are() {
-        let tasks = holding(vec![a_task("1", "Interrupted")]);
-        let git = Repository::default();
-        let review = ReviewService::new(&tasks, &git);
-
-        let dropped = review.discard("1").unwrap();
-        assert_eq!(dropped.branch, "cistern/1");
-        assert!(review.queue().unwrap().items.is_empty());
-        assert_eq!(disposition_of(&tasks, "1").as_deref(), Some("discarded"));
-        assert_eq!(
-            tasks.stored.lock().unwrap().tasks[0].state,
-            "Interrupted".to_owned()
-        );
-        // Nothing was asked of git, since nothing was read or written.
-        assert!(git.asked.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn a_discarded_result_can_be_applied_afterwards() {
-        let tasks = holding(vec![a_task("1", "Completed")]);
-        let git = Repository::default();
-        let review = ReviewService::new(&tasks, &git);
-
-        review.discard("1").unwrap();
-        review.apply("1").unwrap();
-        assert_eq!(disposition_of(&tasks, "1").as_deref(), Some("applied"));
-    }
-
-    #[test]
-    fn a_run_that_has_not_ended_cannot_be_disposed_of() {
-        let tasks = holding(vec![a_task("1", "Running")]);
-        let git = Repository::default();
-        let review = ReviewService::new(&tasks, &git);
-
-        for outcome in [
-            format!("{:?}", review.apply("1")),
-            format!("{:?}", review.discard("1")),
-        ] {
-            assert!(outcome.contains("NotEnded"), "{outcome}");
-        }
-        // Nothing was asked of git for a task that may not be disposed of.
-        assert!(git.asked.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn each_way_git_refuses_is_answered_in_its_own_words() {
-        let refusals = [
-            (NotApplied::NotThere, "NoResult"),
-            (NotApplied::NotCommitted, "Uncommitted"),
-            (NotApplied::Nothing, "NoChange"),
-            (NotApplied::Already, "AlreadyApplied"),
-            (
-                NotApplied::Conflicts {
-                    why: "patch failed".to_owned(),
-                },
-                "Conflicts",
-            ),
-        ];
-
-        for (why, named) in refusals {
-            let tasks = holding(vec![a_task("1", "Completed")]);
-            let git = Repository::refusing(why);
-            let refused = ReviewService::new(&tasks, &git).apply("1");
-            assert!(
-                format!("{refused:?}").contains(named),
-                "{named}: {refused:?}"
-            );
-            // A refusal leaves the backlog holding what it held.
-            assert_eq!(disposition_of(&tasks, "1"), None);
-        }
-    }
-
-    #[test]
-    fn disposing_of_a_task_nobody_registered_says_so() {
-        let tasks = holding(Vec::new());
-        let git = Repository::default();
-        let review = ReviewService::new(&tasks, &git);
-
-        for outcome in [
-            format!("{:?}", review.apply("7")),
-            format!("{:?}", review.discard("7")),
-            format!("{:?}", review.diff("7")),
-        ] {
-            assert!(outcome.contains("NoSuchTask"), "{outcome}");
-        }
-    }
-
-    #[test]
-    fn an_identifier_that_is_not_a_number_is_an_argument_error() {
-        let tasks = holding(Vec::new());
-        let git = Repository::default();
-        assert!(matches!(
-            ReviewService::new(&tasks, &git).diff("seven"),
-            Err(Refusal::BadValue { .. })
-        ));
-    }
-
-    /// git counts no lines in a binary file and writes a dash where a number would be.
-    #[test]
-    fn a_file_git_counted_no_lines_in_carries_no_counts() {
-        let tasks = holding(vec![a_task("1", "Completed")]);
-        let git = Repository {
-            changes: Some(Changes {
-                files: vec![Touched {
-                    path: "logo.png".to_owned(),
-                    added: "-".to_owned(),
-                    removed: "-".to_owned(),
-                }],
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-
-        let difference = ReviewService::new(&tasks, &git).diff("1").unwrap();
-        assert_eq!(difference.files[0].added, None);
-        assert_eq!(difference.files[0].removed, None);
-    }
-}
+mod tests;

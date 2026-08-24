@@ -9,14 +9,24 @@
 
 program = "claude"
 
-# The goal leads the prompt. After the instruction the command is read as ordinary text
-# and gates nothing, which is why the order is fixed in `args` rather than left to
-# whoever composes the two.
-goal = "/goal The task described below is finished, its result is committed on the current branch, and git status reports a clean tree."
+# The goal is a command of the vendor's, and everything written after it is the condition it
+# gates on. The vendor holds that condition to 4000 characters.
+#
+# So the instruction is not written after it. It goes in as a system prompt instead, which
+# nothing holds to a length: an instruction of four thousand characters is an ordinary task
+# description, and one written after the goal would be a condition the vendor turns away.
+# A turned-away run answers as a success that did nothing, which is worse than a failure.
+goal = "/goal The task described in the instructions is finished, its result is committed on the current branch, and git status reports a clean tree."
 
-# How far one run may go before it is cut off. A guard against a run that goes nowhere,
-# not the ceiling a session declares; that one is measured in what a task consumed and is
-# the supervisor's.
+# How far one run may go before it is cut off.
+#
+# A guard against one run going nowhere. Not a session's budget, and nothing a session works
+# out reaches here: a session measures itself against a meter that reads in whole percent and
+# carries usage the session did not cause, and a figure like that is not one to end a task
+# with. What ends a run is one of these, or a person.
+#
+# So these are what every run is held to, whatever a session declared. Raise them where runs
+# are meant to be larger.
 turns = "200"
 spend = "20"
 
@@ -33,12 +43,16 @@ args = [
   ["--max-turns", "{turns}"],
   ["--max-budget-usd", "{spend}"],
   ["--model", "{model}"],
-  ["-p", "{goal}\n\n{instruction}"],
+  # A task being carried on rather than done over. The group is dropped whole where nothing
+  # fills the place, which is every run that starts a conversation of its own.
+  ["--resume", "{conversation}"],
+  ["--append-system-prompt", "{instruction}"],
+  ["-p", "{goal}"],
   ["--output-format", "stream-json", "--verbose"],
 ]
 
 [answer]
-# One object per line, the last of which is the answer and the rest the trace.
+# One object per line, one of which is the answer and the rest the trace.
 reader = "last-json-line"
 
 # The name the vendor gives for stopping is what tells a ceiling from a failure.
@@ -46,6 +60,20 @@ outcome = "subtype"
 
 # What a run that failed said about itself, when it said anything.
 said = "result"
+
+# The conversation the run was in. A run of a task that was cut off left its work in the work
+# area and on the branch and its conversation here; naming it back is what lets the next run
+# carry it on rather than read all of it again.
+conversation = "session_id"
+
+# How many turns it took.
+#
+# Worth having beside the tokens for two reasons. It is what this vendor is told to hold a run
+# to, so it crosses without being converted; and across the runs of a real history the count of
+# turns says what a run cost to within a hair -- the log correlation is 0.99 and the relation is
+# tokens = 19,600 x turns^1.31. Neither is true of the tokens, which have to be turned into a
+# share of a limit by a meter that reads in whole percent.
+turns = "num_turns"
 
 # The price, and what to multiply it by to reach millionths of the currency.
 cost = "total_cost_usd"
@@ -59,6 +87,16 @@ input = "modelUsage.*.inputTokens"
 output = "modelUsage.*.outputTokens"
 cache_written = "modelUsage.*.cacheCreationInputTokens"
 cache_read = "modelUsage.*.cacheReadInputTokens"
+
+# Which line the answer is on.
+#
+# The last one written is not always it. A hook of the user's that outlives the run has its
+# response written after the answer, which happens whenever the run ends sooner than the hook
+# does. Reading the hook's line leaves a run that finished looking like one that reported
+# nothing, and the session stops for want of a figure.
+[answer.marks]
+at = "type"
+is = "result"
 
 # A run cut off at a ceiling answers with no text of its own. The word it gives instead
 # is all there is to report, so each word carries the sentence to report for it. The

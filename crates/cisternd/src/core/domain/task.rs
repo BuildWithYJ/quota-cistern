@@ -17,6 +17,14 @@ const DEFAULT_BRANCH: &str = "main";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TaskId(u32);
 
+/// The reason section 1 of `docs/cli.md` gives a task stopped at the ceiling on one run.
+///
+/// A word rather than a state, since the state is `Interrupted` whichever way a run was cut
+/// off. Beside the states because two roles read it: what a person is told, and what the
+/// supervisor reads back off the ledger, where a run that ended this way says where it was
+/// stopped rather than what its task takes.
+pub const AT_CEILING: &str = "task ceiling";
+
 /// The five states section 1 lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskState {
@@ -25,6 +33,15 @@ pub enum TaskState {
     Completed,
     Interrupted,
     Error,
+}
+
+/// Whether a task waiting again keeps the conversation its last run was in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Carrying {
+    /// It does, so the next run carries that conversation on.
+    On,
+    /// It does not, so the next run starts one.
+    Afresh,
 }
 
 /// What was decided about a task's result.
@@ -61,6 +78,8 @@ pub struct Task {
     session: Option<SessionId>,
     /// Where it is being worked on, once a work area was made.
     worktree: Option<String>,
+    /// The conversation its last run was in, for a run that may be carried on.
+    conversation: Option<String>,
     /// When its most recent run started, in seconds since the epoch.
     ///
     /// The most recent rather than the first, since a task the vendor turned away runs again.
@@ -69,6 +88,18 @@ pub struct Task {
     ended_at: Option<u64>,
     /// Why it ended as it did, for a task that did not simply finish.
     reason: Option<String>,
+    /// How many times it has been assigned.
+    ///
+    /// Assignments rather than failures. A run cut off at a ceiling leaves no record of its
+    /// own, and a run the vendor turned away leaves none either, so counting what went wrong
+    /// counts less than what was tried.
+    attempts: u32,
+    /// What the run going now is allowed to consume, in the unit its session declared.
+    ///
+    /// Held against that session's budget until the run ends, so that runs starting together
+    /// cannot together pass what the session declared. Absent for a task nothing is running
+    /// for, and for one assigned before this was kept.
+    ceiling: Option<u64>,
     /// What running it consumed, as far as that is known.
     consumed: Observation,
     /// What was decided about its result, once anyone decided.
@@ -90,9 +121,12 @@ pub struct Restored {
     pub state: TaskState,
     pub session: Option<SessionId>,
     pub worktree: Option<String>,
+    pub conversation: Option<String>,
     pub started_at: Option<u64>,
     pub ended_at: Option<u64>,
     pub reason: Option<String>,
+    pub attempts: u32,
+    pub ceiling: Option<u64>,
     pub consumed: Observation,
     pub disposition: Option<Disposition>,
 }
@@ -273,6 +307,20 @@ impl Task {
         self.session
     }
 
+    /// The conversation its last run was in, once one has left one.
+    ///
+    /// A run of a task that was cut off left the work it had done in the work area and on the
+    /// branch, and its conversation nowhere. Reading all of that back is most of what a second
+    /// run of the same task costs. This is what lets the next run carry that conversation on
+    /// instead, and it is the task's rather than the run's because it is the next run that
+    /// needs it and runs do not outlive themselves.
+    ///
+    /// Nothing for a task nobody has run, and nothing again once one has finished: what is
+    /// kept is a conversation somebody may still want to carry on.
+    pub fn conversation(&self) -> Option<&str> {
+        self.conversation.as_deref()
+    }
+
     pub fn worktree(&self) -> Option<&str> {
         self.worktree.as_deref()
     }
@@ -285,6 +333,16 @@ impl Task {
     /// When that run stopped, once it has.
     pub fn ended_at(&self) -> Option<u64> {
         self.ended_at
+    }
+
+    /// What the run going now is allowed to consume, once one was assigned.
+    pub fn ceiling(&self) -> Option<u64> {
+        self.ceiling
+    }
+
+    /// How many times it has been assigned.
+    pub fn attempts(&self) -> u32 {
+        self.attempts
     }
 
     pub fn reason(&self) -> Option<&str> {
@@ -358,9 +416,12 @@ impl Backlog {
             state: TaskState::Pending,
             session: None,
             worktree: None,
+            conversation: None,
             started_at: None,
             ended_at: None,
             reason: None,
+            attempts: 0,
+            ceiling: None,
             consumed: Observation::NotYet,
             disposition: None,
         };
@@ -389,21 +450,41 @@ impl Backlog {
         Ok(removed)
     }
 
-    /// Hands the first task that may start to a session, and says which.
+    /// Hands one named task to a session, with what its run may take.
     ///
-    /// Nothing is answered when none may start, which an empty backlog and a blocked one both look like from here.
-    pub fn assign(&mut self, to: SessionId, now: u64) -> Option<TaskId> {
-        let id = self.next_to_assign()?;
-        for task in &mut self.tasks {
-            if task.id == id {
-                task.state = TaskState::Running;
-                task.session = Some(to);
-                // A task the vendor turned away is assigned again, and the run that
-                // starts now is the one these two describe.
-                task.started_at = Some(now);
-                task.ended_at = None;
-            }
+    /// Named rather than taken from the front, since what each may take was decided over the
+    /// whole list and the decision says which ones.
+    ///
+    /// Nothing is answered for a task the backlog does not hold, and for one that is not
+    /// waiting: a task another thread took first is not this session's to assign.
+    pub fn assign(
+        &mut self,
+        id: TaskId,
+        to: SessionId,
+        ceiling: u64,
+        now: u64,
+        fallback: Option<&str>,
+    ) -> Option<TaskId> {
+        let held = self
+            .tasks
+            .iter_mut()
+            .find(|task| task.id == id && task.state == TaskState::Pending)?;
+        held.state = TaskState::Running;
+        held.session = Some(to);
+        held.ceiling = Some(ceiling);
+        held.attempts += 1;
+        // Section 2.2 of `docs/cli.md` says a session's `--model` is what a task that named
+        // none falls back to, and section 2.1 says a task reports the model it ran on. Written
+        // down here, where what it runs on is settled, rather than read again everywhere a run
+        // is started or recorded: the run that follows and the line the ledger keeps for it
+        // then say the same thing, which is what the sizing reads them for.
+        if held.model.is_none() {
+            held.model = fallback.map(str::to_owned);
         }
+        // A task the vendor turned away is assigned again, and the run that
+        // starts now is the one these two describe.
+        held.started_at = Some(now);
+        held.ended_at = None;
         Some(id)
     }
 
@@ -412,16 +493,39 @@ impl Backlog {
     /// A run that has nothing to start is refused before a session is opened.
     /// Asking that question is what this is for.
     pub fn next_to_assign(&self) -> Option<TaskId> {
+        self.waiting().first().map(|(id, _)| *id)
+    }
+
+    /// Every task that may start, in the order `assign` would take them, each with the model
+    /// it named.
+    ///
+    /// What each may be allowed depends on its model, so a decision needs the list rather than
+    /// a count of it.
+    pub fn waiting(&self) -> Vec<(TaskId, Option<String>)> {
         self.tasks
             .iter()
             .filter(|task| task.state == TaskState::Pending)
-            .find(|task| match task.after {
+            .filter(|task| match task.after {
                 None => true,
                 Some(after) => self
                     .find(after)
                     .is_some_and(|held| held.state == TaskState::Completed),
             })
-            .map(|task| task.id)
+            .map(|task| (task.id, task.model.clone()))
+            .collect()
+    }
+
+    /// What the runs already going are allowed to take, together.
+    ///
+    /// A task that was assigned before this figure was kept has none, and counts as nothing.
+    /// The session it belongs to has already spent whatever that run spent, which the budget
+    /// sees; what is missing is only the room held for the rest of it.
+    pub fn booked_in(&self, session: SessionId) -> u64 {
+        self.tasks
+            .iter()
+            .filter(|task| task.session == Some(session) && task.state == TaskState::Running)
+            .filter_map(|task| task.ceiling)
+            .sum()
     }
 
     /// Records where a task is being worked on.
@@ -429,6 +533,34 @@ impl Backlog {
         for task in &mut self.tasks {
             if task.id == id {
                 task.worktree = Some(at.clone());
+            }
+        }
+    }
+
+    /// The tasks whose work areas may be taken away, each with the repository it belongs to
+    /// and where it is.
+    ///
+    /// Read rather than taken. Removing one is slow and the daemon can be killed part way
+    /// through, so a backlog written as having lost them all before the first is gone would
+    /// leave every directory that was still there claimed by nobody and never looked at
+    /// again. Each is forgotten as it goes instead, by `work_area_gone`.
+    ///
+    /// What keeps a `retry` from being handed a directory about to go is not this. One core
+    /// holds the socket, so a hold inside the process covers it, and a hold is not something
+    /// a crash can leave behind.
+    pub fn tidyable(&self) -> Vec<(TaskId, String, String)> {
+        self.tasks
+            .iter()
+            .filter(|task| task.state.ended() && task.disposition.is_some())
+            .filter_map(|task| Some((task.id, task.repository.to_string(), task.worktree.clone()?)))
+            .collect()
+    }
+
+    /// Forgets where a task worked, for one whose work area has been taken away.
+    pub fn work_area_gone(&mut self, id: TaskId) {
+        for task in &mut self.tasks {
+            if task.id == id {
+                task.worktree = None;
             }
         }
     }
@@ -452,6 +584,17 @@ impl Backlog {
     /// Records what running a task consumed.
     ///
     /// Kept apart from [`Backlog::finish`].
+    /// Records the conversation a run left, for a task that may be carried on.
+    ///
+    /// Beside `finish` rather than in it: what a run consumed and what conversation it was in
+    /// are two things a vendor may answer about separately, and one of them being absent is
+    /// not the other being absent.
+    pub fn conversed(&mut self, id: TaskId, conversation: Option<String>) {
+        if let Some(task) = self.tasks.iter_mut().find(|task| task.id == id) {
+            task.conversation = conversation;
+        }
+    }
+
     /// A task can end without ever having run, and what it consumed is then not nothing but unknown.
     pub fn record(&mut self, id: TaskId, consumed: Observation) {
         for task in &mut self.tasks {
@@ -473,6 +616,48 @@ impl Backlog {
             return Err(DisposalRefused::NotEnded);
         }
         task.disposition = Some(disposition);
+        // Nobody carries on a conversation about work that has been decided.
+        task.conversation = None;
+        Ok(())
+    }
+
+    /// Puts a task that ended back where it started.
+    ///
+    /// A ceiling cuts runs off, and a task cut off ends `Interrupted` with whatever it did on
+    /// its branch. Nothing else moves it back: `dispose` takes it off the review queue and
+    /// leaves the state where it was, so a task left there is one nothing will pick up and one
+    /// whose successors wait forever.
+    ///
+    /// The branch stays. What the cut-off run wrote is on it, and a run that starts again
+    /// starts from it.
+    pub fn try_again(&mut self, id: TaskId) -> Result<(), DisposalRefused> {
+        self.waits_again(id, Carrying::Afresh)
+    }
+
+    /// Puts a task that ended back where it started, keeping the conversation its last run
+    /// was in, so the run that starts next carries that conversation on.
+    ///
+    /// Apart from `try_again` because they are different things to ask for. Trying again is
+    /// doing the work over; carrying on is the same work continuing, and what it saves is
+    /// reading back everything the last run had read.
+    pub fn carries_on(&mut self, id: TaskId) -> Result<(), DisposalRefused> {
+        self.waits_again(id, Carrying::On)
+    }
+
+    fn waits_again(&mut self, id: TaskId, carrying: Carrying) -> Result<(), DisposalRefused> {
+        let Some(task) = self.tasks.iter_mut().find(|task| task.id == id) else {
+            return Err(DisposalRefused::NoSuchTask);
+        };
+        if !task.state.ended() {
+            return Err(DisposalRefused::NotEnded);
+        }
+        task.state = TaskState::Pending;
+        task.reason = None;
+        task.ceiling = None;
+        task.disposition = None;
+        if carrying == Carrying::Afresh {
+            task.conversation = None;
+        }
         Ok(())
     }
 
@@ -511,17 +696,31 @@ impl Backlog {
     /// Puts a task back where it was before it was assigned.
     ///
     /// For a task nobody would run.
+    /// The session it was assigned to stays, since that session paid for whatever the refused run
+    /// got through and `counted_in` is what says so. Assigning it again names the next one.
     pub fn wait_again(&mut self, id: TaskId, now: u64) {
         for task in &mut self.tasks {
             if task.id == id {
                 task.state = TaskState::Pending;
-                task.session = None;
                 task.reason = None;
                 // The run it had is over even though the task waits again, and it
                 // consumed whatever it consumed before the vendor refused it.
                 task.ended_at = Some(now);
             }
         }
+    }
+
+    /// Whether tasks are left that none of them may start.
+    ///
+    /// A task waits on one that did not complete, and nothing will complete it while the
+    /// session runs. Telling this from an empty backlog is what keeps a session from reporting
+    /// that everything is done while tasks are still waiting.
+    pub fn blocked(&self) -> bool {
+        self.waiting().is_empty()
+            && self
+                .tasks
+                .iter()
+                .any(|task| task.state == TaskState::Pending)
     }
 
     /// How many of a session's tasks are still running.
@@ -549,20 +748,6 @@ impl Backlog {
         ended
     }
 
-    /// What each task that reported a count consumed, over the whole backlog.
-    ///
-    /// A task from an earlier session counts.
-    /// A session which has run nothing of its own can still tell what a task around here costs.
-    pub fn counted(&self) -> Vec<Consumption> {
-        self.tasks
-            .iter()
-            .filter_map(|task| match &task.consumed {
-                Observation::Spent(spent) => Some(*spent),
-                _ => None,
-            })
-            .collect()
-    }
-
     /// What a session's own tasks consumed.
     pub fn counted_in(&self, session: SessionId) -> Vec<Consumption> {
         self.tasks
@@ -573,14 +758,6 @@ impl Backlog {
                 _ => None,
             })
             .collect()
-    }
-
-    /// How many of a session's tasks have ended, whatever they ended as.
-    pub fn ended_in(&self, session: SessionId) -> usize {
-        self.tasks
-            .iter()
-            .filter(|task| task.session == Some(session) && task.state != TaskState::Running)
-            .count()
     }
 
     /// Every task a session took, in the order they were registered.
@@ -631,9 +808,12 @@ impl Backlog {
                 state: held.state,
                 session: held.session,
                 worktree: held.worktree,
+                conversation: held.conversation,
                 started_at: held.started_at,
                 ended_at: held.ended_at,
                 reason: held.reason,
+                attempts: held.attempts,
+                ceiling: held.ceiling,
                 consumed: held.consumed,
                 disposition: held.disposition,
             })
@@ -690,465 +870,4 @@ impl Backlog {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn held(id: &str, after: Option<&str>, state: &str) -> Restored {
-        Restored {
-            session: None,
-            worktree: None,
-            started_at: None,
-            ended_at: None,
-            reason: None,
-            consumed: Observation::NotYet,
-            disposition: None,
-            id: TaskId::parse(id).unwrap(),
-            title: "a task".to_owned(),
-            instruction: "do it".to_owned(),
-            branch: None,
-            after: after.map(|after| TaskId::parse(after).unwrap()),
-            model: None,
-            repository: Repository::new("/work/api"),
-            state: TaskState::parse(state).unwrap(),
-        }
-    }
-
-    fn holding(tasks: Vec<Restored>) -> Result<Backlog, NotABacklog> {
-        Backlog::restore(9, tasks)
-    }
-
-    fn registered(backlog: &mut Backlog, branch: Option<&str>, after: Option<TaskId>) -> TaskId {
-        backlog
-            .add(
-                "a task".to_owned(),
-                "do it".to_owned(),
-                branch.map(str::to_owned),
-                after,
-                None,
-                Repository::new("/work/api"),
-            )
-            .id()
-    }
-
-    #[test]
-    fn an_identifier_is_read_with_or_without_its_prefix() {
-        assert_eq!(TaskId::parse("task:3"), TaskId::parse("3"));
-        assert_eq!(TaskId::parse("three"), None);
-        assert_eq!(TaskId::parse("task:"), None);
-    }
-
-    #[test]
-    fn an_identifier_is_shown_the_way_section_one_writes_it() {
-        let id = TaskId::parse("3").unwrap();
-        assert_eq!(id.labelled(), "task:3");
-        // A branch name is built from the number alone.
-        assert_eq!(id.to_string(), "3");
-    }
-
-    #[test]
-    fn a_state_outside_the_specification_is_not_a_state() {
-        assert_eq!(TaskState::parse("Sleeping"), None);
-    }
-
-    #[test]
-    fn a_task_naming_neither_starts_from_main() {
-        let mut backlog = Backlog::default();
-        let id = registered(&mut backlog, None, None);
-        assert_eq!(backlog.find(id).unwrap().base_branch(), "main");
-    }
-
-    #[test]
-    fn a_task_naming_a_predecessor_starts_from_its_result_branch() {
-        let mut backlog = Backlog::default();
-        let first = registered(&mut backlog, None, None);
-        let second = registered(&mut backlog, None, Some(first));
-        assert_eq!(
-            backlog.find(second).unwrap().base_branch(),
-            format!("cistern/{first}")
-        );
-    }
-
-    /// The two answer different questions, so a task can wait for one result and start from another.
-    #[test]
-    fn naming_a_branch_wins_over_a_predecessor() {
-        let mut backlog = Backlog::default();
-        let first = registered(&mut backlog, None, None);
-        let second = registered(&mut backlog, Some("develop"), Some(first));
-        let task = backlog.find(second).unwrap();
-        assert_eq!(task.base_branch(), "develop");
-        assert_eq!(task.after(), Some(first));
-    }
-
-    #[test]
-    fn a_registered_task_is_pending_and_waiting() {
-        let mut backlog = Backlog::default();
-        let id = registered(&mut backlog, None, None);
-        assert_eq!(backlog.find(id).unwrap().state(), TaskState::Pending);
-        assert_eq!(backlog.pending().len(), 1);
-    }
-
-    #[test]
-    fn identifiers_increase() {
-        let mut backlog = Backlog::default();
-        let first = registered(&mut backlog, None, None);
-        let second = registered(&mut backlog, None, None);
-        assert!(second > first);
-    }
-
-    /// Section 1 says a number is never reused.
-    #[test]
-    fn the_number_of_a_removed_task_is_not_handed_out_again() {
-        let mut backlog = Backlog::default();
-        registered(&mut backlog, None, None);
-        let second = registered(&mut backlog, None, None);
-        backlog.remove(second).unwrap();
-
-        let third = registered(&mut backlog, None, None);
-        assert_ne!(third, second);
-    }
-
-    #[test]
-    fn what_waited_for_a_removed_task_waits_for_what_that_one_waited_for() {
-        let mut backlog = Backlog::default();
-        let first = registered(&mut backlog, None, None);
-        let second = registered(&mut backlog, None, Some(first));
-        let third = registered(&mut backlog, None, Some(second));
-
-        backlog.remove(second).unwrap();
-        assert_eq!(backlog.find(third).unwrap().after(), Some(first));
-    }
-
-    /// The branch the removed task would have produced is never made.
-    /// What waited for it starts from where that one would have.
-    #[test]
-    fn removing_the_first_leaves_what_waited_for_it_waiting_for_nothing() {
-        let mut backlog = Backlog::default();
-        let first = registered(&mut backlog, None, None);
-        let second = registered(&mut backlog, None, Some(first));
-
-        backlog.remove(first).unwrap();
-        let task = backlog.find(second).unwrap();
-        assert_eq!(task.after(), None);
-        assert_eq!(task.base_branch(), "main");
-    }
-
-    /// Two tasks may name the same predecessor, and both are rebound.
-    #[test]
-    fn everything_that_waited_for_a_removed_task_is_rebound() {
-        let mut backlog = Backlog::default();
-        let first = registered(&mut backlog, None, None);
-        let second = registered(&mut backlog, None, Some(first));
-        let third = registered(&mut backlog, None, Some(first));
-
-        backlog.remove(first).unwrap();
-        assert_eq!(backlog.find(second).unwrap().after(), None);
-        assert_eq!(backlog.find(third).unwrap().after(), None);
-    }
-
-    #[test]
-    fn removing_a_task_nobody_registered_says_so() {
-        let mut backlog = Backlog::default();
-        let absent = TaskId::parse("7").unwrap();
-        assert_eq!(backlog.remove(absent), Err(RemovalRefused::NoSuchTask));
-    }
-
-    /// No command produces another state yet, so the task is built here.
-    /// The rule is what is being checked, not the path that reaches it.
-    #[test]
-    fn a_task_that_is_not_pending_is_not_removed() {
-        let mut backlog = holding(vec![held("1", None, "Running")]).unwrap();
-        let running = TaskId::parse("1").unwrap();
-        assert_eq!(backlog.remove(running), Err(RemovalRefused::NotPending));
-        assert!(backlog.find(running).is_some());
-    }
-
-    #[test]
-    fn only_pending_tasks_are_waiting() {
-        let backlog = holding(vec![
-            held("1", None, "Pending"),
-            held("2", None, "Completed"),
-        ])
-        .unwrap();
-        assert_eq!(backlog.pending().len(), 1);
-    }
-
-    #[test]
-    fn a_restored_backlog_keeps_what_it_was_given() {
-        let backlog = holding(vec![held("1", None, "Pending")]).unwrap();
-        assert_eq!(backlog.next_id(), 9);
-        assert_eq!(backlog.tasks().len(), 1);
-    }
-
-    #[test]
-    fn nothing_restored_is_a_backlog_nobody_has_added_to() {
-        assert_eq!(
-            Backlog::restore(1, Vec::new()),
-            Ok(Backlog {
-                next_id: 1,
-                tasks: Vec::new()
-            })
-        );
-    }
-
-    #[test]
-    fn one_number_twice_is_refused() {
-        assert_eq!(
-            holding(vec![held("1", None, "Pending"), held("1", None, "Pending")]),
-            Err(NotABacklog::RepeatedId {
-                id: TaskId::parse("1").unwrap()
-            })
-        );
-    }
-
-    #[test]
-    fn a_task_waiting_for_one_that_is_not_there_is_refused() {
-        assert_eq!(
-            holding(vec![held("1", Some("7"), "Pending")]),
-            Err(NotABacklog::NoSuchPredecessor {
-                task: TaskId::parse("1").unwrap(),
-                after: TaskId::parse("7").unwrap()
-            })
-        );
-    }
-
-    /// `task add` cannot build this, since a task may only name one that already exists.
-    /// A file edited by hand can, which is the only way here.
-    #[test]
-    fn two_tasks_waiting_for_each_other_are_refused() {
-        assert!(matches!(
-            holding(vec![
-                held("1", Some("2"), "Pending"),
-                held("2", Some("1"), "Pending"),
-            ]),
-            Err(NotABacklog::Cycle { .. })
-        ));
-    }
-
-    #[test]
-    fn a_task_waiting_for_itself_is_refused() {
-        assert_eq!(
-            holding(vec![held("1", Some("1"), "Pending")]),
-            Err(NotABacklog::Cycle {
-                task: TaskId::parse("1").unwrap()
-            })
-        );
-    }
-
-    /// A count with the same figure in every kind, so that a sum that dropped one of them is visible.
-    fn spent(each: u64) -> Observation {
-        Observation::Spent(Consumption {
-            input: each,
-            output: each,
-            cache_written: each,
-            cache_read: each,
-            cost: each,
-        })
-    }
-
-    /// A moment for a test that does not care which one.
-    const AT: u64 = 1_700_000_000;
-
-    fn assigned(backlog: &mut Backlog, to: SessionId) -> TaskId {
-        registered(backlog, None, None);
-        backlog.assign(to, AT).unwrap()
-    }
-
-    fn a_session() -> SessionId {
-        SessionId::parse("1").unwrap()
-    }
-
-    /// The start is stamped when the task is assigned rather than when it registered, since a
-    /// task waits in the backlog for as long as it waits and that is not part of its run.
-    #[test]
-    fn a_task_carries_when_its_run_started_and_when_it_stopped() {
-        let mut backlog = Backlog::default();
-        let id = assigned(&mut backlog, a_session());
-        assert_eq!(backlog.find(id).unwrap().started_at(), Some(AT));
-        assert_eq!(backlog.find(id).unwrap().ended_at(), None);
-
-        backlog.finish(id, TaskState::Completed, None, AT + 900);
-        assert_eq!(backlog.find(id).unwrap().ended_at(), Some(AT + 900));
-    }
-
-    /// A task the vendor turned away runs again, and the second run is the one to measure.
-    #[test]
-    fn a_task_assigned_again_is_stamped_with_the_run_it_is_starting_now() {
-        let mut backlog = Backlog::default();
-        let session = a_session();
-        let id = assigned(&mut backlog, session);
-
-        backlog.wait_again(id, AT + 60);
-        assert_eq!(backlog.find(id).unwrap().ended_at(), Some(AT + 60));
-
-        assert_eq!(backlog.assign(session, AT + 300), Some(id));
-        let held = backlog.find(id).unwrap();
-        assert_eq!(held.started_at(), Some(AT + 300));
-        assert_eq!(held.ended_at(), None);
-    }
-
-    /// A session stopped by hand ends its tasks, and they took as long as they took.
-    #[test]
-    fn a_task_interrupted_with_its_session_is_stamped_too() {
-        let mut backlog = Backlog::default();
-        let session = a_session();
-        let id = assigned(&mut backlog, session);
-
-        backlog.interrupt(session, "interrupted", AT + 120);
-        assert_eq!(backlog.find(id).unwrap().ended_at(), Some(AT + 120));
-    }
-
-    #[test]
-    fn what_a_session_consumed_is_what_its_tasks_did() {
-        let mut backlog = Backlog::default();
-        let session = a_session();
-        let first = assigned(&mut backlog, session);
-        backlog.finish(first, TaskState::Completed, None, AT);
-        let second = assigned(&mut backlog, session);
-
-        backlog.record(first, spent(10));
-        backlog.record(second, spent(20));
-
-        assert_eq!(backlog.consumed_by(session), spent(30));
-    }
-
-    /// A task another session assigned is that session's, however recently it ran.
-    #[test]
-    fn what_another_session_consumed_is_not_counted() {
-        let mut backlog = Backlog::default();
-        let mine = assigned(&mut backlog, a_session());
-        backlog.record(mine, spent(10));
-
-        let theirs = SessionId::parse("2").unwrap();
-        assert_eq!(backlog.consumed_by(theirs), spent(0));
-    }
-
-    #[test]
-    fn a_session_none_of_whose_tasks_has_run_consumed_nothing() {
-        let mut backlog = Backlog::default();
-        let session = a_session();
-        assigned(&mut backlog, session);
-
-        assert_eq!(
-            backlog.consumed_by(session),
-            Observation::Spent(Consumption::default())
-        );
-    }
-
-    /// A total that quietly dropped this task would look low, not missing.
-    #[test]
-    fn one_task_that_could_not_be_read_leaves_the_session_unreadable() {
-        let mut backlog = Backlog::default();
-        let session = a_session();
-        let first = assigned(&mut backlog, session);
-        backlog.finish(first, TaskState::Completed, None, AT);
-        let second = assigned(&mut backlog, session);
-
-        backlog.record(first, spent(10));
-        backlog.record(
-            second,
-            Observation::Unreadable {
-                why: "the answer said nothing about it".to_owned(),
-            },
-        );
-
-        assert_eq!(
-            backlog.consumed_by(session),
-            Observation::Unreadable {
-                why: "the answer said nothing about it".to_owned()
-            }
-        );
-    }
-
-    #[test]
-    fn a_registered_task_has_not_consumed_anything_yet() {
-        let mut backlog = Backlog::default();
-        let id = registered(&mut backlog, None, None);
-        assert_eq!(backlog.find(id).unwrap().consumed(), &Observation::NotYet);
-    }
-
-    #[test]
-    fn every_task_that_ended_and_was_not_decided_about_is_waiting_for_review() {
-        let backlog = holding(vec![
-            held("1", None, "Pending"),
-            held("2", None, "Running"),
-            held("3", None, "Completed"),
-            held("4", None, "Interrupted"),
-            held("5", None, "Error"),
-        ])
-        .unwrap();
-
-        let waiting: Vec<String> = backlog
-            .awaiting_review()
-            .iter()
-            .map(|task| task.id().labelled())
-            .collect();
-        assert_eq!(waiting, ["task:3", "task:4", "task:5"]);
-    }
-
-    #[test]
-    fn a_task_that_was_decided_about_leaves_the_queue() {
-        let mut backlog = holding(vec![held("1", None, "Completed")]).unwrap();
-        let id = TaskId::parse("1").unwrap();
-
-        backlog.dispose(id, Disposition::Applied).unwrap();
-        assert!(backlog.awaiting_review().is_empty());
-        assert_eq!(
-            backlog.find(id).unwrap().disposition(),
-            Some(Disposition::Applied)
-        );
-    }
-
-    /// Section 2.4 keeps the branch either way, so a discarded result is still there to be applied.
-    #[test]
-    fn a_discarded_result_can_be_applied_afterwards() {
-        let mut backlog = holding(vec![held("1", None, "Completed")]).unwrap();
-        let id = TaskId::parse("1").unwrap();
-
-        backlog.dispose(id, Disposition::Discarded).unwrap();
-        backlog.dispose(id, Disposition::Applied).unwrap();
-        assert_eq!(
-            backlog.find(id).unwrap().disposition(),
-            Some(Disposition::Applied)
-        );
-    }
-
-    #[test]
-    fn a_run_that_has_not_ended_cannot_be_decided_about() {
-        let mut backlog = holding(vec![held("1", None, "Running")]).unwrap();
-        assert_eq!(
-            backlog.dispose(TaskId::parse("1").unwrap(), Disposition::Applied),
-            Err(DisposalRefused::NotEnded)
-        );
-    }
-
-    #[test]
-    fn deciding_about_a_task_nobody_registered_says_so() {
-        let mut backlog = Backlog::default();
-        assert_eq!(
-            backlog.dispose(TaskId::parse("7").unwrap(), Disposition::Applied),
-            Err(DisposalRefused::NoSuchTask)
-        );
-    }
-
-    /// A disposition says nothing about the state, and section 2.4 says `discard` leaves the task state alone.
-    #[test]
-    fn deciding_about_a_result_leaves_the_state_where_it_was() {
-        let mut backlog = holding(vec![held("1", None, "Interrupted")]).unwrap();
-        let id = TaskId::parse("1").unwrap();
-
-        backlog.dispose(id, Disposition::Discarded).unwrap();
-        assert_eq!(backlog.find(id).unwrap().state(), TaskState::Interrupted);
-    }
-
-    #[test]
-    fn a_chain_that_ends_is_not_a_cycle() {
-        assert!(
-            holding(vec![
-                held("1", None, "Pending"),
-                held("2", Some("1"), "Pending"),
-                held("3", Some("2"), "Pending"),
-            ])
-            .is_ok()
-        );
-    }
-}
+mod tests;

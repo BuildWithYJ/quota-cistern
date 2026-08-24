@@ -20,6 +20,8 @@ One outside, one place. An outside that holds several conversations is a directo
 
 `domain` holds the entities and the rules over them. `service` drives them: one service per command group, holding the outbound ports its own commands use and implementing the inbound trait those commands are declared as.
 
+One thing in `service` answers no command. Whether a session carries on and with what is a single decision, and the commands over sessions and the workers that carry tasks on both arrive at it; `service::supervision` is that decision, held by both rather than owned by either. A rule about spending is added there.
+
 `domain` is a private module, so nothing outside `core` names an entity. It is given values it can already take, never the text a store kept them as. Reading what a store hands back is `service`'s work, and so is writing it out again.
 
 ## Adapters
@@ -34,7 +36,7 @@ Outbound adapters are grouped by the means rather than by the outside: `program`
 
 ## The vendor
 
-The means for a vendor is an external program, and which program it is comes from a definition rather than from code. A definition names the program, its arguments, the goal that leads the prompt, the two ceilings a run is cut off at, the words the vendor uses when a run hits one, and where each figure sits in the answer. A second vendor is a file.
+The means for a vendor is an external program, and which program it is comes from a definition rather than from code. A definition names the program, its arguments, the goal the prompt is, the two ceilings a run is cut off at, the words the vendor uses when a run hits one, which line of the answer is the answer, and where each figure sits in it. A second vendor is a file.
 
 `program/claude.toml` is the definition this build ships with. It travels in the binary and nothing is written to disk, so an upgrade has nothing of a user's to overwrite. A file at `$XDG_CONFIG_HOME/cistern/vendors/<name>.toml` is laid over it, holding only what differs, so a definition we improve reaches someone who changed one line of it. A name nothing ships has nothing to lay over and has to be written out. A name with no definition either way stops the daemon starting rather than failing on the first task.
 

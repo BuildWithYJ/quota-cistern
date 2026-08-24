@@ -1,138 +1,234 @@
-//! How many tasks may run, and whether a session has spent what it declared.
+//! What a session does next, worked out from how it stands.
 //!
-//! Section 2.2 of `docs/cli.md` says assignment is dynamic.
-//! Each time a task ends, what that task actually consumed decides whether one more fits.
-//! The arithmetic behind that decision is here, apart from the stores and the clock the decision is made against.
+//! Section 2.2 of `docs/cli.md` says assignment is dynamic: each time a task ends, what it
+//! consumed decides whether one more fits. The rule is here, apart from the stores and the
+//! clock it is made against, and apart from the figures it turns on, which are `policy`'s.
+//!
+//! Three questions, asked apart and answered together.
+//!
+//! ```text
+//! usage   what a run of this model has cost      Sizings
+//! time    how long one has taken, and how long the session has left
+//! budget  what is left, less what running tasks are already allowed
+//! ```
+//!
+//! None of them knows how many hands the machine has. What the budget covers is what `allow`
+//! answers; how many of those actually start is the service's to say.
+//!
+//! Every verdict a session receives is reached here. A caller that knows a fact the decision
+//! turns on hands it over rather than acting on it, so that two callers cannot come to
+//! different answers about one session.
 
-use std::fmt::{self, Display};
+use super::{Before, Locking, Pacing, StoppedReason, TaskId, Timing};
 
-use super::{Budget, StoppedReason, Usage};
-
-/// A percentage as hundredths of one.
+/// Whether a run of this model would finish before the session's time runs out.
 ///
-/// A share is declared in whole percent and measured in hundredths.
-/// One task moves the vendor's limit by less than a point.
-pub const HUNDREDTHS: u64 = 100;
-
-/// What a session has consumed of its usage budget, in the unit it declared.
-///
-/// Not two spellings of one number.
-/// A share is how far the vendor's limit has moved since the session opened, which the account's other work moves too.
-/// A count is what this session's own tasks reported.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Spending {
-    /// Hundredths of a percent.
-    Share(u64),
-    Tokens(u64),
-}
-
-impl Spending {
-    /// Whether this figure was read before the one it is put beside.
-    ///
-    /// A session only ever spends more, so the lower of two figures of the same kind is the
-    /// earlier reading. A share and a count are not put beside each other: they measure
-    /// different things, and a session is declared in one of them for its whole life.
-    pub fn behind(&self, other: &Spending) -> bool {
-        match (self, other) {
-            (Spending::Share(one), Spending::Share(another))
-            | (Spending::Tokens(one), Spending::Tokens(another)) => one < another,
-            _ => false,
-        }
+/// Starting one that would not spends what it spends and leaves nothing. A model nothing has
+/// been timed on holds nothing back.
+fn fits_the_clock(standing: &Standing, model: Option<&str>) -> bool {
+    match standing.timing {
+        Timing::Any => true,
+        Timing::Fits => !standing
+            .before
+            .lasting
+            .model(model)
+            .is_some_and(|lasts| lasts.estimate > standing.time_left),
     }
 }
-
-impl Display for Spending {
-    /// A share as the percentage a person declared, a count as the count.
-    ///
-    /// The hundredths only appear when there is something in them.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Spending::Tokens(tokens) => write!(f, "{tokens}"),
-            Spending::Share(points) => {
-                let (whole, part) = (points / HUNDREDTHS, points % HUNDREDTHS);
-                match part {
-                    0 => write!(f, "{whole}%"),
-                    _ if part % 10 == 0 => write!(f, "{whole}.{}%", part / 10),
-                    _ => write!(f, "{whole}.{part:02}%"),
-                }
-            }
-        }
-    }
-}
-
-impl Budget {
-    /// What is left of the usage declared, in the unit it was declared in.
-    ///
-    /// Nothing is left when more was spent than declared.
-    /// Which is what a session that passed its budget between two decisions looks like.
-    pub fn left(&self, spent: Spending) -> u64 {
-        match (self.usage, spent) {
-            (Usage::Share(declared), Spending::Share(spent)) => {
-                (u64::from(declared) * HUNDREDTHS).saturating_sub(spent)
-            }
-            (Usage::Tokens(declared), Spending::Tokens(spent)) => declared.saturating_sub(spent),
-            // A session is measured in the unit it was declared in.
-            // Whoever read the spending read it for this session.
-            _ => 0,
-        }
-    }
-}
-
-/// What a set of tasks cost, and how many of them there were.
+/// Whether the budget outlasts a run of this model at the rate it is going.
 ///
-/// The pair rather than the average.
-/// The average of a share is a fraction, and a fraction in whole numbers is nothing at all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Cost {
-    /// What they cost together, in the unit the budget was declared in.
-    pub total: u64,
-    /// How many of them there were.
-    pub over: u64,
-}
-
-/// How many more tasks may be started.
+/// What this guards against is not spending fast. It is how many runs stand in front of a
+/// budget about to end, since every one of them is ended there and loses what it did since its
+/// last commit. One run ending that way is a session spending what it declared and keeping
+/// what that run committed, which is the outcome a person asked for; four is the same figure
+/// spent and four results cut short.
 ///
-/// What is left, divided by what one task cost, multiplying first so that the fraction survives.
-/// A set that cost nothing measurable leaves one task to start.
-/// Which is what makes the sample the next answer is worked out from.
-fn room_for(left: u64, cost: Option<Cost>, running: usize, at_once: usize) -> usize {
-    if left == 0 {
-        return 0;
+/// So it is asked only of a run that would be added to others. A session with nothing going
+/// starts one whatever the rate says: holding that one back leaves the budget unspent and no
+/// work done, which is worse than the one ending it would have had. The same asymmetry `alone`
+/// is written for, in the same place, one line apart.
+///
+/// A high rate early is not what this asks about either. Early on there is budget enough that
+/// the rate does not matter and this passes whatever it is; late there is not, and only a short
+/// run gets through. The rate is the session's own, wall clock, so runs going at once are
+/// already in it.
+///
+/// Asked at the widened figure rather than at the middle, since the two ways of being wrong do
+/// not cost the same: a run held back that would have fitted leaves budget unspent, and a run
+/// started that does not fit is cut and leaves what it had not committed.
+///
+/// A model nothing has been timed on holds nothing back, and neither does a session that has
+/// yet to spend anything: the first run is what makes the figure this reads.
+fn fits_the_budget(standing: &Standing, model: Option<&str>, alone: bool) -> bool {
+    if standing.pacing == Pacing::Any || alone {
+        return true;
     }
-    let fits = match cost.filter(|cost| cost.total > 0 && cost.over > 0) {
-        Some(cost) => (left.saturating_mul(cost.over) / cost.total).min(at_once as u64) as usize,
-        None => 1,
+    let Some(until_gone) = standing.until_gone() else {
+        return true;
     };
-    fits.saturating_sub(running)
+    !standing
+        .before
+        .lasting
+        .model(model)
+        .is_some_and(|lasts| lasts.allowing() > until_gone)
 }
 
+/// What to set aside for a run of this model, or nothing where what is left will not cover it.
+///
+/// Two figures and two situations. While others are going a run is sized at what three in four
+/// come in under, since going over eats budget they were counting on. With nothing going there
+/// is nobody to take from, so what is left goes to one more run rather than being left unspent.
+///
+/// A model nothing has finished a run with has no figure at all, and one task then starts with
+/// what is left and is measured.
+fn set_aside(standing: &Standing, model: Option<&str>, free: u64, alone: bool) -> Option<u64> {
+    let Some(sizing) = standing.before.cost.model(model) else {
+        return alone.then_some(free);
+    };
+    let want = sizing.allowing().max(1);
+    match () {
+        _ if free >= want => Some(want),
+        _ if alone && free >= sizing.fallback.max(1) => Some(free),
+        _ => None,
+    }
+}
+/// What each waiting task may be allowed, taken in the order they wait.
+///
+/// What holds the session to what it declared is the first line: what is left, less what the
+/// runs already going are allowed. Nothing about that depends on any figure being right.
+///
+/// Taken in order, so a task that does not fit ends the round rather than letting a shorter
+/// one behind it go first. How many of these actually start is the machine's to say, not this.
+fn allow(standing: &Standing) -> Vec<Allowance> {
+    let mut free = standing.left().saturating_sub(standing.booked);
+    let mut given: Vec<Allowance> = Vec::new();
+
+    for (task, model) in &standing.pending {
+        let alone = standing.running == 0 && given.is_empty();
+        if free == 0
+            || !fits_the_clock(standing, model.as_deref())
+            || !fits_the_budget(standing, model.as_deref(), alone)
+        {
+            break;
+        }
+        let Some(ceiling) = set_aside(standing, model.as_deref(), free, alone) else {
+            break;
+        };
+        given.push(Allowance {
+            task: *task,
+            ceiling,
+        });
+        free -= ceiling;
+    }
+    given
+}
+/// What one task is allowed to consume.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Allowance {
+    pub task: TaskId,
+    /// In the unit the budget was declared in.
+    ///
+    /// What is left of the budget less what running tasks are already allowed, capped at what
+    /// a run of this model is expected to take. The first of the two is what keeps the session
+    /// inside what it declared however wrong the second is.
+    pub ceiling: u64,
+}
 /// How a session stands at the moment something has to be decided about it.
 ///
 /// Every figure is read before any of them is judged, so the decision that follows is made
 /// from one moment rather than from a store that moved while it was being asked.
 pub struct Standing {
-    /// What the budget still holds, in the unit it was declared in.
-    pub left: u64,
-    /// What one of this session's tasks has cost, over how many of them reported.
-    pub cost: Option<Cost>,
+    /// What the budget declared, in the unit it was declared in.
+    pub declared: u64,
+    /// What has been spent of it, in that same unit.
+    ///
+    /// Beside what was declared rather than as the one figure left over, because two questions
+    /// are asked of the pair: how much is left to hand out, and how fast it is going.
+    pub spent: u64,
+    /// How long the session has been running, in seconds.
+    pub elapsed: u64,
+    /// What the runs already going are allowed to take, together.
+    ///
+    /// Held against the budget until they end. Two runs starting at once are each given what
+    /// is left less what the other was given, so what they may spend together is what the
+    /// session has, however much either of them actually takes.
+    pub booked: u64,
+    /// What the runs before this one came to, by the model that ran them.
+    pub before: Before,
+    /// How long the session has before the time it declared runs out, in seconds.
+    pub time_left: u64,
+    /// The tasks that may start, in the order they would be taken, each with the model it
+    /// named.
+    ///
+    /// A count was enough while every task was allowed the same thing. Now each is allowed
+    /// what its own model says, so which ones they are is part of the decision.
+    pub pending: Vec<(TaskId, Option<String>)>,
     /// How many of its tasks are running.
     pub running: usize,
-    /// Whether the backlog holds a task that may start.
-    pub waiting: bool,
-    /// Whether the time it declared has run out.
-    pub out_of_time: bool,
+    /// Whether tasks are left that none of them may start.
+    pub blocked: bool,
     /// Whether what it consumed could no longer be read.
     pub unreadable: bool,
-    /// The most tasks this machine has hands for.
-    pub at_once: usize,
+    /// Whether a run is held back for the clock.
+    pub timing: Timing,
+    /// What to do about runs still going once the budget is spent.
+    pub locking: Locking,
+    /// What to do about a run the budget will not outlast.
+    pub pacing: Pacing,
 }
 
+impl Standing {
+    /// What the budget still holds. Nothing once more was spent than declared, which is what a
+    /// session that passed its figure between two decisions looks like.
+    pub fn left(&self) -> u64 {
+        self.declared.saturating_sub(self.spent)
+    }
+
+    /// How long the budget lasts at the rate it has been going, in seconds.
+    ///
+    /// Nothing where the session has spent nothing or has been running no time, which is where
+    /// a first run has yet to say anything. A session with a figure here has one because runs
+    /// of its own produced it.
+    fn until_gone(&self) -> Option<u64> {
+        match (self.spent, self.elapsed) {
+            (0, _) | (_, 0) => None,
+            (spent, elapsed) => Some(self.left().saturating_mul(elapsed) / spent),
+        }
+    }
+}
 /// What follows from how a session stands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
     Stop(StoppedReason),
-    /// Start this many more, which may be none.
-    Start(usize),
+    /// Start these, each with what it may take. May be none.
+    Start(Vec<Allowance>),
+}
+/// Whether a session that has had the time it declared has anything left to wait for.
+///
+/// The time a session declared is a deadline for taking work on rather than for finishing it,
+/// so one past that time stops when what it had going has ended and not before. Two callers ask
+/// it: the decision a task's ending reaches, and the clock, which is the only thing that looks
+/// at a session whose last task ended before its time did.
+pub fn done_waiting(time_left: u64, running: usize) -> bool {
+    time_left == 0 && running == 0
+}
+/// Why a session with nothing running and nothing it may start stops.
+///
+/// A backlog that emptied is done whatever else is true of the session. The clock and the
+/// budget running out are what stops one that still had tasks it could have run, and telling a
+/// person the budget locked when the work simply finished says the wrong thing about both.
+///
+/// Asked here rather than worked out twice: a decision reaches this state when a task ends,
+/// and the clock reaches it when a session outlives its deadline with nothing going.
+pub fn nothing_more(waiting: bool, blocked: bool, exhausted: bool) -> StoppedReason {
+    match (waiting, blocked, exhausted) {
+        (true, _, true) => StoppedReason::BudgetHardlock,
+        // Tasks are left and the session has both figures still, so what stopped it is that
+        // neither covers any of them.
+        (true, _, false) => StoppedReason::NothingFits,
+        (false, true, _) => StoppedReason::Blocked,
+        (false, false, _) => StoppedReason::AllDone,
+    }
 }
 
 /// What to do about a session, from how it stands.
@@ -145,251 +241,38 @@ pub fn decide(standing: &Standing) -> Decision {
     if standing.unreadable {
         return Decision::Stop(StoppedReason::ObservationUnreadable);
     }
-    if standing.out_of_time {
+    // What a person declared is a figure, and a session that has spent it has spent it. This
+    // is the only stop that ends runs still going, which is what `Cuts` is for; `Waits` lets
+    // them finish and spends past the figure by however far they had to go.
+    //
+    // Only where something is going. With nothing going there is nothing to end, and what to
+    // call the stopping is the question below: a backlog that emptied at the same moment the
+    // budget did is done rather than locked out of it.
+    if standing.locking == Locking::Cuts && standing.running > 0 && standing.left() == 0 {
         return Decision::Stop(StoppedReason::BudgetHardlock);
     }
+    // Out of time starts nothing more. It does not end what is going: the time a session
+    // declared is a deadline for taking work on, and a run that is past it is a run whose
+    // length we guessed short. Ending it there spends everything it spent and leaves nothing,
+    // and the guess was ours rather than anything the task did.
+    // Nothing left of the time it declared is what out of time means, and it is the same
+    // figure `time_left` holds; a second field for it could disagree with the first.
+    let out_of_time = standing.time_left == 0;
+    let starting = match out_of_time {
+        true => Vec::new(),
+        false => allow(standing),
+    };
     // Nothing more fits and nothing is running that would make room.
     // Waiting for a task that will never start is not carrying on.
-    if standing.running == 0 && room_for(standing.left, standing.cost, 0, standing.at_once) == 0 {
-        return Decision::Stop(StoppedReason::BudgetHardlock);
+    if standing.running == 0 && starting.is_empty() {
+        return Decision::Stop(nothing_more(
+            !standing.pending.is_empty(),
+            standing.blocked,
+            standing.left() == 0 || standing.time_left == 0,
+        ));
     }
-    if standing.running == 0 && !standing.waiting {
-        return Decision::Stop(StoppedReason::AllDone);
-    }
-    Decision::Start(room_for(
-        standing.left,
-        standing.cost,
-        standing.running,
-        standing.at_once,
-    ))
-}
-
-/// What a set of tasks cost together, and how many reported a cost.
-pub fn cost_of(costs: impl IntoIterator<Item = u64>) -> Cost {
-    costs
-        .into_iter()
-        .fold(Cost { total: 0, over: 0 }, |cost, one| Cost {
-            total: cost.total.saturating_add(one),
-            over: cost.over + 1,
-        })
+    Decision::Start(starting)
 }
 
 #[cfg(test)]
-mod tests {
-    /// A session with room, nothing wrong, and one task running.
-    fn standing() -> Standing {
-        Standing {
-            left: 1_000,
-            cost: Some(Cost {
-                total: 100,
-                over: 1,
-            }),
-            running: 1,
-            waiting: true,
-            out_of_time: false,
-            unreadable: false,
-            at_once: AT_ONCE,
-        }
-    }
-
-    #[test]
-    fn a_session_with_room_and_something_waiting_starts_more() {
-        assert_eq!(decide(&standing()), Decision::Start(3));
-    }
-
-    /// Section 1 says a budget that cannot be measured stops the session.
-    #[test]
-    fn a_consumption_nobody_could_read_stops_it() {
-        let unreadable = Standing {
-            unreadable: true,
-            ..standing()
-        };
-        assert_eq!(
-            decide(&unreadable),
-            Decision::Stop(StoppedReason::ObservationUnreadable)
-        );
-    }
-
-    /// Time is asked about before room, so a session out of time stops even with budget left.
-    #[test]
-    fn a_session_out_of_time_stops_with_budget_left() {
-        let late = Standing {
-            out_of_time: true,
-            ..standing()
-        };
-        assert_eq!(decide(&late), Decision::Stop(StoppedReason::BudgetHardlock));
-    }
-
-    #[test]
-    fn nothing_running_and_no_room_is_the_end_of_the_budget() {
-        let spent = Standing {
-            left: 0,
-            running: 0,
-            ..standing()
-        };
-        assert_eq!(
-            decide(&spent),
-            Decision::Stop(StoppedReason::BudgetHardlock)
-        );
-    }
-
-    #[test]
-    fn nothing_running_and_nothing_waiting_is_all_done() {
-        let over = Standing {
-            running: 0,
-            waiting: false,
-            ..standing()
-        };
-        assert_eq!(decide(&over), Decision::Stop(StoppedReason::AllDone));
-    }
-
-    /// A task still going may yet make room, so nothing is decided until it ends.
-    #[test]
-    fn a_session_with_nothing_waiting_carries_on_while_one_runs() {
-        let running = Standing {
-            waiting: false,
-            ..standing()
-        };
-        assert!(matches!(decide(&running), Decision::Start(_)));
-    }
-
-    #[test]
-    fn a_session_with_no_room_left_starts_none_while_one_runs() {
-        let full = Standing {
-            left: 50,
-            cost: Some(Cost {
-                total: 100,
-                over: 1,
-            }),
-            ..standing()
-        };
-        assert_eq!(decide(&full), Decision::Start(0));
-    }
-
-    /// The machine limit the composition root passes in, fixed here so the
-    /// arithmetic is what is being checked.
-    const AT_ONCE: usize = 4;
-
-    use super::*;
-    use crate::core::domain::Span;
-
-    fn declaring(usage: Usage) -> Budget {
-        Budget {
-            usage,
-            time: Span::parse("8h").unwrap(),
-        }
-    }
-
-    #[test]
-    fn a_share_is_shown_as_the_percentage_it_was_declared_in() {
-        assert_eq!(Spending::Share(400).to_string(), "4%");
-        assert_eq!(Spending::Share(350).to_string(), "3.5%");
-        assert_eq!(Spending::Share(405).to_string(), "4.05%");
-        assert_eq!(Spending::Share(0).to_string(), "0%");
-    }
-
-    #[test]
-    fn a_count_is_shown_as_the_count() {
-        assert_eq!(Spending::Tokens(2_000_000).to_string(), "2000000");
-    }
-
-    #[test]
-    fn what_is_left_is_what_was_declared_less_what_was_spent() {
-        let budget = declaring(Usage::Tokens(1_000));
-        assert_eq!(budget.left(Spending::Tokens(400)), 600);
-    }
-
-    /// A share is declared in whole percent and measured in hundredths.
-    #[test]
-    fn a_share_is_left_over_in_hundredths_of_a_percent() {
-        let budget = declaring(Usage::Share(50));
-        assert_eq!(budget.left(Spending::Share(2_000)), 3_000);
-    }
-
-    /// A session can pass its budget between two decisions.
-    /// A decision is made when a task ends and not while one runs.
-    #[test]
-    fn spending_more_than_was_declared_leaves_nothing() {
-        let budget = declaring(Usage::Tokens(1_000));
-        assert_eq!(budget.left(Spending::Tokens(4_000)), 0);
-    }
-
-    #[test]
-    fn nothing_is_left_when_the_unit_is_not_the_one_declared() {
-        let budget = declaring(Usage::Share(50));
-        assert_eq!(budget.left(Spending::Tokens(1)), 0);
-    }
-
-    #[test]
-    fn spending_more_of_a_share_than_was_declared_leaves_nothing() {
-        let budget = declaring(Usage::Share(1));
-        assert_eq!(budget.left(Spending::Share(4_000)), 0);
-    }
-
-    fn over(total: u64, over: u64) -> Option<Cost> {
-        Some(Cost { total, over })
-    }
-
-    #[test]
-    fn with_nothing_to_go_on_one_task_starts() {
-        assert_eq!(room_for(1_000_000, None, 0, AT_ONCE), 1);
-    }
-
-    #[test]
-    fn what_is_left_divided_by_what_one_costs_is_how_many_start() {
-        assert_eq!(room_for(300, over(100, 1), 0, AT_ONCE), 3);
-        assert_eq!(room_for(300, over(300, 3), 0, AT_ONCE), 3);
-    }
-
-    /// Two tasks that moved the vendor's limit one point cost half a point each.
-    ///
-    /// Working out that half first and then dividing by it loses the whole answer.
-    /// A session declared as a share would run one task at a time forever.
-    #[test]
-    fn a_cost_smaller_than_one_still_says_how_many_fit() {
-        // One point left, half a point each.
-        assert_eq!(room_for(1, over(1, 2), 0, AT_ONCE), 2);
-        assert_eq!(room_for(49, over(1, 2), 0, AT_ONCE), AT_ONCE);
-    }
-
-    #[test]
-    fn what_is_already_running_counts_against_that() {
-        assert_eq!(room_for(300, over(100, 1), 2, AT_ONCE), 1);
-        assert_eq!(room_for(300, over(100, 1), 3, AT_ONCE), 0);
-    }
-
-    /// A large budget divides into more tasks than a machine should run.
-    #[test]
-    fn no_more_than_a_handful_start_however_large_the_budget() {
-        assert_eq!(room_for(1_000_000, over(1, 1), 0, AT_ONCE), AT_ONCE);
-    }
-
-    #[test]
-    fn nothing_starts_once_the_budget_is_spent() {
-        assert_eq!(room_for(0, over(100, 1), 0, AT_ONCE), 0);
-        assert_eq!(room_for(0, None, 0, AT_ONCE), 0);
-    }
-
-    #[test]
-    fn nothing_starts_when_one_task_costs_more_than_is_left() {
-        assert_eq!(room_for(50, over(100, 1), 0, AT_ONCE), 0);
-    }
-
-    /// A set that has cost nothing at all has not run yet.
-    #[test]
-    fn a_set_that_cost_nothing_starts_one_at_a_time() {
-        assert_eq!(room_for(50, over(0, 2), 0, AT_ONCE), 1);
-    }
-
-    #[test]
-    fn a_cost_is_what_a_set_came_to_and_how_many_were_in_it() {
-        assert_eq!(
-            cost_of([100, 200, 300]),
-            Cost {
-                total: 600,
-                over: 3
-            }
-        );
-        assert_eq!(cost_of([]), Cost { total: 0, over: 0 });
-    }
-}
+mod tests;

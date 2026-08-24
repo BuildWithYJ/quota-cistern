@@ -71,6 +71,16 @@ fn prompt(held: &TempDir) -> String {
     fs::read_to_string(held.path().join("prompt")).unwrap()
 }
 
+/// The instruction, as the agent was given it.
+fn told(held: &TempDir) -> String {
+    fs::read_to_string(held.path().join("prompt.system")).unwrap()
+}
+
+/// Every argument the agent was given, one to a line.
+fn given(held: &TempDir) -> String {
+    fs::read_to_string(held.path().join("prompt.args")).unwrap()
+}
+
 fn working<'a>(at: &'a str, instruction: &'a str) -> Work<'a> {
     Work {
         task: "1",
@@ -78,6 +88,7 @@ fn working<'a>(at: &'a str, instruction: &'a str) -> Work<'a> {
         trace: Box::new(|_line: &str| {}),
         instruction,
         model: None,
+        conversation: None,
     }
 }
 
@@ -297,10 +308,13 @@ fn the_agent_runs_in_the_work_area_it_was_given() {
     assert!(at.join("it-ran-here.txt").exists());
 }
 
-/// The goal has to lead the prompt.
-/// Anywhere else it is read as ordinary text and nothing gates the end of the task.
+/// The goal has to be the whole of the prompt.
+///
+/// It is a command of the vendor's and everything after it is the condition it gates on,
+/// which the vendor holds to a length. An instruction written there would be part of that
+/// condition, and a long one would be turned away for it.
 #[test]
-fn the_prompt_leads_with_the_goal_and_the_instruction_follows_it() {
+fn the_prompt_is_the_goal_and_the_instruction_is_told_apart_from_it() {
     let held = TempDir::new().unwrap();
     standing_in(&held)
         .work(working(&held.path().display().to_string(), "exit 0"))
@@ -308,7 +322,8 @@ fn the_prompt_leads_with_the_goal_and_the_instruction_follows_it() {
 
     let asked = prompt(&held);
     assert!(asked.starts_with("/goal "), "{asked}");
-    assert!(asked.ends_with("\n\nexit 0"), "{asked}");
+    assert!(!asked.contains("exit 0"), "{asked}");
+    assert_eq!(told(&held), "exit 0");
 }
 
 /// A run cut off at a ceiling says nothing of its own.
@@ -319,7 +334,7 @@ fn a_run_that_was_cut_off_is_reported_as_a_sentence() {
     let ended = standing_in(&held)
         .work(working(
             &held.path().display().to_string(),
-            r#"echo '{"is_error":true,"subtype":"error_max_turns","result":null}'; exit 1"#,
+            r#"echo '{"type":"result","is_error":true,"subtype":"error_max_turns","result":null}'; exit 1"#,
         ))
         .unwrap();
 
@@ -330,6 +345,123 @@ fn a_run_that_was_cut_off_is_reported_as_a_sentence() {
     );
 }
 
+/// How many turns a run took comes back from the answer.
+///
+/// It is what this vendor is told to hold a run to, so a session that sizes a run in turns
+/// tells the vendor that figure without converting it into anything.
+#[test]
+fn how_many_turns_a_run_took_is_read_from_its_answer() {
+    let held = TempDir::new().unwrap();
+    let said = answering(
+        &held,
+        &answer_with(|answer| answer["num_turns"] = json!(38)),
+    );
+    let ended = standing_in(&held)
+        .work(working(&held.path().display().to_string(), &said))
+        .unwrap();
+
+    assert_eq!(ended.turns.as_deref(), Some("38"));
+}
+
+/// The conversation a run was in comes back from the answer, so a later run may name it.
+#[test]
+fn the_conversation_a_run_was_in_is_read_from_its_answer() {
+    let held = TempDir::new().unwrap();
+    let said = answering(
+        &held,
+        &answer_with(|answer| answer["session_id"] = json!("472ca4e9-f15a-4ce6-9100-baeb617c174b")),
+    );
+    let ended = standing_in(&held)
+        .work(working(&held.path().display().to_string(), &said))
+        .unwrap();
+
+    assert_eq!(
+        ended.conversation.as_deref(),
+        Some("472ca4e9-f15a-4ce6-9100-baeb617c174b")
+    );
+}
+
+/// A run given one to carry on is told to carry it on, and one given none is not told
+/// anything: the group holding the place is dropped whole.
+#[test]
+fn a_run_carrying_a_conversation_on_names_it_and_one_starting_names_none() {
+    let held = TempDir::new().unwrap();
+    let agent = standing_in(&held);
+
+    agent
+        .work(Work {
+            conversation: Some("a-conversation"),
+            ..working(held.path().to_str().unwrap(), "true")
+        })
+        .unwrap();
+    let carried = given(&held);
+    assert!(carried.contains("--resume\na-conversation\n"), "{carried}");
+
+    agent
+        .work(working(held.path().to_str().unwrap(), "true"))
+        .unwrap();
+    let afresh = given(&held);
+    assert!(!afresh.contains("--resume"), "{afresh}");
+}
+
+/// A vendor that turns a prompt away answers as a success that did no work.
+///
+/// Taking that word would store the task as done on a branch with nothing on it. The run
+/// counted nothing, which no run that reached the vendor does.
+#[test]
+fn a_run_that_counted_nothing_did_not_finish() {
+    let held = TempDir::new().unwrap();
+    let said = answering(
+        &held,
+        &answer_with(|answer| {
+            answer["modelUsage"] = json!({
+                "haiku": {
+                    "inputTokens": 0,
+                    "outputTokens": 0,
+                    "cacheCreationInputTokens": 0,
+                    "cacheReadInputTokens": 0,
+                }
+            });
+            answer["total_cost_usd"] = json!(0);
+            answer["result"] = json!("the prompt was not one I take");
+        }),
+    );
+    let ended = standing_in(&held)
+        .work(working(&held.path().display().to_string(), &said))
+        .unwrap();
+
+    assert_eq!(ended.outcome, Outcome::Failed);
+    assert_eq!(
+        ended.reason.as_deref(),
+        Some("the prompt was not one I take")
+    );
+}
+
+/// A line written after the answer is not the answer.
+///
+/// A hook of the user's outlives a run that ends sooner than the hook does, and its response
+/// is written after. Taking the last line would leave a run that finished looking like one
+/// that reported nothing, and the session would stop for want of a figure.
+#[test]
+fn a_line_written_after_the_answer_is_not_read_as_one() {
+    let held = TempDir::new().unwrap();
+    let said = answering(&held, &answer_with(|_| {}));
+    let ended = standing_in(&held)
+        .work(working(
+            &held.path().display().to_string(),
+            // `answering` writes no newline of its own, so one is put between the two.
+            &format!(r#"{said}; echo; echo '{{"type":"system","subtype":"hook_response"}}'"#),
+        ))
+        .unwrap();
+
+    assert_eq!(ended.outcome, Outcome::Finished);
+    assert!(
+        matches!(ended.observed, Observed::Spent(_)),
+        "{:?}",
+        ended.observed
+    );
+}
+
 /// A run that failed with something to say says it, rather than handing back the object it was written in.
 #[test]
 fn a_run_that_answered_is_reported_in_its_own_words() {
@@ -337,7 +469,7 @@ fn a_run_that_answered_is_reported_in_its_own_words() {
     let ended = standing_in(&held)
         .work(working(
             &held.path().display().to_string(),
-            r#"echo '{"is_error":true,"subtype":"success","result":"I could not build it"}'; exit 1"#,
+            r#"echo '{"type":"result","is_error":true,"subtype":"success","result":"I could not build it"}'; exit 1"#,
         ))
         .unwrap();
 
@@ -475,4 +607,22 @@ fn an_unmatched_brace_is_written_once() {
     assert_eq!(super::fill("{model} {", &filling), "haiku {");
     assert_eq!(super::fill("{", &filling), "{");
     assert_eq!(super::fill("a{b{c", &filling), "a{b{c");
+}
+
+/// Every run is held to what the definition carries.
+///
+/// A guard against a run going nowhere rather than a session's budget: a session's own
+/// figure is worked out from a meter that reads in whole percent and carries usage the
+/// session did not cause, and a figure like that is not one to end a task with.
+#[test]
+fn every_run_is_held_to_what_the_definition_carries() {
+    let held = TempDir::new().unwrap();
+    let agent = standing_in(&held);
+
+    agent
+        .work(working(held.path().to_str().unwrap(), "true"))
+        .unwrap();
+
+    let said = given(&held);
+    assert!(said.contains("--max-budget-usd\n20\n"), "{said}");
 }

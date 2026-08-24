@@ -8,13 +8,12 @@ use std::{env, path::PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::core::port::outbound::{
-    BacklogStore, StoredBacklog, StoredConsumption, StoredTask, Unavailable,
-};
+use crate::core::port::outbound::{BacklogStore, StoredBacklog, StoredTask, Unavailable};
 
 use super::{
+    Counted, counted,
     kept::Kept,
-    {as_number, as_optional, as_text, as_value},
+    spending, {as_number, as_optional, as_text, as_value},
 };
 
 /// The backlog, kept as JSON at a path fixed when this is built.
@@ -52,33 +51,25 @@ struct Entry {
     session: Value,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     worktree: Value,
+    /// The conversation its last run was in, for a run that may be carried on.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    conversation: Value,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     started_at: Value,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     ended_at: Value,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     reason: Value,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    attempts: Value,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    ceiling: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     consumed: Option<Counted>,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     unreadable: Value,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     disposition: Value,
-}
-
-/// What a task consumed, as the file holds it.
-///
-/// An object of its own rather than five fields beside the others.
-/// That way a task that never ran carries no counts at all.
-/// A reader can see which of the three states a task is in without comparing five keys.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct Counted {
-    input: Value,
-    output: Value,
-    cache_written: Value,
-    cache_read: Value,
-    cost: Value,
 }
 
 /// What the file is called where `docs/cli.md` says it is kept.
@@ -127,16 +118,13 @@ impl FileBacklog {
                     state: as_text(entry.state),
                     session: as_optional(entry.session),
                     worktree: as_optional(entry.worktree),
+                    conversation: as_optional(entry.conversation),
                     started_at: as_optional(entry.started_at),
                     ended_at: as_optional(entry.ended_at),
                     reason: as_optional(entry.reason),
-                    consumed: entry.consumed.map(|counted| StoredConsumption {
-                        input: as_text(counted.input),
-                        output: as_text(counted.output),
-                        cache_written: as_text(counted.cache_written),
-                        cache_read: as_text(counted.cache_read),
-                        cost: as_text(counted.cost),
-                    }),
+                    attempts: as_optional(entry.attempts),
+                    ceiling: as_optional(entry.ceiling),
+                    consumed: entry.consumed.map(spending),
                     unreadable: as_optional(entry.unreadable),
                     disposition: as_optional(entry.disposition),
                 })
@@ -161,16 +149,13 @@ impl FileBacklog {
                     state: Value::String(task.state.clone()),
                     session: task.session.as_deref().map_or(Value::Null, as_number),
                     worktree: as_value(task.worktree.clone()),
+                    conversation: as_value(task.conversation.clone()),
                     started_at: task.started_at.as_deref().map_or(Value::Null, as_number),
                     ended_at: task.ended_at.as_deref().map_or(Value::Null, as_number),
                     reason: as_value(task.reason.clone()),
-                    consumed: task.consumed.as_ref().map(|counted| Counted {
-                        input: as_number(&counted.input),
-                        output: as_number(&counted.output),
-                        cache_written: as_number(&counted.cache_written),
-                        cache_read: as_number(&counted.cache_read),
-                        cost: as_number(&counted.cost),
-                    }),
+                    attempts: task.attempts.as_deref().map_or(Value::Null, as_number),
+                    ceiling: task.ceiling.as_deref().map_or(Value::Null, as_number),
+                    consumed: task.consumed.as_ref().map(counted),
                     unreadable: as_value(task.unreadable.clone()),
                     disposition: as_value(task.disposition.clone()),
                 })
@@ -206,6 +191,8 @@ mod tests {
 
     use tempfile::TempDir;
 
+    use crate::core::port::outbound::StoredConsumption;
+
     use super::*;
 
     fn in_a_temporary_directory() -> (TempDir, FileBacklog) {
@@ -226,9 +213,12 @@ mod tests {
             state: "Pending".to_owned(),
             session: None,
             worktree: None,
+            conversation: None,
             started_at: None,
             ended_at: None,
             reason: None,
+            attempts: None,
+            ceiling: None,
             consumed: None,
             unreadable: None,
             disposition: None,

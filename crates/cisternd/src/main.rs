@@ -6,7 +6,7 @@
 // Tests may panic to signal failure.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
-use std::{fmt::Display, process::ExitCode, thread};
+use std::{fmt::Display, process::ExitCode, thread, time::Duration};
 
 use cistern_contract::exchange;
 
@@ -21,7 +21,10 @@ use core::{
         Carrying, Declaration, ExecutionUseCase, NotCarried, Page, Refusal, Report, Started,
         Stopped, Trail,
     },
-    service::{BacklogService, ConfigurationService, ExecutionService, Outside, ReviewService},
+    service::{
+        BacklogService, ConfigurationService, ExecutionService, Outside, ReviewService, Supervisor,
+        WorkService,
+    },
 };
 use platform::work::Queue;
 
@@ -35,6 +38,13 @@ const AT_ONCE: usize = 4;
 
 /// The vendor a configuration that names none falls back to.
 const BY_DEFAULT: &str = "claude";
+
+/// The longest this waits before looking again for a session to hold to its deadline.
+///
+/// A ceiling rather than a period. A session says how long it has and this sleeps that long
+/// where that is shorter, so a deadline is met within a second of itself; a session that has
+/// none, or one already past its deadline, waits out the whole of this instead of spinning.
+const LOOKS_EVERY: Duration = Duration::from_secs(60);
 
 fn main() -> ExitCode {
     if let Err(e) = platform::signal::remove_on_signal() {
@@ -56,10 +66,16 @@ fn main() -> ExitCode {
     let Some(worktrees) = outbound::git::worktree::GitWorktrees::in_data_home() else {
         return quit("neither XDG_DATA_HOME nor HOME is set");
     };
+    // Read once and handed to both of the things that ask it something, so a file changed
+    // between two reads cannot leave the daemon started under two different configurations.
+    let held = match configuration_store.load() {
+        Ok(held) => held,
+        Err(e) => return quit(e.reason),
+    };
     // The names there is a definition for, whether it ships or the user placed it.
     // Adding a vendor is a file; nothing here and nothing in the core is touched.
     let known = outbound::program::Definition::known();
-    let named = match chosen(&configuration_store, &known) {
+    let named = match chosen(&held, &known) {
         Ok(named) => named,
         Err(e) => return quit(e),
     };
@@ -76,6 +92,10 @@ fn main() -> ExitCode {
         return quit("neither XDG_DATA_HOME nor HOME is set");
     };
 
+    let Some(runs) = outbound::file::run::FileRuns::in_data_home() else {
+        return quit("neither XDG_DATA_HOME nor HOME is set");
+    };
+
     let roots = outbound::git::roots::GitRoots;
     let results = outbound::git::result::GitResults;
     let clock = outbound::clock::SystemClock;
@@ -83,19 +103,27 @@ fn main() -> ExitCode {
 
     let configuration = ConfigurationService::new(&configuration_store, known);
     let backlog = BacklogService::new(&backlog_store, &roots, &results);
-    let review = ReviewService::new(&backlog_store, &results);
-    let execution = ExecutionService::new(
-        Outside {
-            sessions: &session_store,
-            tasks: &backlog_store,
-            worktrees: &worktrees,
-            agent: &agent,
-            clock: &clock,
-            limit: &limit,
-            traces: &traces,
-        },
-        AT_ONCE,
-    );
+    let review = ReviewService::new(&backlog_store, &results, &worktrees);
+    // The ports, once. Each service takes its own copy rather than reaching for another's.
+    let outside = Outside {
+        sessions: &session_store,
+        tasks: &backlog_store,
+        worktrees: &worktrees,
+        agent: &agent,
+        clock: &clock,
+        limit: &limit,
+        traces: &traces,
+        runs: &runs,
+    };
+
+    // One judgement, asked by the commands that need a decision and by the workers that carry
+    // out what one assigned.
+    let supervisor = match Supervisor::chosen_by(outside, AT_ONCE, &held) {
+        Ok(supervisor) => supervisor,
+        Err(e) => return quit(e),
+    };
+    let execution = ExecutionService::new(outside, &supervisor);
+    let work = WorkService::new(outside, &supervisor);
 
     let server = match exchange::listen() {
         Ok(server) => server,
@@ -106,7 +134,11 @@ fn main() -> ExitCode {
     // The core says what one task is, and this arranges when it happens.
     let queued = Queue::default();
     let execution = Queueing {
-        execution: &execution,
+        service: &execution,
+        queued: &queued,
+    };
+    let work = Queueing {
+        service: &work,
         queued: &queued,
     };
 
@@ -122,12 +154,32 @@ fn main() -> ExitCode {
     };
 
     thread::scope(|threads| {
+        // The other half of the budget. A decision is reached when a task ends, so a session
+        // with one long run going would pass the time it declared with nobody looking.
+        threads.spawn(|| {
+            loop {
+                if let Err(e) = supervisor.stop_if_out_of_time() {
+                    eprintln!("cisternd: the deadline could not be checked: {e:?}");
+                }
+                // Never longer than the interval and never shorter. Longer, and a session
+                // opened while this slept would not be looked at until the one it read had
+                // run out. Shorter, and a session past its deadline with a run still going
+                // would be looked at every second for as long as that run takes, which is a
+                // read and a write of the session store each time against every worker
+                // recording a run.
+                thread::sleep(match supervisor.time_left() {
+                    Ok(Some(left)) => LOOKS_EVERY.min(Duration::from_secs(left.max(1))),
+                    _ => LOOKS_EVERY,
+                });
+            }
+        });
+
         // The same number the core was given, so a task it assigns has a thread waiting.
         for _ in 0..AT_ONCE {
             threads.spawn(|| {
                 loop {
                     let task = queued.take();
-                    if let Err(e) = execution.carry_on(&task) {
+                    if let Err(e) = work.carry_on(&task) {
                         eprintln!("cisternd: {task} was not carried on: {}", why(&e));
                     }
                 }
@@ -141,14 +193,14 @@ fn main() -> ExitCode {
 /// The core's own execution, with what it assigned put on the queue.
 ///
 /// It stands between the adapter and the service so that neither has to know there are threads.
-struct Queueing<'a, U> {
-    execution: &'a U,
+struct Queueing<'a, S> {
+    service: &'a S,
     queued: &'a Queue,
 }
 
-impl<U: ExecutionUseCase> ExecutionUseCase for Queueing<'_, U> {
+impl<S: ExecutionUseCase> ExecutionUseCase for Queueing<'_, S> {
     fn run(&self, declared: Declaration<'_>) -> Result<Started, Refusal> {
-        let started = self.execution.run(declared)?;
+        let started = self.service.run(declared)?;
         for task in &started.assigned {
             self.queued.add(task.clone());
         }
@@ -156,25 +208,25 @@ impl<U: ExecutionUseCase> ExecutionUseCase for Queueing<'_, U> {
     }
 
     fn sessions(&self, page: Option<&str>, limit: Option<&str>) -> Result<Page, Refusal> {
-        self.execution.sessions(page, limit)
+        self.service.sessions(page, limit)
     }
 
     fn session(&self, id: &str) -> Result<Report, Refusal> {
-        self.execution.session(id)
+        self.service.session(id)
     }
 
     fn trace(&self, id: &str, since: Option<&str>) -> Result<Trail, Refusal> {
-        self.execution.trace(id, since)
+        self.service.trace(id, since)
     }
 
     fn interrupt(&self) -> Result<Stopped, Refusal> {
-        self.execution.interrupt()
+        self.service.interrupt()
     }
 }
 
-impl<U: Carrying> Carrying for Queueing<'_, U> {
+impl<S: Carrying> Carrying for Queueing<'_, S> {
     fn carry_on(&self, task: &str) -> Result<Vec<String>, NotCarried> {
-        let assigned = self.execution.carry_on(task)?;
+        let assigned = self.service.carry_on(task)?;
         for task in &assigned {
             self.queued.add(task.clone());
         }
@@ -185,8 +237,7 @@ impl<U: Carrying> Carrying for Queueing<'_, U> {
 /// Which vendor to run, refusing a name nothing defines.
 ///
 /// Failing once here beats failing on every task a session assigns.
-fn chosen(store: &dyn ConfigurationStore, known: &[String]) -> Result<String, String> {
-    let held = store.load().map_err(|e| e.reason)?;
+fn chosen(held: &[(String, String)], known: &[String]) -> Result<String, String> {
     let Some((_, name)) = held.iter().find(|(key, _)| key == "vendor") else {
         return Ok(BY_DEFAULT.to_owned());
     };
