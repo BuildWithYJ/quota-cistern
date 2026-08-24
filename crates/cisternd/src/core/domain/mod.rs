@@ -16,8 +16,8 @@ pub use configuration::{Configuration, Key, Known, Setting};
 pub use consumption::{Consumption, Observation};
 pub use policy::{Locking, Pacing, Policy, Timing};
 pub use session::{
-    Budget, Held, NotASessionSet, NotOpened, Opening, Session, SessionId, SessionState, Sessions,
-    Span, StoppedReason, Usage,
+    Budget, Held, Measured, NotASessionSet, NotOpened, Opening, Session, SessionId, SessionState,
+    Sessions, Span, StoppedReason, Usage,
 };
 pub use sizing::{Before, Priced, Rule, Sizings, moved_per_millionth, sampled};
 pub use spending::{HUNDREDTHS, Spending};

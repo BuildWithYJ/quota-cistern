@@ -1,5 +1,7 @@
 //! What `diff`, `review ls`, `apply`, and `discard` do.
 
+use std::sync::{Mutex, PoisonError};
+
 use crate::core::{
     domain::{Backlog, DisposalRefused, Disposition, Task, TaskId},
     port::{
@@ -18,6 +20,14 @@ pub struct ReviewService<'a> {
     tasks: &'a dyn BacklogStore,
     results: &'a dyn Results,
     worktrees: &'a dyn Worktrees,
+    /// Held for the whole of a tidying.
+    ///
+    /// A work area is taken off the disk and only then forgotten, so between the two it is
+    /// still the task's as far as the backlog says. What must not happen in that gap is a
+    /// `retry` handing that task's directory to a run. One core holds the socket, so a hold
+    /// here covers every caller, and unlike a mark written down it cannot be left behind by a
+    /// core that was killed.
+    tidying: Mutex<()>,
 }
 
 /// The three names a question about a result takes.
@@ -59,6 +69,7 @@ impl<'a> ReviewService<'a> {
             tasks,
             results,
             worktrees,
+            tidying: Mutex::new(()),
         }
     }
 
@@ -202,12 +213,12 @@ impl ReviewUseCase for ReviewService<'_> {
     /// A work area git would not remove is left where it is and says why. Section 2.4 keeps the
     /// branch either way, so nothing a run committed goes with a work area that does go.
     fn tidy(&self) -> Result<Tidying, Refusal> {
-        // Taken from the tasks before any of it is taken off the disk. Removing is slow and a
-        // task can be put back in the backlog while it happens; one whose work area this has
-        // already taken no longer claims it, so a `retry` arriving meanwhile prepares a fresh
-        // one rather than being handed a directory about to go.
-        let asked: Vec<(TaskId, String, String)> =
-            change(self.tasks, |backlog| Ok(backlog.tidying()))?;
+        // Held for as long as this runs, so a `retry` arriving meanwhile is not handed a
+        // directory about to go. A hold rather than a mark written to the backlog: one core
+        // holds the socket, so this covers every caller there is, and a crash part way through
+        // leaves nothing behind that has to be undone.
+        let _tidying = self.tidying.lock().unwrap_or_else(PoisonError::into_inner);
+        let asked: Vec<(TaskId, String, String)> = read(self.tasks)?.tidyable();
 
         let tidied: Vec<(TaskId, Tidied)> = asked
             .into_iter()
@@ -228,12 +239,12 @@ impl ReviewUseCase for ReviewService<'_> {
             })
             .collect();
 
-        // What git would not remove is still there, so the task that had it has it again. A
-        // task somebody put back meanwhile is running in that directory now, and giving it the
-        // same path it already prepared changes nothing.
+        // Only what actually went is forgotten. What git would not remove is still there and
+        // still the task's, and a run of this that ended part way through has forgotten only
+        // the directories it had already taken away.
         change(self.tasks, |backlog| {
-            for (id, one) in tidied.iter().filter(|(_, one)| one.kept.is_some()) {
-                backlog.work_area(*id, one.worktree.clone());
+            for (id, _) in tidied.iter().filter(|(_, one)| one.kept.is_none()) {
+                backlog.work_area_gone(*id);
             }
             Ok(Tidying {
                 items: tidied.iter().map(|(_, one)| one.clone()).collect(),

@@ -19,6 +19,12 @@ use super::{
     supervision::{Outside, Supervisor},
 };
 
+/// What the ledger records for a run the vendor would not take.
+///
+/// The session's own reason for stopping, said again on the run it stopped for, so a line
+/// that is not a run that finished says in itself why it is not.
+const VENDOR_LIMIT: &str = "vendor limit";
+
 /// How a run came to an end, in the two places that have to hear it.
 ///
 /// A person is told one word for a ceiling whatever ceiling it was, since that is the state
@@ -226,13 +232,23 @@ impl WorkService<'_> {
         let (session, run) = backlog::change(self.outside.tasks, |tasks| {
             tasks.record(id, consumed.clone());
             let held = tasks.find(id);
-            let session = held.and_then(Task::session);
             // The vendor turned this run away, so the session stops rather than deciding
             // again, and the reading it is holding is the last there will be.
-            // Nothing was said about how it ended: the vendor would not take it, which is
-            // the session's state rather than anything about this task.
-            let run = held.map(|held| ran(held, &Ended::nothing(), now, Over::unread()));
+            //
+            // Written down after the task goes back to waiting, so the line says the state
+            // the run left it in rather than the one it was in while it ran. A run recorded
+            // as running is one nothing can tell from a run still going, and the ledger is
+            // read long after by whoever wants to know what happened.
+            let session = held.and_then(Task::session);
             tasks.wait_again(id, now);
+            let run = tasks.find(id).map(|held| {
+                ran(
+                    held,
+                    &Ended::of(Some(VENDOR_LIMIT.to_owned())),
+                    now,
+                    Over::unread(),
+                )
+            });
             Ok((session, run))
         })?;
         self.remember(run)?;
@@ -277,16 +293,19 @@ impl WorkService<'_> {
             return Ok(Vec::new());
         };
 
-        // Measured, written down, and only then decided. The reading the session is holding
-        // is the one it took when the run before this ended, which is where this run started
-        // from; measuring takes the next one, and the two of them are what this run cost in
-        // the unit a share is declared in.
+        // Measured, written down, and only then decided. Measuring takes a look at the limit
+        // and answers with both ends of the stretch that look added, which is what this run
+        // cost in the unit a share is declared in.
+        //
+        // Both ends from the one call rather than a look either side of it. Four workers end
+        // runs at once and asking the vendor takes as long as it takes, so two runs of one
+        // session can end inside each other's asking; reading the session before and after
+        // would give each of them the pair the other left, and the stretch between would be
+        // charged twice.
         //
         // The order is what `docs/cli.md` promises: each task's own cost is what decides.
         // Deciding first would decide from the run before this one.
-        let before = self.supervising.limit_last_seen(session)?;
         let read = self.supervising.measured(session)?;
-        let after = self.supervising.limit_last_seen(session)?;
         // Taken after the reading rather than with `now`, which was read before the vendor was
         // asked. Asking takes as long as it takes, and what the limit did meanwhile is in the
         // figure; this is what says over how long.
@@ -297,8 +316,10 @@ impl WorkService<'_> {
                 &why,
                 now,
                 Over {
-                    before,
-                    after: after.map(|after| (after, read_at)),
+                    before: read.and_then(|read| read.over).map(|(before, _)| before),
+                    after: read
+                        .and_then(|read| read.over)
+                        .map(|(_, after)| (after, read_at)),
                 },
             )
         }))?;

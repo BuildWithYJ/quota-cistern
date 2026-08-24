@@ -10,9 +10,9 @@
 
 use crate::core::{
     domain::{
-        AT_CEILING, Backlog, Before, Consumption, Decision, HUNDREDTHS, Locking, Observation,
-        Pacing, Policy, Priced, Rule, Session, SessionId, SessionState, Sizings, Spending,
-        Standing, StoppedReason, TaskId, TaskState, Timing, Usage, decide, done_waiting,
+        AT_CEILING, Backlog, Before, Consumption, Decision, HUNDREDTHS, Locking, Measured,
+        Observation, Pacing, Policy, Priced, Rule, Session, SessionId, SessionState, Sizings,
+        Spending, Standing, StoppedReason, TaskId, TaskState, Timing, Usage, decide, done_waiting,
         moved_per_millionth, nothing_more, sampled,
     },
     port::{
@@ -140,7 +140,7 @@ impl Supervisor<'_> {
     /// Nothing where the session is no longer one this decides for, and nothing where a share
     /// can no longer be read -- section 1 stops a session in that state, and the caller has the
     /// reading either side of it to write down first.
-    pub(super) fn measured(&self, session: SessionId) -> Result<Option<Spending>, Refusal> {
+    pub(super) fn measured(&self, session: SessionId) -> Result<Option<Measured>, Refusal> {
         let Some(held) = self.held(session)? else {
             return Ok(None);
         };
@@ -150,7 +150,10 @@ impl Supervisor<'_> {
             // A count is the backlog's own sum, taken under the hold the decision is made
             // under rather than here. Another task ending in between would leave that decision
             // made from a budget that has since gone down.
-            Usage::Tokens(_) => Ok(Some(Spending::Tokens(0))),
+            Usage::Tokens(_) => Ok(Some(Measured {
+                spent: Spending::Tokens(0),
+                over: None,
+            })),
         }
     }
 
@@ -164,7 +167,7 @@ impl Supervisor<'_> {
     pub(super) fn settle(
         &self,
         session: SessionId,
-        read: Option<Spending>,
+        read: Option<Measured>,
     ) -> Result<Vec<TaskId>, Refusal> {
         let Some(held) = self.held(session)? else {
             return Ok(Vec::new());
@@ -176,7 +179,7 @@ impl Supervisor<'_> {
         // carried to `decide` as a fact rather than settled here.
         let unread = matches!((held.budget().usage, read), (Usage::Share(_), None));
         let read = match held.budget().usage {
-            Usage::Share(_) => read,
+            Usage::Share(_) => read.map(|read| read.spent),
             Usage::Tokens(_) => None,
         };
 
@@ -379,22 +382,14 @@ impl Supervisor<'_> {
         }
         self.stop(
             session,
-            nothing_more(!tasks.waiting().is_empty(), tasks.blocked()),
+            // Called only where the declared time has run out, which is one of the two
+            // figures `BudgetHardlock` is for.
+            nothing_more(!tasks.waiting().is_empty(), tasks.blocked(), true),
         )
         .map(|_| ())
     }
 
-    /// How far the vendor's limit was spent when this session last looked.
-    ///
-    /// A store read rather than a vendor one, so it costs nothing. Nothing for a session
-    /// declared in tokens, which never looks.
-    pub(super) fn limit_last_seen(&self, session: SessionId) -> Result<Option<u64>, Refusal> {
-        Ok(sessions::read(self.outside.sessions)?
-            .find(session)
-            .and_then(Session::limit_last_seen))
-    }
-
-    pub(super) fn spending_of(&self, session: SessionId) -> Result<Option<Spending>, Refusal> {
+    pub(super) fn spending_of(&self, session: SessionId) -> Result<Option<Measured>, Refusal> {
         let held = sessions::read(self.outside.sessions)?;
         let held = held.find(session).ok_or(Refusal::NoSessionRunning)?;
         self.spending(held)
@@ -413,7 +408,7 @@ impl Supervisor<'_> {
     ///
     /// A vendor that stops answering leaves a share unknown rather than zero. Section 1 stops a
     /// session in that state, and nothing is a failure for the caller to carry.
-    fn spending(&self, held: &Session) -> Result<Option<Spending>, Refusal> {
+    fn spending(&self, held: &Session) -> Result<Option<Measured>, Refusal> {
         let session = held.id();
         let now = self.outside.clock.now();
         match (held.budget().usage, held.limit_at_start()) {
@@ -433,9 +428,15 @@ impl Supervisor<'_> {
                     session.labelled()
                 ),
             }),
-            (Usage::Tokens(_), _) => Ok(Some(Spending::Tokens(
-                Consumption::total(backlog::read(self.outside.tasks)?.counted_in(session)).tokens(),
-            ))),
+            (Usage::Tokens(_), _) => Ok(Some(Measured {
+                spent: Spending::Tokens(
+                    Consumption::total(backlog::read(self.outside.tasks)?.counted_in(session))
+                        .tokens(),
+                ),
+                // A session declared in tokens never looks at the limit, so there is no
+                // stretch of it to charge a run for.
+                over: None,
+            })),
         }
     }
 

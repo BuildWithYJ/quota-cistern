@@ -63,7 +63,7 @@ fn a_policy_of_someones_own_is_what_a_session_is_run_under() {
 
     assert_eq!(
         decide(&out_of_reach()),
-        Decision::Stop(StoppedReason::BudgetHardlock)
+        Decision::Stop(StoppedReason::NothingFits)
     );
     assert_eq!(
         ceilings(decide(&Standing {
@@ -311,7 +311,7 @@ fn a_session_that_cannot_cover_a_cheap_run_stops() {
             },
             ..standing()
         }),
-        Decision::Stop(StoppedReason::BudgetHardlock)
+        Decision::Stop(StoppedReason::NothingFits)
     );
 }
 
@@ -362,7 +362,7 @@ fn a_session_with_nothing_running_and_no_time_for_another_run_stops() {
             time_left: 600,
             ..standing()
         }),
-        Decision::Stop(StoppedReason::BudgetHardlock)
+        Decision::Stop(StoppedReason::NothingFits)
     );
 }
 
@@ -420,29 +420,39 @@ fn what_is_left_is_what_was_declared_less_what_was_spent() {
     assert_eq!(standing(4_000).left(), 0);
 }
 
-/// A run added to others that the budget will not outlast is not started.
+/// A session with room for a run, going fast enough that the budget will not last it out.
 ///
-/// The session has spent 900 of 1000 in an hour, so the last hundred lasts six minutes at that
-/// rate. A run of this model takes ten, and adding it to the one already going would have both
-/// cut off with what each did since its last commit lost.
+/// Ten thousand declared and nine spent in an hour, so the last thousand lasts four hundred
+/// seconds at that rate. What is left covers a run of this model twice over -- one is sized at
+/// two hundred -- so the budget is not what stands in the way. A run of it takes twenty
+/// minutes, which is longer than the budget has.
+fn racing() -> Standing {
+    Standing {
+        declared: 10_000,
+        spent: 9_000,
+        elapsed: 3_600,
+        before: Before {
+            lasting: Sizings::under(Rule::default(), [Ran::finished(Some("opus"), 1_200)]),
+            ..standing().before
+        },
+        ..standing()
+    }
+}
+
+/// Added to others, it is not started. Both would be cut off at the budget with what each did
+/// since its last commit lost.
 #[test]
 fn a_run_the_budget_will_not_outlast_is_not_added_to_the_others() {
     assert_eq!(
         decide(&Standing {
-            spent: 900,
-            elapsed: 3_600,
             running: 1,
-            before: Before {
-                lasting: Sizings::under(Rule::default(), [Ran::finished(Some("opus"), 600)]),
-                ..standing().before
-            },
-            ..standing()
+            ..racing()
         }),
         Decision::Start(Vec::new())
     );
 }
 
-/// The same session with nothing going starts it anyway.
+/// With nothing going it is started anyway.
 ///
 /// One run ending at the budget is a session spending what it declared and keeping what that
 /// run committed. Holding it back leaves the budget unspent and nothing done, which is the
@@ -451,14 +461,21 @@ fn a_run_the_budget_will_not_outlast_is_not_added_to_the_others() {
 fn a_session_with_nothing_going_starts_one_whatever_the_rate() {
     assert!(matches!(
         decide(&Standing {
-            spent: 900,
-            elapsed: 3_600,
             running: 0,
-            before: Before {
-                lasting: Sizings::under(Rule::default(), [Ran::finished(Some("opus"), 600)]),
-                ..standing().before
-            },
-            ..standing()
+            ..racing()
+        }),
+        Decision::Start(allowed) if !allowed.is_empty()
+    ));
+}
+
+/// And a person who asked for it to start anyway gets that.
+#[test]
+fn a_session_run_by_any_pacing_adds_the_run_regardless() {
+    assert!(matches!(
+        decide(&Standing {
+            running: 1,
+            pacing: Pacing::Any,
+            ..racing()
         }),
         Decision::Start(allowed) if !allowed.is_empty()
     ));

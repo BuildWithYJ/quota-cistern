@@ -34,6 +34,13 @@ pub enum StoppedReason {
     /// A ceiling makes this ordinary rather than rare: a task cut off at one ends
     /// `Interrupted`, and a task that waits on it may never start.
     Blocked,
+    /// Tasks are left and what the session still has covers none of them.
+    ///
+    /// Apart from `BudgetHardlock`, which section 1 defines as the declared budget being spent
+    /// or the declared time running out. Neither has happened here: the session has budget and
+    /// time and cannot put either in front of any task that is left, because what one takes is
+    /// more than what is left or longer than the time there is for it.
+    NothingFits,
     Error,
 }
 
@@ -103,6 +110,18 @@ pub struct Session {
     /// turned away, which is why the report asks why the session stopped rather than whether
     /// this is set.
     resets_at: Option<u64>,
+}
+
+/// What a look at the vendor's limit came to, from the session it was taken for.
+///
+/// The two answers together because they are read together and no reading sits between them:
+/// what the session has spent all told, and the stretch of limit this one look added, which is
+/// what the run that ended is charged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Measured {
+    pub spent: Spending,
+    /// What the limit read before this look and at it, where there was a look before.
+    pub over: Option<(u64, u64)>,
 }
 
 /// A session on its way back from a store, with every value already read.
@@ -197,6 +216,7 @@ impl StoppedReason {
             "observation unreadable" => Some(StoppedReason::ObservationUnreadable),
             "interrupted" => Some(StoppedReason::Interrupted),
             "all done" => Some(StoppedReason::AllDone),
+            "nothing fits" => Some(StoppedReason::NothingFits),
             "blocked" => Some(StoppedReason::Blocked),
             "error" => Some(StoppedReason::Error),
             _ => None,
@@ -213,6 +233,7 @@ impl Display for StoppedReason {
             StoppedReason::Interrupted => "interrupted",
             StoppedReason::AllDone => "all done",
             StoppedReason::Blocked => "blocked",
+            StoppedReason::NothingFits => "nothing fits",
             StoppedReason::Error => "error",
         })
     }
@@ -460,10 +481,14 @@ impl Sessions {
         used: u64,
         resets_at: Option<u64>,
         now: u64,
-    ) -> Option<Spending> {
+    ) -> Option<Measured> {
         let session = self.sessions.iter_mut().find(|session| session.id == id)?;
+        let before = session.limit_last_seen;
         let Spending::Share(consumed) = session.consumed else {
-            return Some(session.consumed);
+            return Some(Measured {
+                spent: session.consumed,
+                over: None,
+            });
         };
         let began_again = match (session.resets_at, resets_at) {
             (Some(seen), Some(now_at)) => now_at != seen,
@@ -478,7 +503,12 @@ impl Sessions {
         let named_the_same_window =
             !began_again && session.resets_at.is_some() && resets_at.is_some();
         if named_the_same_window && session.limit_last_seen.is_some_and(|seen| used < seen) {
-            return Some(session.consumed);
+            return Some(Measured {
+                spent: session.consumed,
+                // A look that arrived late is not a stretch of this session's spending, so
+                // there is no pair to charge a run for.
+                over: None,
+            });
         }
 
         let since = match session.limit_last_seen {
@@ -498,7 +528,14 @@ impl Sessions {
             session.resets_at = resets_at;
         }
         session.updated_at = now;
-        Some(session.consumed)
+        Some(Measured {
+            spent: session.consumed,
+            // Both ends of the one stretch, taken under the hold this is called under. Read
+            // either side of this instead and two runs of the same session ending inside each
+            // other's asking would each take the pair the other left behind, and the stretch
+            // between them would be charged to both.
+            over: before.map(|before| (before, used)),
+        })
     }
 
     /// Records when the vendor's limit starts over.

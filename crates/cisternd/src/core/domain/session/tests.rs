@@ -225,11 +225,15 @@ fn a_share_is_what_the_limit_moved_between_one_look_and_the_next() {
     let id = sessions.open(opening()).unwrap();
 
     assert_eq!(
-        sessions.measured(id, 1_400, None, 2_000),
+        sessions
+            .measured(id, 1_400, None, 2_000)
+            .map(|read| read.spent),
         Some(Spending::Share(300))
     );
     assert_eq!(
-        sessions.measured(id, 1_900, None, 3_000),
+        sessions
+            .measured(id, 1_900, None, 3_000)
+            .map(|read| read.spent),
         Some(Spending::Share(800))
     );
 }
@@ -247,17 +251,23 @@ fn a_reading_that_arrived_late_is_left_out() {
 
     // The thread that read 3400 records first: 3400 - 1100 since the session opened.
     assert_eq!(
-        sessions.measured(id, 3_400, Some(100), 2_000),
+        sessions
+            .measured(id, 3_400, Some(100), 2_000)
+            .map(|read| read.spent),
         Some(Spending::Share(2_300))
     );
     // The thread that read 3000 records second, from the window the vendor just named.
     assert_eq!(
-        sessions.measured(id, 3_000, Some(100), 3_000),
+        sessions
+            .measured(id, 3_000, Some(100), 3_000)
+            .map(|read| read.spent),
         Some(Spending::Share(2_300))
     );
     // And the look the next is measured from is still the later one.
     assert_eq!(
-        sessions.measured(id, 3_500, Some(100), 4_000),
+        sessions
+            .measured(id, 3_500, Some(100), 4_000)
+            .map(|read| read.spent),
         Some(Spending::Share(2_400))
     );
 }
@@ -271,7 +281,9 @@ fn a_named_window_that_began_again_is_still_counted_whole() {
 
     sessions.measured(id, 3_400, Some(100), 2_000);
     assert_eq!(
-        sessions.measured(id, 200, Some(200), 3_000),
+        sessions
+            .measured(id, 200, Some(200), 3_000)
+            .map(|read| read.spent),
         Some(Spending::Share(2_500))
     );
 }
@@ -285,12 +297,16 @@ fn a_reading_below_the_last_is_a_window_that_has_begun_again() {
 
     // The whole of the new window was spent since it began.
     assert_eq!(
-        sessions.measured(id, 200, None, 3_000),
+        sessions
+            .measured(id, 200, None, 3_000)
+            .map(|read| read.spent),
         Some(Spending::Share(1_000))
     );
     // And the one after it is measured from there, not from where the session opened.
     assert_eq!(
-        sessions.measured(id, 500, None, 4_000),
+        sessions
+            .measured(id, 500, None, 4_000)
+            .map(|read| read.spent),
         Some(Spending::Share(1_300))
     );
 }
@@ -308,7 +324,9 @@ fn a_window_named_as_a_new_one_is_counted_whole_however_high_it_reads() {
     // 2000 is above 1900, and only the window it is counted in tells the two apart.
     // 800 in the window the session opened in, and the whole of the 2000 in the next.
     assert_eq!(
-        sessions.measured(id, 2_000, Some(200), 3_000),
+        sessions
+            .measured(id, 2_000, Some(200), 3_000)
+            .map(|read| read.spent),
         Some(Spending::Share(2_800))
     );
 }
@@ -321,7 +339,9 @@ fn a_window_named_as_the_one_before_is_the_distance_from_the_last_look() {
     sessions.measured(id, 1_900, Some(100), 2_000);
 
     assert_eq!(
-        sessions.measured(id, 2_000, Some(100), 3_000),
+        sessions
+            .measured(id, 2_000, Some(100), 3_000)
+            .map(|read| read.spent),
         Some(Spending::Share(900))
     );
 }
@@ -334,7 +354,9 @@ fn a_reading_below_the_last_stands_in_where_no_window_is_named() {
     sessions.measured(id, 1_900, None, 2_000);
 
     assert_eq!(
-        sessions.measured(id, 200, None, 3_000),
+        sessions
+            .measured(id, 200, None, 3_000)
+            .map(|read| read.spent),
         Some(Spending::Share(1_000))
     );
 }
@@ -346,7 +368,7 @@ fn a_session_that_crosses_a_reset_still_runs_out_of_what_it_declared() {
     let id = sessions.open(opening()).unwrap();
     // Declared 50%, so 5000 hundredths.
     sessions.measured(id, 5_100, None, 2_000);
-    let spent = sessions.measured(id, 1_000, None, 3_000).unwrap();
+    let spent = sessions.measured(id, 1_000, None, 3_000).unwrap().spent;
 
     assert_eq!(spent, Spending::Share(5_000));
     assert_eq!(a_budget().declared(), 5_000);
@@ -367,7 +389,9 @@ fn a_session_declared_in_tokens_is_not_measured_against_the_limit() {
         .unwrap();
 
     assert_eq!(
-        sessions.measured(id, 1_400, None, 2_000),
+        sessions
+            .measured(id, 1_400, None, 2_000)
+            .map(|read| read.spent),
         Some(Spending::Tokens(0))
     );
 }

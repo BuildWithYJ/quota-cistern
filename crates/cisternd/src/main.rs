@@ -39,10 +39,11 @@ const AT_ONCE: usize = 4;
 /// The vendor a configuration that names none falls back to.
 const BY_DEFAULT: &str = "claude";
 
-/// How long to wait before looking again for a session to hold to its deadline.
+/// The longest this waits before looking again for a session to hold to its deadline.
 ///
-/// Only ever waited out with nothing running, since a session that is running says exactly how
-/// long it has.
+/// A ceiling rather than a period. A session says how long it has and this sleeps that long
+/// where that is shorter, so a deadline is met within a second of itself; a session that has
+/// none, or one already past its deadline, waits out the whole of this instead of spinning.
 const LOOKS_EVERY: Duration = Duration::from_secs(60);
 
 fn main() -> ExitCode {
@@ -160,11 +161,14 @@ fn main() -> ExitCode {
                 if let Err(e) = supervisor.stop_if_out_of_time() {
                     eprintln!("cisternd: the deadline could not be checked: {e:?}");
                 }
+                // Never longer than the interval and never shorter. Longer, and a session
+                // opened while this slept would not be looked at until the one it read had
+                // run out. Shorter, and a session past its deadline with a run still going
+                // would be looked at every second for as long as that run takes, which is a
+                // read and a write of the session store each time against every worker
+                // recording a run.
                 thread::sleep(match supervisor.time_left() {
-                    // Until the moment it is due, and then once more to act on it.
-                    Ok(Some(left)) => Duration::from_secs(left.max(1)),
-                    // Nothing is running. Long enough that waiting costs nothing, short enough
-                    // that a session opened just after this went to sleep is not missed by much.
+                    Ok(Some(left)) => LOOKS_EVERY.min(Duration::from_secs(left.max(1))),
                     _ => LOOKS_EVERY,
                 });
             }

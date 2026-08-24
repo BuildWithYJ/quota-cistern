@@ -537,23 +537,32 @@ impl Backlog {
         }
     }
 
-    /// Takes the work areas off the tasks nobody needs them for, and says which they were.
+    /// The tasks whose work areas may be taken away, each with the repository it belongs to
+    /// and where it is.
     ///
-    /// Taken rather than read, because taking them away on disk is slow and a task can be put
-    /// back in the backlog while it happens. A task whose work area this has taken no longer
-    /// claims one, so a `retry` arriving meanwhile prepares a fresh one instead of being handed
-    /// a directory that is about to go. What git would not remove is given back by the caller.
-    pub fn tidying(&mut self) -> Vec<(TaskId, String, String)> {
-        let mut taken = Vec::new();
+    /// Read rather than taken. Removing one is slow and the daemon can be killed part way
+    /// through, so a backlog written as having lost them all before the first is gone would
+    /// leave every directory that was still there claimed by nobody and never looked at
+    /// again. Each is forgotten as it goes instead, by `work_area_gone`.
+    ///
+    /// What keeps a `retry` from being handed a directory about to go is not this. One core
+    /// holds the socket, so a hold inside the process covers it, and a hold is not something
+    /// a crash can leave behind.
+    pub fn tidyable(&self) -> Vec<(TaskId, String, String)> {
+        self.tasks
+            .iter()
+            .filter(|task| task.state.ended() && task.disposition.is_some())
+            .filter_map(|task| Some((task.id, task.repository.to_string(), task.worktree.clone()?)))
+            .collect()
+    }
+
+    /// Forgets where a task worked, for one whose work area has been taken away.
+    pub fn work_area_gone(&mut self, id: TaskId) {
         for task in &mut self.tasks {
-            if !(task.state.ended() && task.disposition.is_some()) {
-                continue;
-            }
-            if let Some(at) = task.worktree.take() {
-                taken.push((task.id, task.repository.to_string(), at));
+            if task.id == id {
+                task.worktree = None;
             }
         }
-        taken
     }
 
     /// Moves a task to the state it ended in, leaving the branch alone.

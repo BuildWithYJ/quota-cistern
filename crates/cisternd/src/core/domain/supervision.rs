@@ -220,11 +220,14 @@ pub fn done_waiting(time_left: u64, running: usize) -> bool {
 ///
 /// Asked here rather than worked out twice: a decision reaches this state when a task ends,
 /// and the clock reaches it when a session outlives its deadline with nothing going.
-pub fn nothing_more(waiting: bool, blocked: bool) -> StoppedReason {
-    match (waiting, blocked) {
-        (true, _) => StoppedReason::BudgetHardlock,
-        (false, true) => StoppedReason::Blocked,
-        (false, false) => StoppedReason::AllDone,
+pub fn nothing_more(waiting: bool, blocked: bool, exhausted: bool) -> StoppedReason {
+    match (waiting, blocked, exhausted) {
+        (true, _, true) => StoppedReason::BudgetHardlock,
+        // Tasks are left and the session has both figures still, so what stopped it is that
+        // neither covers any of them.
+        (true, _, false) => StoppedReason::NothingFits,
+        (false, true, _) => StoppedReason::Blocked,
+        (false, false, _) => StoppedReason::AllDone,
     }
 }
 
@@ -262,7 +265,11 @@ pub fn decide(standing: &Standing) -> Decision {
     // Nothing more fits and nothing is running that would make room.
     // Waiting for a task that will never start is not carrying on.
     if standing.running == 0 && starting.is_empty() {
-        return Decision::Stop(nothing_more(!standing.pending.is_empty(), standing.blocked));
+        return Decision::Stop(nothing_more(
+            !standing.pending.is_empty(),
+            standing.blocked,
+            standing.left() == 0 || standing.time_left == 0,
+        ));
     }
     Decision::Start(starting)
 }

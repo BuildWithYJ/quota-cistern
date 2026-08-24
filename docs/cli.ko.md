@@ -80,9 +80,9 @@
 | `stopped` | 종료됨        |
 
 
-`stopped_reason`: `budget hardlock` · `vendor limit` · `observation unreadable` · `interrupted` · `all done`(편성분 전부 종료) · `blocked` · `error`.
+`stopped_reason`: `budget hardlock` · `vendor limit` · `observation unreadable` · `interrupted` · `all done`(편성분 전부 종료) · `blocked` · `nothing fits` · `error`.
 
-`budget hardlock`은 선언한 예산이 소진됐거나 선언한 시간이 지난 것이다. 둘 다 진행 중인 실행을 끊지 않는다 — 선언한 시간은 일을 새로 맡는 마감이지 끝내는 마감이 아니므로, 그 상태의 세션은 진행 중이던 것이 끝나야 멈춘다.  `vendor limit`은 벤더가 한도로 실행을 막은 것이며, `observation unreadable`은 소비량을 읽을 수 없어 멈춘 것이다. `blocked`는 작업이 남았는데 그것들이 전부 완주하지 못한 작업을 기다리는 것이며, `retry`와 `resume`이 그런 작업을 되돌린다.
+`budget hardlock`은 선언한 예산이 소진됐거나 선언한 시간이 지난 것이다. 둘 다 진행 중인 실행을 끊지 않는다 — 선언한 시간은 일을 새로 맡는 마감이지 끝내는 마감이 아니므로, 그 상태의 세션은 진행 중이던 것이 끝나야 멈춘다.  `vendor limit`은 벤더가 한도로 실행을 막은 것이며, `observation unreadable`은 소비량을 읽을 수 없어 멈춘 것이다. `blocked`는 작업이 남았는데 그것들이 전부 완주하지 못한 작업을 기다리는 것이며, `retry`와 `resume`이 그런 작업을 되돌린다. `nothing fits`는 작업이 남았고 세션에 예산도 시간도 남았는데 둘 다 어느 작업도 감당하지 못하는 것이며, `pacing`과 실행 크기가 그것을 정한다.
 
 결과 브랜치는 도구가 지우거나 옮기지 않으며 push·병합·정리는 사용자가 수행한다.
 

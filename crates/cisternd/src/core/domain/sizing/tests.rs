@@ -155,5 +155,3 @@ fn one_run_is_both_figures() {
 
     assert_eq!((sizing.estimate, sizing.fallback, sizing.over), (42, 42, 1));
 }
-
-// the budget itself
