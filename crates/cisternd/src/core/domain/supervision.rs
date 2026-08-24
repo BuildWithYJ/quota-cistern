@@ -232,10 +232,14 @@ pub fn decide(standing: &Standing) -> Decision {
     if standing.unreadable {
         return Decision::Stop(StoppedReason::ObservationUnreadable);
     }
-    // What a person declared is a figure, and a session that has spent it has spent it whether
-    // or not anything is still going. Stopping here ends those runs, which is what `Cuts` is
-    // for; `Waits` lets them finish and spends past the figure by however far they had to go.
-    if standing.locking == Locking::Cuts && standing.left() == 0 {
+    // What a person declared is a figure, and a session that has spent it has spent it. This
+    // is the only stop that ends runs still going, which is what `Cuts` is for; `Waits` lets
+    // them finish and spends past the figure by however far they had to go.
+    //
+    // Only where something is going. With nothing going there is nothing to end, and what to
+    // call the stopping is the question below: a backlog that emptied at the same moment the
+    // budget did is done rather than locked out of it.
+    if standing.locking == Locking::Cuts && standing.running > 0 && standing.left() == 0 {
         return Decision::Stop(StoppedReason::BudgetHardlock);
     }
     // Out of time starts nothing more. It does not end what is going: the time a session

@@ -32,7 +32,7 @@ fn standing() -> Standing {
         blocked: false,
         unreadable: false,
         timing: Timing::Fits,
-        locking: Locking::Waits,
+        locking: Locking::Cuts,
         pacing: Pacing::Holds,
     }
 }
@@ -174,11 +174,14 @@ fn a_session_with_nothing_waiting_carries_on_while_one_runs() {
     );
 }
 
+/// What is left is spoken for by the run already going, so nothing more starts and the session
+/// waits for it. The budget is not spent, only handed out, which is a different thing from the
+/// figure running out.
 #[test]
 fn a_session_with_no_room_left_starts_none_while_one_runs() {
     assert_eq!(
         decide(&Standing {
-            declared: 0,
+            booked: 1_000,
             ..standing()
         }),
         Decision::Start(Vec::new())
@@ -457,6 +460,26 @@ fn the_same_rate_early_on_starts_the_same_run() {
         }),
         Decision::Start(allowed) if !allowed.is_empty()
     ));
+}
+
+/// A backlog that emptied is done, whether or not the budget emptied at the same moment.
+///
+/// The stop that ends runs is only for a session with runs to end. With none, what to call the
+/// stopping is the same question it always was, and saying the budget locked where the work
+/// simply finished is wrong about both.
+#[test]
+fn a_session_that_finished_as_the_budget_did_is_all_done() {
+    assert_eq!(
+        decide(&Standing {
+            locking: Locking::Cuts,
+            spent: 1_000,
+            elapsed: 600,
+            running: 0,
+            pending: Vec::new(),
+            ..standing()
+        }),
+        Decision::Stop(StoppedReason::AllDone)
+    );
 }
 
 /// A session that has spent what it declared stops, and `Cuts` stops it while runs are going.

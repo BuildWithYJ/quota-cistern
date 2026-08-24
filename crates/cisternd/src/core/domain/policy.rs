@@ -20,8 +20,12 @@
 //!         budget will not outlast  a third of sessions of one shape spend past what they
 //!                                  declared, and no other figure here changes that. What it
 //!                                  costs differs by shape, so it ships off
-//! locking end runs at the line     none yet. The sweep does not reach the state it acts in,
-//!         or let them finish       so it ships as what a session already did
+//! locking end runs at the line     the specification. A person declares a figure and a
+//!         or let them finish       session does not spend past it, which is the one thing
+//!                                  section 2.2 asks of a budget. What it costs is not
+//!                                  measured here: the sweep does not reach the state it acts
+//!                                  in, and a run ends with what it committed still on its
+//!                                  branch, so what is lost is the tail since its last commit
 //! ```
 //!
 //! A figure that rests on nothing is not left as the only way a session can be run. `config
@@ -154,7 +158,7 @@ impl Default for Policy {
         Policy {
             sizing: Rule::default(),
             timing: Timing::Fits,
-            locking: Locking::Waits,
+            locking: Locking::Cuts,
             pacing: Pacing::Any,
         }
     }
