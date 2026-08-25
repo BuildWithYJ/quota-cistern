@@ -64,6 +64,8 @@ fn points_at_a_place(instruction: &str) -> bool {
             || token.contains("::")
             || has_a_code_extension(token)
             || is_a_dotted_name(token)
+            || is_a_path(token)
+            || is_a_name_a_repository_keeps(token)
     })
 }
 
@@ -128,12 +130,69 @@ fn is_a_dotted_name(token: &str) -> bool {
     each_is_an_identifier && one_is_long_enough && one_holds_a_letter
 }
 
+/// A path written with `/`, such as `src/utils`, told apart from a pair of words like `and/or`.
+///
+/// A directory names a place as plainly as a file does, and it carries no extension to say so.
+/// Every part has to read as a name, and two parts alone do not settle it, because prose writes a
+/// pair that way too: what settles it is a third part, or a part naming a directory a repository
+/// keeps its source in.
+///
+/// One part has to hold a letter, the way a dotted name does, so that a date written `2026/08/26`
+/// is the date it is. That one is worth turning away rather than reading loosely: a date carries a
+/// check as often as not -- "by the 26th, cargo test passes" -- and a place read out of one would
+/// send an unattended run nowhere while the gate reported it ready.
+fn is_a_path(token: &str) -> bool {
+    if !token.contains('/') {
+        return false;
+    }
+    let parts: Vec<&str> = token.split('/').collect();
+    if parts.len() < 2 {
+        return false;
+    }
+    let each_is_a_name = parts.iter().all(|part| {
+        !part.is_empty()
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+    });
+    let one_holds_a_letter = parts
+        .iter()
+        .any(|part| part.chars().any(|c| c.is_ascii_alphabetic()));
+    let one_names_a_source_directory = parts
+        .iter()
+        .any(|part| KEPT_IN.contains(&part.to_ascii_lowercase().as_str()));
+    each_is_a_name && one_holds_a_letter && (parts.len() > 2 || one_names_a_source_directory)
+}
+
+/// The directories a repository keeps its source in, as a first set.
+const KEPT_IN: [&str; 11] = [
+    "src", "crates", "lib", "app", "pkg", "cmd", "internal", "tests", "docs", "scripts", "bin",
+];
+
+/// A file a repository keeps by its name rather than by an extension, such as `Makefile`.
+fn is_a_name_a_repository_keeps(token: &str) -> bool {
+    const NAMES: [&str; 7] = [
+        "makefile",
+        "dockerfile",
+        "readme",
+        "changelog",
+        "license",
+        "justfile",
+        "procfile",
+    ];
+    let lowered = token.to_ascii_lowercase();
+    NAMES.contains(&lowered.as_str())
+}
+
 /// Does the instruction give a way to tell the work is done?
 ///
 /// Three rules, read over the lowered text: a mark that opens a transcript, a word that names a
 /// check, and a command that runs one. They are a first set. A later change may widen them.
 fn gives_a_check(lowered: &str) -> bool {
-    opens_a_transcript(lowered) || names_a_check(lowered) || runs_a_command(lowered)
+    opens_a_transcript(lowered)
+        || names_a_check(lowered)
+        || names_a_check_in_korean(lowered)
+        || runs_a_command(lowered)
 }
 
 /// A mark that opens a block of output to compare against.
@@ -158,6 +217,28 @@ fn names_a_check(lowered: &str) -> bool {
     lowered
         .split(|c: char| !c.is_ascii_alphanumeric())
         .any(|word| OPENINGS.iter().any(|opening| word.starts_with(opening)))
+}
+
+/// A word that names a check, written in Korean.
+///
+/// This repository keeps its own documentation in two languages, so an instruction arrives in
+/// either. A place reads the same in both -- a path is written the same way whatever surrounds it
+/// -- but every cue for a check was English, which left an author writing in Korean reaching for
+/// `--force` on instructions that named a check plainly.
+///
+/// Korean attaches its particles to the word, so a cue is read as a substring rather than as a
+/// word opening: the cue for a test is inside the word that carries the subject particle. The
+/// cues are written as escapes because a source file here holds ASCII only, the way
+/// `crates/cistern/src/task.rs` writes the mark it prints beside a waiting task.
+fn names_a_check_in_korean(lowered: &str) -> bool {
+    const CUES: [&str; 5] = [
+        "\u{d14c}\u{c2a4}\u{d2b8}", // test
+        "\u{d1b5}\u{acfc}",         // pass
+        "\u{c7ac}\u{d604}",         // reproduce
+        "\u{ae30}\u{b300}",         // expect
+        "\u{ac80}\u{c99d}",         // verify
+    ];
+    CUES.iter().any(|cue| lowered.contains(cue))
 }
 
 /// A command that tells the work is done, such as `scripts/check.sh` or `cargo check`.
@@ -246,6 +327,69 @@ mod tests {
         assert!(Readiness::read("fix src/util.rs\nTests must pass").check);
         // The cue has to open the word: `latest` is not a test.
         assert!(!gives_a_check("ship the latest src/util.rs"));
+    }
+
+    /// A directory names a place as plainly as a file does.
+    #[test]
+    fn a_directory_path_is_a_place() {
+        assert!(points_at_a_place(
+            "rewrite crates/cisternd/src/core/service until cargo test passes"
+        ));
+        assert!(points_at_a_place("tidy up src/utils"));
+        assert!(points_at_a_place("read docs/cli.md"));
+        // A pair of words written with a slash is prose, not a path.
+        assert!(!points_at_a_place("do it one way and/or the other"));
+        // A path a scheme opens is not one of this repository's.
+        assert!(!is_a_path("https://example.com"));
+        // A date is a date, and one carries a check as often as not.
+        assert!(!points_at_a_place(
+            "have it by 2026/08/26; cargo test passes"
+        ));
+        assert!(!Readiness::read("have it by 2026/08/26; cargo test passes").ready());
+    }
+
+    /// Some files a repository keeps by name, with no extension to say what they are.
+    #[test]
+    fn a_name_a_repository_keeps_is_a_place() {
+        assert!(points_at_a_place("add a flag to the Makefile"));
+        assert!(points_at_a_place("the Dockerfile is stale"));
+        assert!(points_at_a_place("update the README"));
+        assert!(!points_at_a_place("make the file better"));
+    }
+
+    /// An instruction written in Korean names its check in Korean.
+    #[test]
+    fn a_check_written_in_korean_is_a_check() {
+        // "fix src/util.rs, the tests must pass"
+        let read = Readiness::read(
+            "src/util.rs \u{b97c} \u{ace0}\u{ccd0}\u{b77c}, \u{d14c}\u{c2a4}\u{d2b8}\u{ac00} \u{d1b5}\u{acfc}\u{d574}\u{c57c} \u{d55c}\u{b2e4}",
+        );
+        assert!(read.place);
+        assert!(read.check);
+        assert!(read.ready());
+
+        // A wish in Korean names no place and no check, the way a wish in English does not.
+        let wish = Readiness::read("\u{ac1c}\u{c120}\u{d574}\u{c918}");
+        assert!(!wish.ready());
+    }
+
+    /// Korean attaches its particles to the word, so a path arrives with one stuck to its end.
+    ///
+    /// The place rules read a word with what is not a letter or a digit trimmed off either end,
+    /// and a particle is neither, so the path comes out of the trim as it was written. This is
+    /// how the language is actually typed, so it is held rather than left to the spaced form.
+    #[test]
+    fn a_path_carrying_a_korean_particle_is_still_a_place() {
+        // "fix src/util.rs, the tests must pass"
+        let file = Readiness::read(
+            "src/util.rs\u{b97c} \u{ace0}\u{ccd0}\u{b77c}, \u{d14c}\u{c2a4}\u{d2b8}\u{ac00} \u{d1b5}\u{acfc}\u{d574}\u{c57c} \u{d55c}\u{b2e4}",
+        );
+        assert!(file.ready());
+
+        // "add a test to crates/cisternd"
+        let directory =
+            Readiness::read("crates/cisternd\u{c5d0} \u{d14c}\u{c2a4}\u{d2b8} \u{cd94}\u{ac00}");
+        assert!(directory.ready());
     }
 
     /// The instructions the documentation shows are ones the gate lets through.
