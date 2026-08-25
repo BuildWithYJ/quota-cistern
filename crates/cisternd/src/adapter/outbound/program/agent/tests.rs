@@ -4,6 +4,8 @@ use serde_json::json;
 use tempfile::TempDir;
 
 use super::*;
+// Lifted to the module beside this one, being the same whoever the vendor is.
+use super::super::fill;
 
 /// The agent that stands in for a vendor's.
 /// A shell program, kept as one rather than as a string this file would have to escape.
@@ -603,10 +605,10 @@ fn a_name_filled_with_nothing_leaves_the_argument_empty() {
 fn an_unmatched_brace_is_written_once() {
     let filling = [("model", "haiku")];
 
-    assert_eq!(super::fill("--flag={x", &filling), "--flag={x");
-    assert_eq!(super::fill("{model} {", &filling), "haiku {");
-    assert_eq!(super::fill("{", &filling), "{");
-    assert_eq!(super::fill("a{b{c", &filling), "a{b{c");
+    assert_eq!(fill("--flag={x", &filling), "--flag={x");
+    assert_eq!(fill("{model} {", &filling), "haiku {");
+    assert_eq!(fill("{", &filling), "{");
+    assert_eq!(fill("a{b{c", &filling), "a{b{c");
 }
 
 /// Every run is held to what the definition carries.

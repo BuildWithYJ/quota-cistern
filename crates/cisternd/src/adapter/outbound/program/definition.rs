@@ -39,7 +39,41 @@ pub struct Definition {
     pub spend: String,
     pub answer: Answer,
     pub limit: Limit,
+    pub drafter: Drafter,
     pub trace: Trace,
+}
+
+/// What a loose instruction is missing, asked of the vendor before a task is registered.
+///
+/// An ask rather than a run: the model is handed the instruction and what surrounds it and
+/// gives back a place and a check. Everything the vendor names for it is here, so the code
+/// that asks holds no vendor's word of its own.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Drafter {
+    pub program: String,
+    /// The model asked first, and the one asked only where the first found no place.
+    ///
+    /// The first runs before every task a rule could not ready, so it is the cheap one. The
+    /// second costs more and earns it only where the first came back with nothing.
+    pub cheaper: String,
+    pub stronger: String,
+    /// How far one ask may go. A guard against an ask that goes nowhere, not a task's ceiling.
+    pub turns: String,
+    /// How many of the repository's files to show, so the prompt stays small.
+    pub files_shown: usize,
+    /// The arguments, grouped as the agent's are, with `{prompt}`, `{model}`, and `{turns}`
+    /// standing for what one ask fills in.
+    pub args: Vec<Vec<String>>,
+    /// What is asked, with `{instruction}`, `{changed}`, `{files}`, `{place}`, and `{check}`
+    /// standing for what one ask fills in.
+    pub prompt: String,
+    /// The two words the answer is read by.
+    ///
+    /// They are written into the prompt as well, so changing one changes what is asked and
+    /// what is read together rather than leaving the two to drift apart.
+    pub place: String,
+    pub check: String,
 }
 
 /// How much of the vendor's allowance is left, and how to find out.

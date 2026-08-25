@@ -6,8 +6,10 @@
 
 mod result;
 mod roots;
+mod surroundings;
 mod worktree;
 
 pub use result::{Between, Changes, Commit, Counts, NotApplied, Results, Touched};
 pub use roots::RepositoryRoots;
+pub use surroundings::Surroundings;
 pub use worktree::{Cut, Worktrees};
