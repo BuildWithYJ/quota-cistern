@@ -231,14 +231,42 @@ fn names_a_check(lowered: &str) -> bool {
 /// cues are written as escapes because a source file here holds ASCII only, the way
 /// `crates/cistern/src/task.rs` writes the mark it prints beside a waiting task.
 fn names_a_check_in_korean(lowered: &str) -> bool {
-    const CUES: [&str; 5] = [
+    const CUES: [&str; 4] = [
         "\u{d14c}\u{c2a4}\u{d2b8}", // test
         "\u{d1b5}\u{acfc}",         // pass
         "\u{c7ac}\u{d604}",         // reproduce
-        "\u{ae30}\u{b300}",         // expect
         "\u{ac80}\u{c99d}",         // verify
     ];
-    CUES.iter().any(|cue| lowered.contains(cue))
+    CUES.iter().any(|cue| lowered.contains(cue)) || names_an_expected_result(lowered)
+}
+
+/// An expected result named in Korean, such as "expected value: 200".
+///
+/// The word for expecting is also the verb a wish is written with, so the bare cue reads an
+/// instruction that only hopes the file improves as one that says how the work is told to be
+/// done. What names a check is the noun the word builds -- an expected value, an expected result,
+/// an expected output -- so the cue counts only where one of those follows it. That is the line
+/// the English cues already draw, where `expected` is read and `expect` is not.
+///
+/// A space may sit between the two, because Korean writes the compound both ways.
+fn names_an_expected_result(lowered: &str) -> bool {
+    const EXPECTING: [&str; 2] = [
+        "\u{ae30}\u{b300}", // expect
+        "\u{c608}\u{c0c1}", // foresee
+    ];
+    const RESULTS: [&str; 5] = [
+        "\u{ac12}",         // value
+        "\u{acb0}\u{acfc}", // result
+        "\u{cd9c}\u{b825}", // output
+        "\u{c751}\u{b2f5}", // response
+        "\u{b3d9}\u{c791}", // behaviour
+    ];
+    EXPECTING.iter().any(|expecting| {
+        lowered.match_indices(expecting).any(|(at, _)| {
+            let rest = lowered[at + expecting.len()..].trim_start();
+            RESULTS.iter().any(|result| rest.starts_with(result))
+        })
+    })
 }
 
 /// A command that tells the work is done, such as `scripts/check.sh` or `cargo check`.
@@ -371,6 +399,30 @@ mod tests {
         // A wish in Korean names no place and no check, the way a wish in English does not.
         let wish = Readiness::read("\u{ac1c}\u{c120}\u{d574}\u{c918}");
         assert!(!wish.ready());
+    }
+
+    /// A wish is not a check, however plainly it names the file it wishes about.
+    ///
+    /// The word for expecting is the verb a wish is written with, so the bare cue read
+    /// "I hope src/lib.rs gets better" as an instruction that says how the work is told to be
+    /// done. It says nothing of the kind, and a task carrying only that is exactly what the gate
+    /// is for. What counts is the noun the word builds.
+    #[test]
+    fn a_korean_wish_is_not_a_check() {
+        // "I hope src/lib.rs gets improved"
+        let wish = Readiness::read(
+            "src/lib.rs\u{ac00} \u{ac1c}\u{c120}\u{b418}\u{ae30}\u{b97c} \u{ae30}\u{b300}\u{d574}",
+        );
+        assert!(wish.place, "the file it wishes about is still a place");
+        assert!(!wish.check);
+        assert!(!wish.ready());
+
+        // "src/lib.rs, expected value: 200"
+        assert!(Readiness::read("src/lib.rs \u{ae30}\u{b300}\u{ac12}: 200").ready());
+        // The compound is written with a space too.
+        assert!(Readiness::read("src/lib.rs \u{ae30}\u{b300} \u{acb0}\u{acfc}: 200").ready());
+        // And the other word for it.
+        assert!(Readiness::read("src/lib.rs \u{c608}\u{c0c1} \u{cd9c}\u{b825}: ok").ready());
     }
 
     /// Korean attaches its particles to the word, so a path arrives with one stuck to its end.
