@@ -19,6 +19,8 @@ pub struct Registration<'a> {
     pub branch: Option<&'a str>,
     pub after: Option<&'a str>,
     pub model: Option<&'a str>,
+    /// Register even when the instruction carries too little to run unattended.
+    pub force: bool,
 }
 
 /// A task that was registered.

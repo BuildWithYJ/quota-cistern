@@ -135,6 +135,9 @@ pub enum TaskCommand {
         /// Model for this task.
         #[arg(long)]
         model: Option<String>,
+        /// Register the task even if it carries too little to run unattended.
+        #[arg(long)]
+        force: bool,
     },
     /// Removes a task from the backlog.
     Rm { task: String },

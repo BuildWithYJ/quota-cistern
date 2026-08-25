@@ -29,6 +29,15 @@ pub(super) fn text<'a>(request: &'a Request, field: &str) -> Option<&'a str> {
     request.params.get(field)?.as_str()
 }
 
+/// One field of the envelope, when it holds a boolean. Absent reads as false.
+pub(super) fn flag(request: &Request, field: &str) -> bool {
+    request
+        .params
+        .get(field)
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 /// A request whose envelope does not carry what the command needs.
 ///
 /// It never reaches the core, because what arrived is the envelope's business and the envelope is read here.
@@ -51,7 +60,8 @@ fn code_for(refusal: &Refusal) -> u8 {
     match refusal {
         Refusal::UnknownKey { .. } | Refusal::BadValue { .. } => USAGE_ERROR,
         Refusal::NoSuchTask { .. } | Refusal::NoSuchSession { .. } => NOT_FOUND,
-        Refusal::NothingToAssign
+        Refusal::NotReady { .. }
+        | Refusal::NothingToAssign
         | Refusal::NoChange { .. }
         | Refusal::AlreadyApplied { .. }
         | Refusal::Conflicts { .. }
@@ -71,6 +81,7 @@ fn message_for(refusal: &Refusal) -> String {
     match refusal {
         Refusal::UnknownKey { key } => format!("no such key {key}"),
         Refusal::BadValue { key, value } => format!("{key} does not take {value}"),
+        Refusal::NotReady { missing } => format!("the instruction does not say {missing}"),
         Refusal::NoSuchTask { id } | Refusal::NoSuchSession { id } => {
             format!("{id} does not exist")
         }
@@ -143,6 +154,12 @@ mod tests {
                     value: "max-40x".to_owned(),
                 },
                 USAGE_ERROR,
+            ),
+            (
+                Refusal::NotReady {
+                    missing: "where to work".to_owned(),
+                },
+                GENERAL_FAILURE,
             ),
             (
                 Refusal::NoSuchTask {

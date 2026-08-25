@@ -33,6 +33,8 @@ pub enum Refusal {
     UnknownKey { key: String },
     /// A key that exists, holding a value it does not take.
     BadValue { key: String, value: String },
+    /// The instruction carries too little to run unattended: no place to work, or no check.
+    NotReady { missing: String },
     /// No task carries that number.
     NoSuchTask { id: String },
     /// No session carries that identifier.

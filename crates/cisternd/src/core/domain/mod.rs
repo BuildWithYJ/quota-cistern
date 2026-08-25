@@ -6,6 +6,7 @@
 mod configuration;
 mod consumption;
 mod policy;
+mod readiness;
 mod session;
 mod sizing;
 mod spending;
@@ -15,6 +16,7 @@ mod task;
 pub use configuration::{Configuration, Key, Known, Setting};
 pub use consumption::{Consumption, Observation};
 pub use policy::{Locking, Pacing, Policy, Timing};
+pub use readiness::Readiness;
 pub use session::{
     Budget, Held, Measured, NotASessionSet, NotOpened, Opening, Session, SessionId, SessionState,
     Sessions, Span, StoppedReason, Usage,
