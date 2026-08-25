@@ -850,9 +850,12 @@ mod tests {
             crate::core::port::outbound::StoredTask {
                 session: None,
                 worktree: None,
+                conversation: None,
                 started_at: None,
                 ended_at: None,
                 reason: None,
+                attempts: None,
+                ceiling: None,
                 consumed: None,
                 unreadable: None,
                 disposition: None,
@@ -868,9 +871,12 @@ mod tests {
             crate::core::port::outbound::StoredTask {
                 session: None,
                 worktree: None,
+                conversation: None,
                 started_at: None,
                 ended_at: None,
                 reason: None,
+                attempts: None,
+                ceiling: None,
                 consumed: None,
                 unreadable: None,
                 disposition: None,
@@ -901,9 +907,12 @@ mod tests {
         held.tasks = vec![crate::core::port::outbound::StoredTask {
             session: None,
             worktree: None,
+            conversation: None,
             started_at: None,
             ended_at: None,
             reason: None,
+            attempts: None,
+            ceiling: None,
             consumed: Some(StoredConsumption {
                 input: "77".to_owned(),
                 output: "3377".to_owned(),
@@ -937,9 +946,12 @@ mod tests {
         held.tasks = vec![crate::core::port::outbound::StoredTask {
             session: None,
             worktree: None,
+            conversation: None,
             started_at: None,
             ended_at: None,
             reason: None,
+            attempts: None,
+            ceiling: None,
             consumed: Some(StoredConsumption {
                 input: "a lot".to_owned(),
                 output: "3377".to_owned(),
