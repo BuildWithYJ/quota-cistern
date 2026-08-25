@@ -237,21 +237,31 @@ fn names_a_check_in_korean(lowered: &str) -> bool {
         "\u{c7ac}\u{d604}",         // reproduce
         "\u{ac80}\u{c99d}",         // verify
     ];
+    // The word for expecting is not among them: it is also the verb a wish is written with, so
+    // it says nothing on its own and is read as part of the noun it builds instead.
     CUES.iter().any(|cue| lowered.contains(cue)) || names_an_expected_result(lowered)
 }
 
-/// An expected result named in Korean, such as "expected value: 200".
+/// Does the instruction name an expected result, written in Korean?
 ///
-/// The word for expecting is also the verb a wish is written with, so the bare cue reads an
-/// instruction that only hopes the file improves as one that says how the work is told to be
-/// done. What names a check is the noun the word builds -- an expected value, an expected result,
-/// an expected output -- so the cue counts only where one of those follows it. That is the line
-/// the English cues already draw, where `expected` is read and `expect` is not.
+/// The words for expecting and foreseeing, read only where the noun they build follows them: an
+/// expected value, an expected result, an expected output.
+///
+/// The noun is what the rule turns on, because the word for expecting is also the verb a wish is
+/// written with: on its own it reads an instruction that only hopes the file improves as one that
+/// says how the work is told to be done. That is the line the English cues already draw, where
+/// `expected` is read and `expect` is not.
 ///
 /// A space may sit between the two, because Korean writes the compound both ways.
+///
+/// Korean also marks a compound by changing the letter the first word ends on, and the standard
+/// spelling of an expected value is written that way rather than as the two words run together.
+/// That spelling is a form of the first word rather than a word of its own -- it is written
+/// nowhere else -- so it is read beside the plain one rather than given a rule.
 fn names_an_expected_result(lowered: &str) -> bool {
-    const EXPECTING: [&str; 2] = [
+    const EXPECTING: [&str; 3] = [
         "\u{ae30}\u{b300}", // expect
+        "\u{ae30}\u{b313}", // the same, spelled as a compound
         "\u{c608}\u{c0c1}", // foresee
     ];
     const RESULTS: [&str; 5] = [
@@ -423,6 +433,8 @@ mod tests {
         assert!(Readiness::read("src/lib.rs \u{ae30}\u{b300} \u{acb0}\u{acfc}: 200").ready());
         // And the other word for it.
         assert!(Readiness::read("src/lib.rs \u{c608}\u{c0c1} \u{cd9c}\u{b825}: ok").ready());
+        // The compound is standardly spelled with the letter the first word takes before it.
+        assert!(Readiness::read("src/lib.rs \u{ae30}\u{b313}\u{ac12}: 200").ready());
     }
 
     /// Korean attaches its particles to the word, so a path arrives with one stuck to its end.
