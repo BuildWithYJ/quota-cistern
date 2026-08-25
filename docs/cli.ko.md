@@ -252,6 +252,8 @@ cistern task show <task>
 | `session`     | string | 편성된 세션. 미편성이면 null                                                             |
 | `state`       | enum   | 작업 상태                                                                          |
 | `title`       | string | 작업 제목                                                                          |
+| `instruction` | string | 실행이 작업할 때 받는 지시                                                                |
+| `original`    | string | 지시를 저장소에서 채워 넣었을 때 저자가 쓴 원문. 아니면 null                                          |
 | `base_branch` | string | 기준 브랜치                                                                         |
 | `after`       | string | 선행 작업. 없으면 null                                                                |
 | `model`       | string | 실행에 쓴 모델                                                                       |
@@ -287,7 +289,13 @@ task:2  Interrupted
   reason:      budget hardlock
   worktree:    ~/.local/share/cistern/worktrees/2
   disposition: (none)
+  instruction:
+    add tests; cargo test util passes (in src/util.rs)
+  original:
+    add tests; cargo test util passes
 ```
+
+지시는 한 칸에 담기지 않으므로 라벨 옆이 아니라 아래에 출력한다. `original`은 지시를 채워 넣은 작업에만 나오고, 저자가 통째로 쓴 작업에는 없다.
 
 ### 2.2 세션 · 실행
 

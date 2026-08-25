@@ -13,6 +13,7 @@ fn held(id: &str, after: Option<&str>, state: &str) -> Restored {
         consumed: Observation::NotYet,
         disposition: None,
         id: TaskId::parse(id).unwrap(),
+        original: None,
         title: "a task".to_owned(),
         instruction: "do it".to_owned(),
         branch: None,
@@ -31,7 +32,10 @@ fn registered(backlog: &mut Backlog, branch: Option<&str>, after: Option<TaskId>
     backlog
         .add(
             "a task".to_owned(),
-            "do it".to_owned(),
+            Instruction {
+                given: "do it".to_owned(),
+                original: None,
+            },
             branch.map(str::to_owned),
             after,
             None,
@@ -298,7 +302,10 @@ fn a_task_that_named_no_model_takes_the_session_s() {
     let named = backlog
         .add(
             "a task of its own".to_owned(),
-            "do it".to_owned(),
+            Instruction {
+                given: "do it".to_owned(),
+                original: None,
+            },
             None,
             None,
             Some("opus".to_owned()),

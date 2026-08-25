@@ -201,6 +201,7 @@ pub(super) fn a_pending_task() -> StoredTask {
         id: "1".to_owned(),
         title: "tidy up".to_owned(),
         instruction: "tidy up src/utils".to_owned(),
+        original: None,
         branch: None,
         after: None,
         model: None,

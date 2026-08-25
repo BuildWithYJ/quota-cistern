@@ -52,6 +52,10 @@ pub struct Detail {
     pub session: Option<String>,
     pub state: String,
     pub title: String,
+    /// What the run is given to work from.
+    pub instruction: String,
+    /// What the author wrote, when that is not what the run is given.
+    pub original: Option<String>,
     pub base_branch: String,
     pub after: Option<String>,
     pub model: Option<String>,

@@ -267,6 +267,28 @@ fn detailed(data: &Value) {
     line(DETAILED, "carries on", text(data, "conversation"));
     made(data);
     line(DETAILED, "disposition", text(data, "disposition"));
+    if let Some(instruction) = text(data, "instruction") {
+        print!("{}", block("instruction", instruction));
+    }
+    if let Some(original) = text(data, "original") {
+        print!("{}", block("original", original));
+    }
+}
+
+/// A field that will not sit in a column, printed under its label instead.
+///
+/// An instruction read from standard input runs to paragraphs, and one filled in from the
+/// repository is longer than what the author wrote, so neither keeps the width the fields above
+/// align to. Its lines are indented under the label rather than wrapped, so what is printed is
+/// what was given.
+fn block(label: &str, value: &str) -> String {
+    let mut written = format!("  {label}:\n");
+    for line in value.lines() {
+        written.push_str("    ");
+        written.push_str(line);
+        written.push('\n');
+    }
+    written
 }
 
 /// The base branch, and how far it has moved since the task left it.
@@ -389,6 +411,19 @@ mod tests {
     #[test]
     fn a_path_elsewhere_is_left_alone() {
         assert_eq!(under_home("/srv/api", home("/home/a")), "/srv/api");
+    }
+
+    /// An instruction is printed as it was given, however many lines that is.
+    #[test]
+    fn a_field_that_will_not_sit_in_a_column_is_printed_under_its_label() {
+        assert_eq!(
+            block("instruction", "fix parse() in src/util.rs"),
+            "  instruction:\n    fix parse() in src/util.rs\n"
+        );
+        assert_eq!(
+            block("original", "fix the parser\nit panics on an empty line"),
+            "  original:\n    fix the parser\n    it panics on an empty line\n"
+        );
     }
 
     #[test]
