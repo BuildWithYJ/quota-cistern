@@ -58,16 +58,7 @@ impl ProgramAgent {
     /// A task that named no model loses `--model` along with the value.
     /// That is why the definition groups a flag with what follows it.
     fn arguments(&self, filling: &[(&str, &str)]) -> Vec<String> {
-        let mut given = Vec::with_capacity(self.definition.args.len() * 2);
-
-        for group in &self.definition.args {
-            let filled: Vec<String> = group.iter().map(|token| fill(token, filling)).collect();
-            if filled.iter().any(String::is_empty) {
-                continue;
-            }
-            given.extend(filled);
-        }
-        given
+        super::arguments(&self.definition.args, filling)
     }
 
     /// What the definition says to fill in, apart from the task's own words.
@@ -94,39 +85,6 @@ impl ProgramAgent {
             .unwrap_or_else(PoisonError::into_inner)
             .remove(task)
     }
-}
-
-/// One argument with `{name}` replaced by what was given for it.
-///
-/// One pass, so that what is written stands. Filling each name in turn over the whole string
-/// would leave a value written for one name open to the names that follow, and a task's
-/// instruction goes in among them: an instruction holding the text `{model}` would come out
-/// carrying the model.
-fn fill(token: &str, filling: &[(&str, &str)]) -> String {
-    let mut written = String::with_capacity(token.len());
-    let mut left = token;
-
-    while let Some(at) = left.find('{') {
-        written.push_str(&left[..at]);
-        let rest = &left[at..];
-        let Some(end) = rest.find('}') else {
-            // Nothing closes it, so the rest of the token is not a place and is written as
-            // it stands. `left` has to move to it: what came before was written already, and
-            // the tail below writes whatever `left` still holds.
-            left = rest;
-            break;
-        };
-        let name = &rest[1..end];
-        match filling.iter().find(|(known, _)| *known == name) {
-            Some((_, value)) => written.push_str(value),
-            // A name nothing fills is not a place, so it stays as it was written.
-            None => written.push_str(&rest[..=end]),
-        }
-        left = &rest[end + 1..];
-    }
-
-    written.push_str(left);
-    written
 }
 
 impl Agent for ProgramAgent {
@@ -278,7 +236,7 @@ impl ProgramAgent {
     /// a sentence for each word it may stop with.
     fn why_for(&self, word: &str) -> String {
         match self.definition.answer.at_ceiling.get(word) {
-            Some(sentence) => fill(sentence, &self.its_own()),
+            Some(sentence) => super::fill(sentence, &self.its_own()),
             None => format!("the agent stopped with {word}"),
         }
     }

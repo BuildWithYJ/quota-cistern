@@ -153,6 +153,59 @@ between_looks_ms = 200
 rows = 40
 cols = 120
 
+# What a loose instruction is missing, asked once before a task is registered.
+#
+# An ask, not a run. The model is handed the instruction and what surrounds it and asked only
+# to name a place to work and a check that says the work is done. What it answers is written
+# into the instruction and held to the same gate as anything a person typed, so a wrong guess
+# is a task turned back rather than a run misspent.
+[drafter]
+program = "claude"
+
+# The model asked first, and the one asked only where the first found no place.
+#
+# The first runs before every task a rule could not ready, so it is the cheap one. Raise the
+# second as stronger names land.
+cheaper = "haiku"
+stronger = "sonnet"
+
+# How far one ask may go. A guard against an ask that goes nowhere, not a task's ceiling.
+turns = "5"
+
+# How many of the repository's files to show, so the prompt stays small.
+files_shown = 300
+
+# Grouped as `args` above is: a group holding a place nobody filled is dropped whole.
+args = [
+  ["-p", "{prompt}"],
+  ["--model", "{model}"],
+  ["--max-turns", "{turns}"],
+]
+
+# The two words the answer is read by. They are written into the prompt below as well, so
+# changing one changes what is asked and what is read together.
+place = "PLACE"
+check = "CHECK"
+
+# What is asked. `{changed}` is what the author has open and uncommitted, and `{files}` the
+# files the repository tracks, both already narrowed before they arrive here.
+prompt = """
+You are preparing a coding task to run unattended, with no one to answer questions.
+
+Task instruction:
+{instruction}
+
+Files changed but not committed:
+{changed}
+
+Files in the repository:
+{files}
+
+Name where the work should happen and how to tell it is done. Answer with exactly two lines \
+and nothing else:
+{place}: <one file path from the list above, or the word none>
+{check}: <a shell command or test that verifies the work, or the word none>"""
+
 # What one line of what a run wrote amounts to.
 #
 # What the agent said and what it reached for, one sentence each. Its thinking is left
