@@ -28,11 +28,21 @@ pub struct StoredTask {
     pub session: Option<String>,
     /// Where it is being worked on, once a work area was made.
     pub worktree: Option<String>,
+    /// The conversation its last run was in, for a run that may be carried on.
+    pub conversation: Option<String>,
     /// When its most recent run started and when that run stopped, in seconds since the epoch.
     pub started_at: Option<String>,
     pub ended_at: Option<String>,
     /// Why it ended as it did, for a task that did not simply finish.
     pub reason: Option<String>,
+    /// How many times it has been assigned.
+    ///
+    /// Absent for a task a version before this counted, which reads as none.
+    pub attempts: Option<String>,
+    /// What the run going now is allowed to consume, in the unit its session declared.
+    ///
+    /// Absent for a task nothing is running for, and for one a version before this assigned.
+    pub ceiling: Option<String>,
     /// What it consumed, once a run's answer said.
     pub consumed: Option<StoredConsumption>,
     /// Why what it consumed could not be read, when it could not.

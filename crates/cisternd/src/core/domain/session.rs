@@ -28,6 +28,19 @@ pub enum StoppedReason {
     ObservationUnreadable,
     Interrupted,
     AllDone,
+    /// Every task left waits on one that did not complete.
+    ///
+    /// Apart from `AllDone`, which used to cover it and said the opposite of what happened.
+    /// A ceiling makes this ordinary rather than rare: a task cut off at one ends
+    /// `Interrupted`, and a task that waits on it may never start.
+    Blocked,
+    /// Tasks are left and what the session still has covers none of them.
+    ///
+    /// Apart from `BudgetHardlock`, which section 1 defines as the declared budget being spent
+    /// or the declared time running out. Neither has happened here: the session has budget and
+    /// time and cannot put either in front of any task that is left, because what one takes is
+    /// more than what is left or longer than the time there is for it.
+    NothingFits,
     Error,
 }
 
@@ -81,12 +94,34 @@ pub struct Session {
     /// A share says what this session may add to what the limit already held.
     /// A session declared in tokens has none.
     limit_at_start: Option<u64>,
+    /// What the limit read the last time this session looked, in hundredths of a percent.
+    ///
+    /// A share is added up look by look rather than taken as the distance from where it started.
+    /// The limit is a window that begins again every few hours, and a session that outlives one
+    /// reads a figure lower than the one it opened from.
+    limit_last_seen: Option<u64>,
     /// What it has consumed, in the unit it was declared in.
     consumed: Spending,
     /// When it last changed.
     updated_at: u64,
-    /// When the vendor's limit starts over, for a session it turned away.
+    /// When the window the limit was last read in begins again.
+    ///
+    /// What tells one window from the next. Section 2.2 reports it for a session the vendor
+    /// turned away, which is why the report asks why the session stopped rather than whether
+    /// this is set.
     resets_at: Option<u64>,
+}
+
+/// What a look at the vendor's limit came to, from the session it was taken for.
+///
+/// The two answers together because they are read together and no reading sits between them:
+/// what the session has spent all told, and the stretch of limit this one look added, which is
+/// what the run that ended is charged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Measured {
+    pub spent: Spending,
+    /// What the limit read before this look and at it, where there was a look before.
+    pub over: Option<(u64, u64)>,
 }
 
 /// A session on its way back from a store, with every value already read.
@@ -99,6 +134,7 @@ pub struct Held {
     pub model: Option<String>,
     pub started_at: u64,
     pub limit_at_start: Option<u64>,
+    pub limit_last_seen: Option<u64>,
     pub consumed: Spending,
     pub updated_at: u64,
     pub resets_at: Option<u64>,
@@ -180,6 +216,8 @@ impl StoppedReason {
             "observation unreadable" => Some(StoppedReason::ObservationUnreadable),
             "interrupted" => Some(StoppedReason::Interrupted),
             "all done" => Some(StoppedReason::AllDone),
+            "nothing fits" => Some(StoppedReason::NothingFits),
+            "blocked" => Some(StoppedReason::Blocked),
             "error" => Some(StoppedReason::Error),
             _ => None,
         }
@@ -194,6 +232,8 @@ impl Display for StoppedReason {
             StoppedReason::ObservationUnreadable => "observation unreadable",
             StoppedReason::Interrupted => "interrupted",
             StoppedReason::AllDone => "all done",
+            StoppedReason::Blocked => "blocked",
+            StoppedReason::NothingFits => "nothing fits",
             StoppedReason::Error => "error",
         })
     }
@@ -315,6 +355,10 @@ impl Session {
         self.limit_at_start
     }
 
+    pub fn limit_last_seen(&self) -> Option<u64> {
+        self.limit_last_seen
+    }
+
     /// What it has consumed, in the unit it was declared in.
     pub fn consumed(&self) -> Spending {
         self.consumed
@@ -328,9 +372,16 @@ impl Session {
         self.resets_at
     }
 
-    /// Whether the session has run for as long as it declared.
-    pub fn out_of_time(&self, now: u64) -> bool {
-        now.saturating_sub(self.started_at) >= self.budget.time.seconds()
+    /// How much of the time it declared is left, in seconds.
+    ///
+    /// Nought once it has run that long, which is what having no time left means. Something has
+    /// to wake at that moment, since a session with one long run going is a session nothing
+    /// else would ask about until that run ended.
+    pub fn time_left(&self, now: u64) -> u64 {
+        self.budget
+            .time
+            .seconds()
+            .saturating_sub(now.saturating_sub(self.started_at))
     }
 }
 
@@ -354,6 +405,8 @@ impl Sessions {
             model: opening.model,
             started_at: opening.started_at,
             limit_at_start: opening.limit_at_start,
+            // The first look is the one taken to open with.
+            limit_last_seen: opening.limit_at_start,
             consumed: match opening.budget.usage {
                 Usage::Share(_) => Spending::Share(0),
                 Usage::Tokens(_) => Spending::Tokens(0),
@@ -382,13 +435,107 @@ impl Sessions {
     ///
     /// A share cannot be worked out later.
     /// What was read while the session ran is what is reported for it afterwards.
+    ///
+    /// Two things are turned away. A session that has stopped keeps what it consumed when it
+    /// did: a record arriving afterwards would report a figure from a moment the session was
+    /// no longer running, and `updated_at` is what `elapsed` reads as the moment it stopped.
+    /// And a figure below the one stored is one that was read earlier, since a session only
+    /// ever spends more; the readings are taken outside the hold this is called under, so two
+    /// of them can arrive in the other order from the one they were read in.
     pub fn record(&mut self, id: SessionId, consumed: Spending, now: u64) {
         for session in &mut self.sessions {
-            if session.id == id {
-                session.consumed = consumed;
-                session.updated_at = now;
+            if session.id != id {
+                continue;
             }
+            if session.state != SessionState::Running {
+                return;
+            }
+            if consumed.behind(&session.consumed) {
+                return;
+            }
+            session.consumed = consumed;
+            session.updated_at = now;
         }
+    }
+
+    /// Adds what the vendor's limit has moved since this session last looked at it, and says
+    /// what the session has consumed once it has.
+    ///
+    /// `resets_at` is when the window this reading was taken in begins again, and a different
+    /// one from the last look is a window that has begun again, so the whole of the reading was
+    /// spent since it did. A reading lower than the last one says the same thing and stands in
+    /// where the vendor named no window, since a limit only climbs while one window lasts.
+    ///
+    /// Whatever was spent between the last look and the window turning over is in no reading at
+    /// all, so the figure falls short by that much rather than by a whole window.
+    ///
+    /// A reading is taken outside the hold this is called under, since asking the vendor takes
+    /// as long as ninety seconds and nothing else could be answered while it did. Two threads
+    /// can therefore arrive here in the other order from the one they read in, and the later
+    /// arrival carries the older figure. Where the vendor named the window and named the same
+    /// one, that is what a lower reading means, and it is left out rather than counted as a
+    /// window that began again.
+    pub fn measured(
+        &mut self,
+        id: SessionId,
+        used: u64,
+        resets_at: Option<u64>,
+        now: u64,
+    ) -> Option<Measured> {
+        let session = self.sessions.iter_mut().find(|session| session.id == id)?;
+        let before = session.limit_last_seen;
+        let Spending::Share(consumed) = session.consumed else {
+            return Some(Measured {
+                spent: session.consumed,
+                over: None,
+            });
+        };
+        let began_again = match (session.resets_at, resets_at) {
+            (Some(seen), Some(now_at)) => now_at != seen,
+            // Nothing to compare against says nothing about the window.
+            _ => false,
+        };
+
+        // Within one window a limit only climbs, so a lower reading of the window already
+        // being measured was taken before the last look. Counting it would add a whole
+        // window to a session that had spent none of it. Nothing is written down: the look
+        // this session is measured from stays the later one.
+        let named_the_same_window =
+            !began_again && session.resets_at.is_some() && resets_at.is_some();
+        if named_the_same_window && session.limit_last_seen.is_some_and(|seen| used < seen) {
+            return Some(Measured {
+                spent: session.consumed,
+                // A look that arrived late is not a stretch of this session's spending, so
+                // there is no pair to charge a run for.
+                over: None,
+            });
+        }
+
+        let since = match session.limit_last_seen {
+            Some(_) if began_again => used,
+            Some(seen) if used >= seen => used - seen,
+            // A window nobody named, found lower than the last look.
+            Some(_) => used,
+            // Nothing to measure from: a share opened without a first look, or one a store
+            // held before this was written down. Adding what it has already counted a second
+            // time would be worse than adding nothing, and this look becomes the one the next
+            // is measured from.
+            None => 0,
+        };
+        session.consumed = Spending::Share(consumed.saturating_add(since));
+        session.limit_last_seen = Some(used);
+        if resets_at.is_some() {
+            session.resets_at = resets_at;
+        }
+        session.updated_at = now;
+        Some(Measured {
+            spent: session.consumed,
+            // Both ends of the one stretch, taken under the hold this is called under. Read
+            // either side of this instead and two runs of the same session ending inside each
+            // other's asking would each take the pair the other left behind, and the stretch
+            // between them would be charged to both.
+            over: before.map(|before| (before, used)),
+        })
     }
 
     /// Records when the vendor's limit starts over.
@@ -398,6 +545,14 @@ impl Sessions {
                 session.resets_at = Some(at);
             }
         }
+    }
+
+    /// The session carrying that number, if one does.
+    ///
+    /// Beside `running`, which asks the same set the other way. A caller with a number in hand
+    /// asks here rather than walking the list itself.
+    pub fn find(&self, id: SessionId) -> Option<&Session> {
+        self.sessions.iter().find(|session| session.id == id)
     }
 
     /// The session that is running, if one is.
@@ -449,6 +604,7 @@ impl Sessions {
                 model: one.model,
                 started_at: one.started_at,
                 limit_at_start: one.limit_at_start,
+                limit_last_seen: one.limit_last_seen,
                 consumed: one.consumed,
                 updated_at: one.updated_at,
                 resets_at: one.resets_at,
@@ -460,187 +616,4 @@ impl Sessions {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn a_budget() -> Budget {
-        Budget {
-            usage: Usage::Share(50),
-            time: Span(8 * 3_600),
-        }
-    }
-
-    fn opening() -> Opening {
-        Opening {
-            budget: a_budget(),
-            model: None,
-            started_at: 1_000,
-            limit_at_start: Some(1_100),
-        }
-    }
-
-    #[test]
-    fn a_share_and_a_count_are_told_apart_by_the_sign() {
-        assert_eq!(Usage::parse("50%"), Some(Usage::Share(50)));
-        assert_eq!(Usage::parse("2M"), Some(Usage::Tokens(2_000_000)));
-        assert_eq!(Usage::parse("500K"), Some(Usage::Tokens(500_000)));
-        assert_eq!(Usage::parse("2000"), Some(Usage::Tokens(2_000)));
-    }
-
-    #[test]
-    fn a_share_outside_the_range_section_2_2_fixes_is_refused() {
-        assert_eq!(Usage::parse("0%"), None);
-        assert_eq!(Usage::parse("101%"), None);
-    }
-
-    #[test]
-    fn a_count_that_is_not_a_whole_number_is_refused() {
-        assert_eq!(Usage::parse("1.5M"), None);
-        assert_eq!(Usage::parse("many"), None);
-        assert_eq!(Usage::parse("0"), None);
-    }
-
-    #[test]
-    fn a_declaration_reads_back_as_it_was_written() {
-        assert_eq!(Usage::Share(50).to_string(), "50%");
-        assert_eq!(Usage::Tokens(2_000_000).to_string(), "2000000");
-    }
-
-    #[test]
-    fn the_two_spellings_section_2_2_shows_are_read() {
-        assert_eq!(Span::parse("8h"), Some(Span(8 * 3_600)));
-        assert_eq!(Span::parse("2h30m"), Some(Span(2 * 3_600 + 30 * 60)));
-    }
-
-    #[test]
-    fn a_length_of_time_that_is_not_one_of_the_units_is_refused() {
-        assert_eq!(Span::parse("8x"), None);
-        assert_eq!(Span::parse("8"), None);
-        assert_eq!(Span::parse(""), None);
-        assert_eq!(Span::parse("0h"), None);
-        // Minutes before hours is not a spelling anyone is shown.
-        assert_eq!(Span::parse("30m2h"), None);
-    }
-
-    #[test]
-    fn a_length_of_time_reads_back_as_the_same_length() {
-        for written in ["8h", "2h30m", "45s", "1h1m1s"] {
-            let read = Span::parse(written).unwrap();
-            assert_eq!(read.to_string(), written);
-        }
-    }
-
-    #[test]
-    fn a_number_is_given_out_once_and_the_next_one_follows_it() {
-        let mut sessions = Sessions::restore(1, Vec::new()).unwrap();
-        let first = sessions.open(opening()).unwrap();
-        assert_eq!(first.labelled(), "session:1");
-
-        sessions.stop(first, StoppedReason::AllDone, 2_000);
-        let second = sessions.open(opening()).unwrap();
-        assert_eq!(second.labelled(), "session:2");
-    }
-
-    #[test]
-    fn a_second_session_is_refused_while_one_is_running() {
-        let mut sessions = Sessions::default();
-        let first = sessions.open(opening()).unwrap();
-
-        assert_eq!(
-            sessions.open(opening()),
-            Err(NotOpened::AlreadyRunning { id: first })
-        );
-    }
-
-    #[test]
-    fn a_store_holding_two_running_sessions_is_refused() {
-        let running = |id| Held {
-            id: SessionId(id),
-            state: SessionState::Running,
-            stopped_reason: None,
-            budget: a_budget(),
-            model: None,
-            started_at: 1_000,
-            limit_at_start: Some(1_100),
-            consumed: Spending::Share(0),
-            updated_at: 1_000,
-            resets_at: None,
-        };
-
-        assert_eq!(
-            Sessions::restore(2, vec![running(0), running(1)]),
-            Err(NotASessionSet::TwoRunning {
-                first: SessionId(0),
-                second: SessionId(1),
-            })
-        );
-    }
-
-    #[test]
-    fn a_stopped_session_that_does_not_say_why_is_refused() {
-        let held = Held {
-            id: SessionId(0),
-            state: SessionState::Stopped,
-            stopped_reason: None,
-            budget: a_budget(),
-            model: None,
-            started_at: 1_000,
-            limit_at_start: Some(1_100),
-            consumed: Spending::Share(0),
-            updated_at: 1_000,
-            resets_at: None,
-        };
-
-        assert_eq!(
-            Sessions::restore(1, vec![held]),
-            Err(NotASessionSet::ReasonDoesNotMatchState { id: SessionId(0) })
-        );
-    }
-
-    #[test]
-    fn a_state_name_reads_back_as_it_was_written() {
-        for state in [SessionState::Running, SessionState::Stopped] {
-            assert_eq!(SessionState::parse(&state.to_string()), Some(state));
-        }
-    }
-
-    #[test]
-    fn a_reason_reads_back_as_it_was_written() {
-        for reason in [
-            StoppedReason::BudgetHardlock,
-            StoppedReason::VendorLimit,
-            StoppedReason::ObservationUnreadable,
-            StoppedReason::Interrupted,
-            StoppedReason::AllDone,
-            StoppedReason::Error,
-        ] {
-            assert_eq!(StoppedReason::parse(&reason.to_string()), Some(reason));
-        }
-    }
-
-    #[test]
-    fn a_session_is_out_of_time_once_it_has_run_as_long_as_it_declared() {
-        let mut sessions = Sessions::default();
-        sessions.open(opening()).unwrap();
-        let held = sessions.running().unwrap();
-
-        assert!(!held.out_of_time(1_000 + 8 * 3_600 - 1));
-        assert!(held.out_of_time(1_000 + 8 * 3_600));
-    }
-
-    #[test]
-    fn a_stopped_session_says_why_and_keeps_the_first_answer() {
-        let mut sessions = Sessions::default();
-        let id = sessions.open(opening()).unwrap();
-
-        sessions.stop(id, StoppedReason::ObservationUnreadable, 2_000);
-        sessions.stop(id, StoppedReason::AllDone, 3_000);
-
-        let stopped = sessions.sessions().first().unwrap();
-        assert_eq!(stopped.state(), SessionState::Stopped);
-        assert_eq!(
-            stopped.stopped_reason(),
-            Some(StoppedReason::ObservationUnreadable)
-        );
-    }
-}
+mod tests;

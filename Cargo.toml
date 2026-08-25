@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/cistern", "crates/cistern-contract", "crates/cisternd"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/BuildWithYJ/quota-cistern"
@@ -16,7 +16,7 @@ interprocess = "2.4"
 # Ending a run means signalling its whole process group. The `kill` program
 # would do it, but the two systems this runs on disagree about what a negative
 # number on its command line means, so the call is made here instead.
-nix = { version = "0.31", default-features = false, features = ["signal"] }
+nix = { version = "0.31", default-features = false, features = ["fs", "signal"] }
 # The status line is drawn only where there is a terminal, and only the status
 # line carries how much of the vendor's limit is spent.
 portable-pty = { version = "0.9", default-features = false }

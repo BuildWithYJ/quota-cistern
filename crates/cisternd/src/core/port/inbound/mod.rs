@@ -15,7 +15,9 @@ pub use execution::{
     Declaration, Declared, ExecutionUseCase, Happened, Listed, Page, Ran, Report, Started, Stopped,
     Trail,
 };
-pub use review::{Awaiting, Changed, Difference, Dropped, Queue, ReviewUseCase, Taken};
+pub use review::{
+    Awaiting, Changed, Difference, Dropped, Queue, Requeued, ReviewUseCase, Taken, Tidied, Tidying,
+};
 pub use work::{Carrying, NotCarried};
 
 use super::outbound::Unavailable;

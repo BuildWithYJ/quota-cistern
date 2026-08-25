@@ -1,0 +1,497 @@
+//! A sweep over the numbers a run is sized by.
+//!
+//! Not a test. Nothing here asserts, since what the numbers should be is the question rather
+//! than something already settled. It runs sessions against a stand-in vendor and prints what
+//! each rule came to, and a person reads the table.
+//!
+//!     cargo test -p cisternd -- --ignored --nocapture sweeping
+//!
+//! Why it exists. Four sessions on a real repository settled none of the three numbers: no run
+//! came within half of its ceiling, so any rule would have ended them alike. A ceiling only
+//! decides something where runs meet it, and meeting one costs whatever the run had spent. Here
+//! it costs nothing, so the rules can be compared at the sizes where they differ.
+//!
+//! What the sessions are held to. A budget declared as a count of tokens rather than as a share,
+//! so that the sizing is what the table is about: a share would put the token-to-limit rate in
+//! the middle of it, which is its own question. The clock is frozen, so nothing is held back for
+//! want of time. One vendor, one model, one ladder.
+//!
+//! Where the costs come from. Two places, and a rule worth taking reads well under both.
+//!
+//! Four shapes nobody measured, so that a rule is not fitted to the sizes we happened to run.
+//! And runs that were actually run, where a file of them is named: those carry the spread and
+//! the model mix that made-up shapes have to guess at, and one account's runs are not every
+//! account's, so they say which rule reads better rather than what any figure should be.
+//!
+//!     CISTERN_OBSERVED=<file> cargo test -p cisternd -- --ignored --nocapture sweeping
+//!
+//! The file is a list of `{"model", "tokens", "seconds", "began"}`, which
+//! `.private/orchestration/analysis/observed.py` writes. A run there is a goal run: one
+//! prompt handed to the vendor that went to the end without a person in it, which is what
+//! this runs. A turn of somebody's conversation is not one and is left out.
+
+use crate::core::{
+    domain::{Locking, Pacing, Policy, Rule, Timing},
+    port::{
+        inbound::{Carrying, ExecutionUseCase},
+        outbound::{BacklogStore, StoredTask},
+    },
+};
+
+use super::fixtures::*;
+use super::{ExecutionService, Outside, Supervisor, WorkService};
+
+/// How long a run of the middle of a shape takes, in seconds.
+///
+/// The figure itself decides nothing. Every length here is proportional to it, and what the
+/// budget gate reads is one length against another.
+const MIDDLE_LASTS: u64 = 600;
+
+/// How many sessions each rule is read over, per shape and budget.
+const SESSIONS: u64 = 100;
+
+/// How many tasks wait at the start of one.
+const TASKS: usize = 12;
+
+/// What a session declares, as multiples of the middle of the shape it draws from.
+///
+/// Read at three sizes, because which rule is even reached depends on this. A ceiling is the
+/// smaller of what the estimate allows and what is left, so a session whose budget is small
+/// against its tasks is held by what is left every time and never asks the estimate anything.
+/// Two runs out early, thirty-two covers the whole backlog, eight is between.
+const BUDGETS: [u64; 3] = [2, 8, 32];
+
+/// What the definition's guard is, as a multiple of the middle of the shape.
+///
+/// Fixed, and not a share of anything a session declared. A person raises it where runs are
+/// meant to be larger.
+const GUARD: u64 = 4;
+
+/// A stream of numbers that is the same stream every time.
+///
+/// A rule is read against the sessions another rule was read against, so the draws have to
+/// repeat. Written out rather than taken from a crate: this is thirty lines and a dependency
+/// the daemon carries into production for the sake of a table is not worth it.
+struct Drawn(u64);
+
+impl Drawn {
+    /// A draw that starts where the seed says, so a row of the table can be read again.
+    fn seeded(seed: u64) -> Self {
+        Drawn(seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1))
+    }
+
+    /// The next draw, over zero to one.
+    fn next(&mut self) -> f64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        // The top bits, which are the ones this generator moves well.
+        (self.0 >> 11) as f64 / (1u64 << 53) as f64
+    }
+}
+
+/// A shape a task's cost is drawn from.
+///
+/// Named for what it is rather than for a distribution, since which distribution job runtimes
+/// follow is not settled and the point here is to read a rule under more than one answer.
+#[derive(Debug, Clone, Copy)]
+enum Shape {
+    /// Tasks of a size. What a backlog of one kind of change looks like.
+    Alike,
+    /// Two orders of magnitude between the smallest and the largest, evenly over the logarithm.
+    /// The shape the parallel-batch literature reports for job runtimes.
+    Spread,
+    /// A tail with no shoulder: most runs small, a few enormous. Pareto at the exponent
+    /// reported for process lifetimes, cut off where a run would outlast any budget.
+    Tailed,
+    /// Small tasks and large ones and nothing between. A backlog of documents and features.
+    Split,
+}
+
+const SHAPES: [Shape; 4] = [Shape::Alike, Shape::Spread, Shape::Tailed, Shape::Split];
+
+/// One run that was actually run, as the observed file holds it.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct Observed {
+    model: String,
+    tokens: u64,
+}
+
+/// Where a task's cost and model come from.
+#[derive(Debug, Clone)]
+enum Costs {
+    /// A shape nobody measured, so that a rule is not fitted to what we happened to run.
+    Made(Shape),
+    /// Runs that were actually run, drawn from with replacement. These carry the spread and
+    /// the model mix a made-up shape has to guess at.
+    Seen(std::sync::Arc<Vec<Observed>>),
+}
+
+impl Costs {
+    /// What to call this set of costs in the table, made-up shapes by their shape and real
+    /// runs by how many there were.
+    fn named(&self) -> String {
+        match self {
+            Costs::Made(shape) => shape.named().to_owned(),
+            Costs::Seen(seen) => format!("observed({})", seen.len()),
+        }
+    }
+
+    /// One task: what it costs and what model it is of.
+    fn draws(&self, drawn: &mut Drawn) -> (u64, Option<String>) {
+        match self {
+            Costs::Made(shape) => (shape.draws(drawn), None),
+            Costs::Seen(seen) => {
+                let at = (drawn.next() * seen.len() as f64) as usize;
+                let one = &seen[at.min(seen.len() - 1)];
+                (one.tokens, Some(one.model.clone()))
+            }
+        }
+    }
+
+    /// The middle of what a task costs, which a budget is set from.
+    fn middle(&self) -> u64 {
+        match self {
+            Costs::Made(shape) => shape.middle(),
+            Costs::Seen(seen) => {
+                let mut costs: Vec<u64> = seen.iter().map(|one| one.tokens).collect();
+                costs.sort_unstable();
+                costs[costs.len() / 2]
+            }
+        }
+    }
+}
+
+/// Every set of costs to read the rules over.
+///
+/// The made-up shapes always, and the runs that were run where a file of them is named.
+fn over() -> Vec<Costs> {
+    let mut all: Vec<Costs> = SHAPES.iter().copied().map(Costs::Made).collect();
+    let Ok(at) = std::env::var("CISTERN_OBSERVED") else {
+        println!("CISTERN_OBSERVED is unset, so only made-up shapes are read\n");
+        return all;
+    };
+    // Said rather than shrugged at. A sweep that quietly read only the made-up shapes would
+    // look like a sweep that read both. A test runs from its own crate, so a path written
+    // against the workspace is one of the ways this goes wrong.
+    let held = match std::fs::read_to_string(&at) {
+        Ok(held) => held,
+        Err(e) => {
+            println!("{at} could not be read: {e}\n");
+            return all;
+        }
+    };
+    match serde_json::from_str::<Vec<Observed>>(&held) {
+        Ok(seen) if !seen.is_empty() => {
+            println!("{at} holds {} runs that were run\n", seen.len());
+            all.push(Costs::Seen(std::sync::Arc::new(seen)));
+        }
+        Ok(_) => println!("{at} holds no runs\n"),
+        Err(e) => println!("{at} is not a list of runs this reads: {e}\n"),
+    }
+    all
+}
+
+impl Shape {
+    /// What to call this shape in the table.
+    fn named(self) -> &'static str {
+        match self {
+            Shape::Alike => "alike",
+            Shape::Spread => "spread",
+            Shape::Tailed => "tailed",
+            Shape::Split => "split",
+        }
+    }
+
+    /// What one task costs.
+    fn draws(self, drawn: &mut Drawn) -> u64 {
+        let one = drawn.next();
+        let cost = match self {
+            Shape::Alike => 1_000.0 * (0.8 + 0.4 * one),
+            Shape::Spread => 100.0 * 100.0_f64.powf(one),
+            Shape::Tailed => (200.0 / (1.0 - one).max(0.001)).min(200_000.0),
+            Shape::Split => match one < 0.8 {
+                true => 250.0 * (0.8 + 0.4 * drawn.next()),
+                false => 4_000.0 * (0.8 + 0.4 * drawn.next()),
+            },
+        };
+        cost.round().max(1.0) as u64
+    }
+
+    /// The middle of the shape, which a budget is set from.
+    ///
+    /// Drawn rather than worked out, so a shape whose middle is awkward to write down needs no
+    /// formula here.
+    fn middle(self) -> u64 {
+        let mut drawn = Drawn::seeded(7);
+        let mut costs: Vec<u64> = (0..1_000).map(|_| self.draws(&mut drawn)).collect();
+        costs.sort_unstable();
+        costs[costs.len() / 2]
+    }
+}
+
+/// What came of the sessions one rule was read over.
+#[derive(Debug, Default, Clone, Copy)]
+struct Came {
+    finished: u64,
+    stopped: u64,
+    /// What the finished runs spent.
+    done: u64,
+    /// What the stopped runs spent, which bought nothing.
+    lost: u64,
+    /// What the sessions declared, all told.
+    declared: u64,
+    /// How many of them spent more than that, which is the one thing that must not happen.
+    over: u64,
+    /// What the tasks put in front of them would have cost, all told.
+    ///
+    /// Beside the count of tasks finished, because the two disagree. A rule whose ceilings are
+    /// small finishes more tasks and finishes only the cheap ones; whether that is better turns
+    /// on whether a task is worth what it costs or worth the same as any other, which is a
+    /// judgement about the work rather than something a table settles.
+    offered: u64,
+}
+
+impl Came {
+    /// What two sessions came to together, added figure by figure, so that a row of the table
+    /// is one running total rather than a list to fold at the end.
+    fn and(mut self, other: Came) -> Came {
+        self.finished += other.finished;
+        self.stopped += other.stopped;
+        self.done += other.done;
+        self.lost += other.lost;
+        self.declared += other.declared;
+        self.over += other.over;
+        self.offered += other.offered;
+        self
+    }
+}
+
+/// One session, from the backlog it starts with to the state it ends in.
+///
+/// The ledger is handed in rather than made here, so that the sessions of one reading share
+/// one. A session that began with an empty ledger would be in the cold start for its first
+/// runs every time, and the cold start is not what a rule is being read for: what the daemon
+/// does is keep the ledger between sessions, so a sizing has every run there has ever been
+/// behind it.
+fn one_session(
+    policy: Policy,
+    costs: &Costs,
+    budget: u64,
+    guard: u64,
+    seed: u64,
+    runs: &Ledger,
+) -> Came {
+    let mut drawn = Drawn::seeded(seed);
+    let drawing: Vec<(u64, Option<String>)> = (0..TASKS).map(|_| costs.draws(&mut drawn)).collect();
+    let middle = costs.middle();
+    let costs: Vec<u64> = drawing.iter().map(|(cost, _)| *cost).collect();
+    let declared = middle * budget;
+    let offered: u64 = costs.iter().sum();
+
+    let sessions = Remembered::empty();
+    let held = Tasks::holding(
+        drawing
+            .iter()
+            .enumerate()
+            .map(|(at, (_, model))| StoredTask {
+                model: model.clone(),
+                ..a_task_numbered(&(at + 1).to_string())
+            })
+            .collect::<Vec<StoredTask>>(),
+    );
+    let areas = Areas::default();
+    // Every run is held to the guard the definition carries, which a person set and which does
+    // not move with the budget. Four times the middle of the shape, which is about where the
+    // twenty dollars that ships sits against the runs a real session has had.
+    // How long a run takes, taken as proportional to what it costs. Both scale with the turns
+    // a run took -- tokens as turns to the 1.31 and seconds as turns to the 1.44, over 163 runs
+    // that were actually run -- so a run that costs twice as much takes about twice as long.
+    // The constant of proportionality is arbitrary and cancels: what the gate reads is a run's
+    // length against how long the budget lasts, and both are in the same seconds.
+    let lasting: Vec<u64> = costs
+        .iter()
+        .map(|cost| (cost * MIDDLE_LASTS / middle.max(1)).max(1))
+        .collect();
+    let agent = Costing::taking(costs.clone())
+        .lasting(lasting)
+        .guarded_at(middle * guard);
+    let clock = Moved::from(1_000);
+    let outside = Outside {
+        sessions: &sessions,
+        tasks: &held,
+        worktrees: &areas,
+        agent: &agent,
+        clock: &clock,
+        limit: &UNTOUCHED,
+        traces: &NOTHING_KEPT,
+        runs,
+    };
+    // Only this session's runs are counted, and the ledger already holds those before it.
+    let before = runs.runs().len();
+    let supervisor = Supervisor::running_by(outside, AT_ONCE, policy);
+    let execution = ExecutionService::new(outside, &supervisor);
+    let work = WorkService::new(outside, &supervisor);
+
+    execution
+        .run(declaring(&declared.to_string(), "8h"))
+        .unwrap();
+    // Runs go at once and end in the order their lengths say, with the clock moved to each
+    // ending in turn. A session assigns as tasks end, so what is running is looked at again
+    // each time, and a decision reached while others are still going sees them.
+    for _ in 0..TASKS * 4 {
+        let stored = held.load().unwrap();
+        let Some((id, ends)) = stored
+            .tasks
+            .iter()
+            .filter(|task| task.state == "Running")
+            .filter_map(|task| {
+                let started: u64 = task.started_at.as_deref()?.parse().ok()?;
+                Some((
+                    task.id.clone(),
+                    started + agent.lasts(&task.id).unwrap_or_default(),
+                ))
+            })
+            .min_by_key(|(_, ends)| *ends)
+        else {
+            break;
+        };
+        clock.to(ends);
+        work.carry_on(&format!("task:{id}")).unwrap();
+    }
+
+    let mut came = Came {
+        declared,
+        offered,
+        ..Came::default()
+    };
+    for run in runs.runs().into_iter().skip(before) {
+        let spent = run
+            .spent
+            .as_ref()
+            .and_then(|spent| spent.cost.parse::<u64>().ok())
+            .unwrap_or_default();
+        match run.outcome.as_str() {
+            "Completed" => {
+                came.finished += 1;
+                came.done += spent;
+            }
+            _ => {
+                came.stopped += 1;
+                came.lost += spent;
+            }
+        }
+    }
+    came.over = u64::from(came.done + came.lost > declared);
+    came
+}
+
+/// Every rule read over every shape, printed one line each.
+#[test]
+#[ignore = "a sweep to read rather than a test to pass"]
+fn sweeping_the_rule() {
+    let shipped = Policy::default();
+    let policies: Vec<(String, Policy)> = [0, 1, 2, 3, 4]
+        .into_iter()
+        .map(|widen| {
+            (
+                format!("widen {widen}"),
+                Policy {
+                    sizing: Rule {
+                        widen,
+                        ..shipped.sizing
+                    },
+                    ..shipped
+                },
+            )
+        })
+        .chain([50, 75, 90, 95, 100].into_iter().map(|busy| {
+            (
+                format!("busy {busy}"),
+                Policy {
+                    sizing: Rule {
+                        busy,
+                        ..shipped.sizing
+                    },
+                    ..shipped
+                },
+            )
+        }))
+        .chain([0, 25, 50, 75, 100].into_iter().map(|alone| {
+            (
+                format!("alone {alone}"),
+                Policy {
+                    sizing: Rule {
+                        alone,
+                        ..shipped.sizing
+                    },
+                    ..shipped
+                },
+            )
+        }))
+        .chain([0, 1, 2, 4].into_iter().map(|lift| {
+            (
+                format!("lift {lift}"),
+                Policy {
+                    sizing: Rule {
+                        lift,
+                        ..shipped.sizing
+                    },
+                    ..shipped
+                },
+            )
+        }))
+        .chain(
+            [Timing::Fits, Timing::Any]
+                .into_iter()
+                .map(|timing| (format!("timing {timing:?}"), Policy { timing, ..shipped })),
+        )
+        .chain(
+            [Pacing::Any, Pacing::Holds]
+                .into_iter()
+                .map(|pacing| (format!("pacing {pacing}"), Policy { pacing, ..shipped })),
+        )
+        .chain(
+            [Locking::Waits, Locking::Cuts]
+                .into_iter()
+                .map(|locking| (format!("locking {locking}"), Policy { locking, ..shipped })),
+        )
+        .collect();
+
+    println!("\n{SESSIONS} sessions of {TASKS} tasks each, one ledger behind each column\n");
+    for costs in over() {
+        for budget in BUDGETS {
+            println!(
+                "--- {} (middle {}), budget {}x ---",
+                costs.named(),
+                costs.middle(),
+                budget
+            );
+            println!(
+                "{:<14} {:>8} {:>8} {:>7} {:>7} {:>7} {:>7} {:>5}",
+                "rule", "finished", "stopped", "cut %", "used %", "lost %", "work %", "over"
+            );
+            for (named, policy) in &policies {
+                let runs = Ledger::default();
+                let came = (0..SESSIONS)
+                    .map(|seed| one_session(*policy, &costs, budget, GUARD, seed, &runs))
+                    .fold(Came::default(), Came::and);
+                let all = (came.finished + came.stopped).max(1);
+                let spent = came.done + came.lost;
+                println!(
+                    "{:<14} {:>8} {:>8} {:>6.1} {:>6.1} {:>6.1} {:>6.1} {:>5}",
+                    named,
+                    came.finished,
+                    came.stopped,
+                    100.0 * came.stopped as f64 / all as f64,
+                    100.0 * spent as f64 / came.declared.max(1) as f64,
+                    100.0 * came.lost as f64 / spent.max(1) as f64,
+                    100.0 * came.done as f64 / came.offered.max(1) as f64,
+                    came.over,
+                );
+            }
+            println!();
+        }
+    }
+}

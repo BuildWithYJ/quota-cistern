@@ -14,6 +14,16 @@ These apply to every command.
 
 `cistern --version` prints the version. Running `cistern` with no subcommand, or with invalid arguments, prints usage to stderr and exits with code 2.
 
+### The core
+
+Every command reaches the core, which owns what is stored. A command that finds no core running starts one and carries on, and the core it started keeps running afterwards. `--version` is the exception: it reports whether the two sides match, so it starts none.
+
+The core is looked for beside the command line and then on the `PATH`. A command that cannot start one, or that starts one which stops before answering, says so and exits with code 5.
+
+A core of the same version may still be an older build of it, since a version does not carry a build. `--version` says so where it can tell: the socket is made as a core starts, so a core program written after that socket was made is one no running core has ever run. That is a line on stderr rather than a failure, and the exit code stays 0. Restarting the core is what clears it.
+
+What the core writes goes to `$XDG_STATE_HOME/cistern/daemon.log`, or `~/.local/state/cistern/daemon.log` when that variable is unset. A core started by hand writes to the terminal instead.
+
 ### Exit codes
 
 | Code | Meaning | Description |
@@ -23,7 +33,7 @@ These apply to every command.
 | 2 | Usage error | Bad argument or flag |
 | 3 | Not found | No such session or task id |
 | 4 | State conflict | Operation not possible in the current state |
-| 5 | Core error | The core is not running, its version does not match the surface's, or it failed while handling the request |
+| 5 | Core error | No core could be started, the one that was started stopped before answering, its version does not match the surface's, or it failed while handling the request |
 
 ### Output
 
@@ -46,14 +56,14 @@ Task states:
 | `Pending` | In the backlog, not yet assigned |
 | `Running` | Assigned to a session and executing |
 | `Completed` | Finished. Result kept on the branch |
-| `Interrupted` | Ended by budget hardlock or by the user. Partial work kept on the branch |
+| `Interrupted` | Ended at the ceiling on one run, or by the user. Partial work kept on the branch |
 | `Error` | Failed during execution. Partial work, if any, kept on the branch |
 
 Terminal states (`Completed`, `Interrupted`, `Error`) all leave a branch and enter the review queue. The disposition is recorded in `disposition`, separately from the task state.
 
 Task `reason`: `budget hardlock` · `vendor limit` · `task ceiling` · `interrupted` · the execution failure.
 
-`task ceiling` means the task consumed its own ceiling and stopped; the session continues. The user does not set this ceiling.
+`task ceiling` means the run reached the ceiling one run is held to and stopped; the session continues. That ceiling is a guard against a run going nowhere rather than a share of the session's budget, and it does not move with what the session has learnt. The user does not set it directly; a vendor definition carries it.
 
 Session states:
 
@@ -62,9 +72,9 @@ Session states:
 | `running` | The unattended loop is executing |
 | `stopped` | Ended |
 
-`stopped_reason`: `budget hardlock` · `vendor limit` · `observation unreadable` · `interrupted` · `all done` (every assigned task ended) · `error`.
+`stopped_reason`: `budget hardlock` · `vendor limit` · `observation unreadable` · `interrupted` · `all done` (every assigned task ended) · `blocked` · `nothing fits` · `error`.
 
-`budget hardlock` means the declared budget was spent, `vendor limit` means the vendor blocked execution at its own limit, and `observation unreadable` means usage could no longer be read.
+`budget hardlock` means the declared budget was spent or the declared time ran out. Neither ends a run that is going: the declared time is a deadline for taking work on rather than for finishing it, and a session in that state stops once what it had going has ended.  `vendor limit` means the vendor blocked execution at its own limit, and `observation unreadable` means usage could no longer be read. `blocked` means tasks were left and every one of them waited on a task that did not complete; `retry` and `resume` are what put one of those back. `nothing fits` means tasks were left and the session had budget and time still but neither covered any of them, which is what `pacing` and the run sizes decide.
 
 The tool never deletes or moves result branches. Pushing, merging, and cleanup are the user's own work.
 
@@ -228,6 +238,7 @@ cistern task show <task>
 | `branch` | string | Result branch, or null |
 | `reason` | string | Reason it ended, or null |
 | `worktree` | string | Path of the work area, or null once it has been cleaned up |
+| `conversation` | string | The conversation its last run was in, or null for one that may not be carried on |
 | `disposition` | enum | `applied` · `discarded` · null while undisposed |
 
 **Exit codes**
@@ -257,6 +268,10 @@ task:2  Interrupted
 ### 2.2 Sessions and execution
 
 Sessions are stored at `$XDG_DATA_HOME/cistern/sessions.json`, or `~/.local/share/cistern/sessions.json` when `XDG_DATA_HOME` is unset.
+
+Every run of every task is appended to `$XDG_DATA_HOME/cistern/runs.jsonl`, one line each, and nothing rewrites a line already there. Each line also records what the session set aside for that run, in the unit the budget was declared in, so what decided a run sits beside what came of it. That figure is what the session held against its own budget while the run went rather than a limit the run was held to. Beside it the line records what the vendor said about how the run ended, where it said anything, and how many turns it took, where the vendor counted them. That sentence is kept beside the task's own reason rather than in place of it: a task cut off at a ceiling is left with one word for it whatever ceiling it was, and a run held back by its turns and a run held back by what it may spend say different things about the task. A run of a session declared as a share also records two readings of the vendor's limit, whose difference is what that run is charged in the unit the share was declared in. They are what the session had read last before this run ended and what it read when this run ended, which is an accounting line either side of the run rather than a reading taken as it began and as it finished. Both are readings the session had already taken, so writing them down asks the vendor nothing further. The second of the two also records when it was taken, which is not when the run ended: reading the limit means putting a session in front of the vendor and waiting for its status line, and whatever moved the limit meanwhile is in the figure. The reading a run starts from is whichever reading the session took last before this one ended, which is the previous run to end rather than the previous run to start: tasks in a session run at once, so the two are not the same. Its time is on that line rather than repeated here. Where a session had nothing running between two readings, whatever the limit moved over that stretch is somebody else's doing. A task runs more than once when the vendor turns it away, and the backlog keeps only the most recent, which is what `task show` reports. What a budget is worked out from is read from the ledger instead, so a second run does not displace the first. Nothing removes the file for you.
+
+A session is held to the time it declared whether or not anything ends. Nothing else asks about a session until one of its tasks ends, and a session with one long run going would otherwise pass its deadline unnoticed.
 
 A task runs in a checkout of its own, made with `git worktree` under `$XDG_DATA_HOME/cistern/worktrees`.
 
@@ -531,7 +546,77 @@ $ cistern diff 1 --stat
 
 ### 2.4 Review and disposition
 
-`review ls` lists what is waiting to be disposed of, and `apply` and `discard` dispose of it. Neither changes a branch.
+`review ls` lists what is waiting to be disposed of, and `apply`, `discard`, `retry`, and `resume` dispose of it. None of them changes a branch. `tidy` takes away the work areas of tasks already disposed of.
+
+#### `cistern retry`
+
+Puts a task that ended back in the backlog, so the next session may take it again.
+
+```
+cistern retry <task>
+```
+
+For a task cut off at its ceiling, or one that failed. The branch its last run left stays, and the run that starts next starts from it. A task waiting again is out of the review queue and back in the backlog, which is what lets the tasks waiting on it run.
+
+The work is done over. The conversation the task's last run was in is let go, and the run that starts next starts one of its own. `resume` is the same command without that.
+
+**Output**
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `task` | string | The task now waiting |
+| `branch` | string | The branch its last run left, which stays |
+| `attempts` | string | How many times it has been assigned so far |
+| `carries_on` | boolean | Whether the next run carries a conversation on, or starts one |
+
+**Exit codes**
+
+| Code | Condition |
+| --- | --- |
+| 0 | Success |
+| 3 | No such task |
+| 4 | The task has not ended |
+| 5 | Core error |
+
+#### `cistern resume`
+
+Puts a task that ended back in the backlog, carrying on the conversation its last run was in.
+
+```
+cistern resume <task>
+```
+
+The same as `retry` but for work continuing rather than being done over. A run of a task that was cut off left three things behind: what it committed on the branch, what it had not committed in the work area, and the conversation it was in. `retry` keeps the first two; this keeps all three, so the run that starts next picks the conversation up instead of reading everything back.
+
+The task carries the conversation until a run of it finishes or somebody disposes of the result. A task whose last run finished has none to carry on, and one asked for it starts a conversation of its own, which is `retry` by another name. So does a task of a vendor that names no conversation in its answers.
+
+**Output** and **exit codes** are `retry`'s.
+
+#### `cistern tidy`
+
+Takes away the work areas of tasks that have been disposed of.
+
+```
+cistern tidy
+```
+
+A task runs in a checkout of its own and nothing removes it, so they accumulate one per task. This removes those a person is finished with: the task has ended, and `apply` or `discard` has taken it out of the review queue. A task still running keeps its work area because a run is in it, and one nobody has disposed of keeps it because that is where a person looks at what was done and where a task waiting again carries on.
+
+The branch is kept whatever happens to the work area, so nothing a run committed goes with it, and `apply` reads from the branch. A work area holding changes nobody committed is left where it is: git refuses to remove it, nothing here forces it, and what git said is reported. Registrations for work areas somebody removed by hand are pruned at the same time.
+
+**Output**
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `items` | array | Per task: `task`, `worktree`, `kept` |
+| `items[].kept` | string | Why it was left where it is, or null for one that was taken away |
+
+**Exit codes**
+
+| Code | Condition |
+| --- | --- |
+| 0 | Success |
+| 5 | Core error |
 
 #### `cistern review ls`
 
@@ -650,7 +735,7 @@ task:6 discarded
 
 #### `cistern config`
 
-Sets the vendor.
+Sets the vendor, and how a session is run.
 
 ```
 cistern config set <key> <value>
@@ -661,7 +746,10 @@ cistern config get [<key>]
 
 | Key | Value | Description |
 | --- | --- | --- |
-| `vendor` | `claude` | The agent to run. 0.1.0 supports `claude` only |
+| `vendor` | a name a definition exists for | The agent to run. `claude` ships with the daemon, and a file at `$XDG_CONFIG_HOME/cistern/vendors/<name>.toml` adds a name or lays over one that ships, `claude` included. A file laid over another replaces an array whole rather than adding to it, so an override that changes `args` has to keep whatever `answer.reader` reads |
+| `pacing` | `holds` · `any` | Whether a session starts a task a run of whose model the budget will not outlast at the rate it is going. `holds` keeps it waiting; `any` starts it. Neither ends a run: what happens to one still going when the budget is spent is `locking`. Asked only of a run that would be added to others: a session with nothing going starts one whatever the rate says, since one run ended at the budget keeps what it committed and holding it back leaves the budget unspent and nothing done. What this decides is how many runs stand in front of a budget that is nearly finished, since each of them is one more to be cut short there. Defaults to `holds` |
+| `locking` | `cuts` · `waits` | What a session does about runs still going once it has spent what it declared. `cuts` ends them, so the declared figure is a line the session does not cross; a run ended that way keeps what it committed and loses what it did since. `waits` lets them finish, so nothing they did is lost and the session spends past the figure by however far they had to go. Defaults to `cuts` |
+| `timing` | `fits` · `any` | What a session does about a task a run of whose model has taken longer than the session has left. `fits` holds it back rather than starting something the session will not see the end of. `any` starts it anyway. Neither ends a run: a session past its deadline takes nothing more on and lets what is going finish. Defaults to `fits` |
 
 Configuration is stored at `$XDG_CONFIG_HOME/cistern/config.toml`, or `~/.config/cistern/config.toml` when that variable is unset.
 

@@ -26,7 +26,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Sets the vendor.
+    /// Sets the vendor, and how a session is run.
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
@@ -71,6 +71,12 @@ pub enum Command {
     Apply { task: String },
     /// Takes a task out of the review queue, leaving its branch alone.
     Discard { task: String },
+    /// Puts a task that ended back in the backlog, so a session may do it over.
+    Retry { task: String },
+    /// The same, carrying on the conversation the task's last run was in.
+    Resume { task: String },
+    /// Takes away the work areas of tasks that have been disposed of.
+    Tidy,
     /// Declares a budget and starts the session's unattended loop.
     Run {
         /// A share of the vendor's five-hour limit, or a count of tokens.

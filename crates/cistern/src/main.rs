@@ -4,6 +4,7 @@ use std::process::ExitCode;
 
 mod cli;
 mod config;
+mod daemon;
 mod review;
 mod session;
 mod task;
@@ -28,6 +29,9 @@ fn main() -> ExitCode {
         Some(cli::Command::Review { command }) => review::run(command),
         Some(cli::Command::Apply { task }) => review::apply(&task),
         Some(cli::Command::Discard { task }) => review::discard(&task),
+        Some(cli::Command::Retry { task }) => review::retry(&task),
+        Some(cli::Command::Resume { task }) => review::resume(&task),
+        Some(cli::Command::Tidy) => review::tidy(),
         Some(cli::Command::Interrupt) => session::interrupt(),
         Some(cli::Command::Session { command }) => session::query(command),
         Some(cli::Command::Run { usage, time, model }) => session::run(&usage, &time, model),

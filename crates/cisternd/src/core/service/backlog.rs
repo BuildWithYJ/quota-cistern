@@ -177,6 +177,7 @@ impl BacklogUseCase for BacklogService<'_> {
             branch: task.result_branch(),
             reason: task.reason().map(str::to_owned),
             worktree: task.worktree().map(str::to_owned),
+            conversation: task.conversation().map(str::to_owned),
             disposition: task.disposition().map(|it| it.to_string()),
             commits,
             base_ahead,
@@ -296,6 +297,7 @@ fn restored_from(held: StoredTask) -> Result<Restored, Refusal> {
             .map(|id| SessionId::parse(id).ok_or_else(|| unreadable("session", id)))
             .transpose()?,
         worktree: held.worktree,
+        conversation: held.conversation,
         started_at: held
             .started_at
             .as_deref()
@@ -307,6 +309,17 @@ fn restored_from(held: StoredTask) -> Result<Restored, Refusal> {
             .map(|at| stored_count("ended_at", at))
             .transpose()?,
         reason: held.reason,
+        attempts: held
+            .attempts
+            .as_deref()
+            .map(|at| stored_number("attempts", at))
+            .transpose()?
+            .unwrap_or_default(),
+        ceiling: held
+            .ceiling
+            .as_deref()
+            .map(|at| stored_count("ceiling", at))
+            .transpose()?,
         consumed: observed(held.consumed, held.unreadable)?,
         disposition: held
             .disposition
@@ -323,26 +336,32 @@ fn written(backlog: &Backlog) -> StoredBacklog {
         tasks: backlog
             .tasks()
             .iter()
-            .map(|task| StoredTask {
-                id: task.id().to_string(),
-                title: task.title().to_owned(),
-                instruction: task.instruction().to_owned(),
-                branch: task.branch().map(str::to_owned),
-                after: task.after().map(|after| after.to_string()),
-                model: task.model().map(str::to_owned),
-                repository: task.repository().to_string(),
-                state: task.state().to_string(),
-                session: task.session().map(|id| id.to_string()),
-                worktree: task.worktree().map(str::to_owned),
-                started_at: task.started_at().map(|at| at.to_string()),
-                ended_at: task.ended_at().map(|at| at.to_string()),
-                reason: task.reason().map(str::to_owned),
-                consumed: kept(task.consumed()),
-                unreadable: match task.consumed() {
-                    Observation::Unreadable { why } => Some(why.clone()),
-                    _ => None,
-                },
-                disposition: task.disposition().map(|it| it.to_string()),
+            .map(|task| {
+                let (spent, unreadable) = kept(task.consumed());
+                StoredTask {
+                    id: task.id().to_string(),
+                    title: task.title().to_owned(),
+                    instruction: task.instruction().to_owned(),
+                    branch: task.branch().map(str::to_owned),
+                    after: task.after().map(|after| after.to_string()),
+                    model: task.model().map(str::to_owned),
+                    repository: task.repository().to_string(),
+                    state: task.state().to_string(),
+                    session: task.session().map(|id| id.to_string()),
+                    worktree: task.worktree().map(str::to_owned),
+                    conversation: task.conversation().map(str::to_owned),
+                    started_at: task.started_at().map(|at| at.to_string()),
+                    ended_at: task.ended_at().map(|at| at.to_string()),
+                    reason: task.reason().map(str::to_owned),
+                    attempts: match task.attempts() {
+                        0 => None,
+                        tried => Some(tried.to_string()),
+                    },
+                    ceiling: task.ceiling().map(|at| at.to_string()),
+                    consumed: spent,
+                    unreadable,
+                    disposition: task.disposition().map(|it| it.to_string()),
+                }
             })
             .collect(),
     }
@@ -374,16 +393,38 @@ fn observed(
 }
 
 /// Hands one task's consumption to a store as the text a user would have typed.
-fn kept(consumed: &Observation) -> Option<StoredConsumption> {
+/// The other way, for a store that hands its five figures back as the text it kept them as.
+///
+/// Beside `kept` so that the two directions of one conversion sit together. A figure that does
+/// not read as a number leaves nothing, since a count that could not be read is not a count of
+/// nothing; who is told that, and how, is the caller's.
+pub(super) fn counted(spent: &StoredConsumption) -> Option<Consumption> {
+    Some(Consumption {
+        input: spent.input.parse().ok()?,
+        output: spent.output.parse().ok()?,
+        cache_written: spent.cache_written.parse().ok()?,
+        cache_read: spent.cache_read.parse().ok()?,
+        cost: spent.cost.parse().ok()?,
+    })
+}
+
+/// Answers with both halves, since a store keeps the figures and the reason in two fields and
+/// what ran leaves one of them and never both. Two calls would let a caller write one and
+/// forget the other, which is what a task stored as having spent nothing looks like.
+pub(super) fn kept(consumed: &Observation) -> (Option<StoredConsumption>, Option<String>) {
     match consumed {
-        Observation::Spent(counted) => Some(StoredConsumption {
-            input: counted.input.to_string(),
-            output: counted.output.to_string(),
-            cache_written: counted.cache_written.to_string(),
-            cache_read: counted.cache_read.to_string(),
-            cost: counted.cost.to_string(),
-        }),
-        _ => None,
+        Observation::Spent(counted) => (
+            Some(StoredConsumption {
+                input: counted.input.to_string(),
+                output: counted.output.to_string(),
+                cache_written: counted.cache_written.to_string(),
+                cache_read: counted.cache_read.to_string(),
+                cost: counted.cost.to_string(),
+            }),
+            None,
+        ),
+        Observation::Unreadable { why } => (None, Some(why.clone())),
+        Observation::NotYet => (None, None),
     }
 }
 

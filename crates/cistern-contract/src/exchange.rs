@@ -5,13 +5,16 @@
 //! The rule that one line carries one message is written here once.
 //! Whether the two versions match is settled here too, from the envelope alone.
 
-use std::io::{self, BufRead, BufReader, Write};
+use std::{
+    io::{self, BufRead, BufReader, Write},
+    time::{Duration, Instant},
+};
 
 use interprocess::local_socket::{Listener, ListenerOptions, Name, Stream, prelude::*};
 
 use crate::{
     Answer, Failure, Request, Response, VERSION,
-    address::{clear_if_dead, name, prepare},
+    address::{Alone, clear_if_dead, hold_alone, name, prepare},
     code::{CORE_ERROR, USAGE_ERROR},
 };
 
@@ -48,24 +51,54 @@ pub(crate) fn ask_at(
 /// The socket the core listens on.
 ///
 /// It holds the listener rather than handing it out, so that no caller has to name the socket library.
-pub struct Server(Listener);
+///
+/// It holds the lock that says this process is the one core for as long as it listens. Giving
+/// the server up is what gives the lock back, so the two cannot come apart.
+pub struct Server(Listener, #[allow(dead_code)] Option<Alone>);
 
 /// One connection that has arrived and not yet been answered.
 pub struct Exchange(Stream);
+
+/// How long a connection has to send its request.
+///
+/// Apache's figure for reading a request header, which is the closest thing anyone has
+/// settled on. It is far longer than this needs, since a surface writes as soon as it has
+/// connected and the two are on one machine; what it is here for is a connection that never
+/// writes at all.
+const WITHIN: Duration = Duration::from_secs(20);
 
 /// Opens the socket.
 ///
 /// Fails with [`io::ErrorKind::AddrInUse`] when a core is already listening.
 pub fn listen() -> io::Result<Server> {
     prepare()?;
+    // Taken before the socket is cleared, so that one core is deciding whether the socket
+    // belongs to anyone. Two doing it at once each read the other's half-bound socket as dead
+    // and each take it away.
+    let alone = hold_alone()?;
     let name = name()?;
     clear_if_dead()?;
-    listen_at(name)
+    listen_at(name).map(|Server(listener, _)| Server(listener, Some(alone)))
 }
 
 /// Opens the socket at a given address, without preparing or clearing it.
+/// The whole of what opening the socket does, for a directory named rather than read out of
+/// the environment. A test reaches the order of the steps through here.
+#[cfg(all(unix, test))]
+pub(crate) fn listen_in(dir: &std::path::Path) -> io::Result<Server> {
+    crate::address::prepare_at(dir)?;
+    let alone = crate::address::hold_alone_at(&dir.join("lock"))?;
+    let sock = dir.join("sock");
+    crate::address::clear_if_dead_at(&sock)?;
+    listen_at(crate::address::named(&sock)?)
+        .map(|Server(listener, _)| Server(listener, Some(alone)))
+}
+
 pub(crate) fn listen_at(name: Name<'_>) -> io::Result<Server> {
-    ListenerOptions::new().name(name).create_sync().map(Server)
+    ListenerOptions::new()
+        .name(name)
+        .create_sync()
+        .map(|listener| Server(listener, None))
 }
 
 impl Server {
@@ -85,12 +118,23 @@ impl Exchange {
     /// Neither does a request from a surface of another version.
     /// What arrived is the framing's business, and the framing is here.
     pub fn answer(self, respond: impl FnOnce(Request) -> Response) -> io::Result<()> {
-        let mut line = String::new();
-        // Connecting and leaving is how a surface finds out whether anyone is listening.
-        // There is nothing to answer and nothing went wrong.
-        if BufReader::new(&self.0).read_line(&mut line)? == 0 {
+        self.answer_within(WITHIN, respond)
+    }
+
+    /// The same, waiting only as long as it is told to.
+    ///
+    /// [`answer`](Self::answer) is this with the figure above. A test reaches a shorter wait
+    /// through here, the way it reaches a temporary socket through [`ask_at`].
+    pub(crate) fn answer_within(
+        self,
+        within: Duration,
+        respond: impl FnOnce(Request) -> Response,
+    ) -> io::Result<()> {
+        let Some(line) = self.request_within(within)? else {
+            // Connecting and leaving is how a surface finds out whether anyone is listening.
+            // There is nothing to answer and nothing went wrong.
             return Ok(());
-        }
+        };
 
         let response = match serde_json::from_str::<Request>(&line) {
             Ok(request) => settle(request, respond),
@@ -98,6 +142,79 @@ impl Exchange {
         };
         write_line(&self.0, &serde_json::to_string(&response)?)
     }
+
+    /// The line a surface sent, or nothing where it closed without sending one.
+    ///
+    /// The whole line has to arrive within the time given, not each piece of it. A timeout set
+    /// on the socket bounds one read, so a surface sending a byte at a time just under that
+    /// would hold this open for as long as it kept going.
+    ///
+    /// This is against a surface that wedged, not one that means harm. A peer that reaches the
+    /// socket can already run programs as this user, which is what the core does with the
+    /// agent, so what it could hold here is not what it would take.
+    ///
+    /// One read at a time is what makes the total the bound. Reading up to the newline in a
+    /// single call loops over reads inside that call and never comes back here, so the time
+    /// left is worked out once and every piece after it arrives against a bound that was set
+    /// before any of them. Taking what one read brought and returning here is what lets the
+    /// time left be worked out again.
+    ///
+    /// The pieces are put together before they are read as text. A character wider than a byte
+    /// can be split across two reads, and each half read on its own is not a character.
+    fn request_within(&self, within: Duration) -> io::Result<Option<String>> {
+        let since = Instant::now();
+        let mut reading = BufReader::new(&self.0);
+        let mut line: Vec<u8> = Vec::new();
+
+        loop {
+            let left = within.checked_sub(since.elapsed()).unwrap_or_default();
+            if left.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "the whole request did not arrive in time",
+                ));
+            }
+            // A named pipe answers `Unsupported` to this. The core is Unix, which
+            // `docs/ipc.md` says; a Windows core would need another way to bound a read
+            // before it needed anything else here.
+            self.0.set_recv_timeout(Some(left))?;
+
+            let held = match reading.fill_buf() {
+                Ok(held) => held,
+                // The socket was set to the time that was left, so a read that expired says
+                // the time is up. The check above is what says so, and it also covers a read
+                // that expired with a little time still on it.
+                Err(e) if expired(&e) => continue,
+                Err(e) => return Err(e),
+            };
+            if held.is_empty() {
+                // Closed without sending anything, or part way through a line.
+                // Neither is a request.
+                return Ok(None);
+            }
+            let taken = match held.iter().position(|byte| *byte == b'\n') {
+                Some(at) => at + 1,
+                None => held.len(),
+            };
+            line.extend_from_slice(&held[..taken]);
+            reading.consume(taken);
+
+            if line.ends_with(b"\n") {
+                return Ok(Some(String::from_utf8_lossy(&line).into_owned()));
+            }
+        }
+    }
+}
+
+/// A read that brought nothing rather than one that went wrong.
+///
+/// A socket with a time on it reports an expired read as either of these, and a signal that
+/// arrived mid-read as the third. None of them says anything about the request.
+fn expired(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted
+    )
 }
 
 /// Answers what the envelope alone decides, and passes on the rest.
@@ -216,6 +333,7 @@ mod round_trip {
             atomic::{AtomicBool, Ordering},
         },
         thread,
+        time::Duration,
     };
 
     use interprocess::local_socket::GenericFilePath;
@@ -276,6 +394,103 @@ mod round_trip {
             Response::Error(failure) => panic!("expected an answer, got {failure:?}"),
         }
     }
+
+    /// A connection that holds without writing would otherwise be answered for as long as it
+    /// is held, and the core has a thread on it the whole time.
+    #[test]
+    fn a_connection_that_writes_nothing_is_given_up_on() {
+        let (_dir, path) = a_socket();
+        let server = listen_at(address(&path)).unwrap();
+        let reached = Arc::new(AtomicBool::new(false));
+        let asked = Arc::clone(&reached);
+
+        let serving = thread::spawn(move || {
+            let exchange = server.accept().unwrap();
+            exchange.answer_within(Duration::from_millis(50), |request| {
+                asked.store(true, Ordering::SeqCst);
+                Response::Data(Answer {
+                    command: request.command,
+                    data: serde_json::Value::Null,
+                })
+            })
+        });
+
+        // Connected and held open, with nothing written.
+        let held = Stream::connect(address(&path)).unwrap();
+        let answered = serving.join().unwrap();
+        drop(held);
+
+        assert!(
+            answered.is_err(),
+            "the read waited for a write that never came"
+        );
+        assert!(!reached.load(Ordering::SeqCst));
+    }
+
+    /// A surface sending a piece at a time, each within the wait, would otherwise hold the
+    /// core on it for as long as it kept going. What is bounded is the whole request.
+    ///
+    /// The sender is not what ends this. It keeps the connection open and keeps sending, and
+    /// stops only long after the wait, so that the wait is what the core gives up on. A core
+    /// that only gave up when the sender stopped would hold a thread for as long as a sender
+    /// chose to keep one.
+    #[test]
+    fn a_request_that_arrives_a_piece_at_a_time_is_given_up_on() {
+        let (_dir, path) = a_socket();
+        let server = listen_at(address(&path)).unwrap();
+        let reached = Arc::new(AtomicBool::new(false));
+        let asked = Arc::clone(&reached);
+
+        let serving = thread::spawn(move || {
+            let exchange = server.accept().unwrap();
+            let since = Instant::now();
+            let answered = exchange.answer_within(WAITING, |request| {
+                asked.store(true, Ordering::SeqCst);
+                Response::Data(Answer {
+                    command: request.command,
+                    data: serde_json::Value::Null,
+                })
+            });
+            (answered, since.elapsed())
+        });
+
+        // A piece every 40ms with no newline to end the line, and the connection is never
+        // closed until this is told to stop. The count is only so that a core that never
+        // gives up fails here rather than holding the test forever.
+        let stop = Arc::new(AtomicBool::new(false));
+        let told = Arc::clone(&stop);
+        let mut trickling = Stream::connect(address(&path)).unwrap();
+        let sending = thread::spawn(move || {
+            for _ in 0..(GIVES_UP_BY.as_millis() / 40) {
+                if told.load(Ordering::SeqCst) || trickling.write_all(b"x").is_err() {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(40));
+            }
+        });
+
+        let (answered, took) = serving.join().unwrap();
+        stop.store(true, Ordering::SeqCst);
+        sending.join().unwrap();
+
+        // Given up on for running out of time, rather than for the socket closing under it.
+        assert_eq!(
+            answered.map_err(|e| e.kind()),
+            Err(io::ErrorKind::TimedOut),
+            "the whole request was not what the wait bounded"
+        );
+        assert!(
+            took < GIVES_UP_BY,
+            "the core waited {took:?}, which is the sender giving up rather than the wait"
+        );
+        assert!(!reached.load(Ordering::SeqCst));
+    }
+
+    /// Long enough to tell a piece from the next, short enough to keep the test quick.
+    const WAITING: Duration = Duration::from_millis(150);
+
+    /// Far longer than `WAITING`. A core that holds a thread this long is not bounding anything.
+    const GIVES_UP_BY: Duration = Duration::from_secs(2);
 
     #[test]
     fn a_line_that_is_not_a_request_never_reaches_the_core() {

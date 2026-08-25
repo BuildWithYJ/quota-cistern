@@ -59,6 +59,8 @@ pub struct Detail {
     pub branch: Option<String>,
     pub reason: Option<String>,
     pub worktree: Option<String>,
+    /// The conversation its last run was in, for a task that may be carried on.
+    pub conversation: Option<String>,
     pub disposition: Option<String>,
     /// What the branch holds, for a task whose run has ended.
     pub commits: Option<Vec<Made>>,

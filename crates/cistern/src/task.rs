@@ -5,10 +5,10 @@
 
 use std::{env, ffi::OsString, io::Read, process::ExitCode};
 
-use cistern_contract::{Response, code::CORE_ERROR, code::USAGE_ERROR, exchange};
+use cistern_contract::{Response, code::CORE_ERROR, code::USAGE_ERROR};
 use serde_json::Value;
 
-use crate::cli::TaskCommand;
+use crate::{cli::TaskCommand, daemon};
 
 /// The mark `docs/cli.md` puts beside a task waiting to be assigned.
 ///
@@ -93,7 +93,7 @@ const BETWEEN_ASKS: std::time::Duration = std::time::Duration::from_secs(2);
 pub fn trace(task: &str, follow: bool, since: Option<String>) -> ExitCode {
     let mut since = since.unwrap_or_default();
     loop {
-        let asked = exchange::ask("trace", serde_json::json!({ "task": task, "since": since }));
+        let asked = daemon::ask("trace", serde_json::json!({ "task": task, "since": since }));
         let answer = match asked {
             Ok(Response::Data(answer)) => answer.data,
             Ok(Response::Error(failure)) => {
@@ -181,7 +181,7 @@ fn clock_of(at: &str) -> String {
 
 /// Asks the core and prints what came back.
 fn send(command: &str, params: Value, print: fn(&Value)) -> ExitCode {
-    match exchange::ask(command, params) {
+    match daemon::ask(command, params) {
         Ok(Response::Data(answer)) => {
             print(&answer.data);
             ExitCode::SUCCESS
@@ -239,6 +239,7 @@ fn detailed(data: &Value) {
     line(DETAILED, "branch", text(data, "branch"));
     line(DETAILED, "reason", text(data, "reason"));
     line(DETAILED, "worktree", text(data, "worktree"));
+    line(DETAILED, "carries on", text(data, "conversation"));
     made(data);
     line(DETAILED, "disposition", text(data, "disposition"));
 }

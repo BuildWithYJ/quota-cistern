@@ -20,19 +20,23 @@ You could build something yourself to run an agent unattended. Preparing it and 
 
 ## Getting started
 
-Installing gives you two commands, `cisternd` and `cistern`.
+Installing gives you two commands, `cisternd` and `cistern`. Take the archive for your machine
+and unpack it into a directory on your `PATH`. The two have to land in the same one, since the
+command line looks for the daemon beside itself.
 
 ```console
-$ cargo install --git https://github.com/BuildWithYJ/quota-cistern cistern cisternd
+$ mkdir -p ~/.local/bin
+$ curl -L https://github.com/BuildWithYJ/quota-cistern/releases/latest/download/cistern-aarch64-apple-darwin.tar.gz | tar -xz -C ~/.local/bin
 ```
 
-`cisternd` is the daemon that runs the tasks and holds the state. Leave it running while you work; it says nothing while it is idle.
+On Linux, take `cistern-x86_64-unknown-linux-gnu.tar.gz` instead. If `cistern` is not found
+afterwards, that directory is not on your `PATH`; unpack into one that is. Fetching with
+`curl` rather than through a browser matters on macOS: a browser marks what it downloads, and
+macOS refuses to run a marked file that nobody signed.
 
-```console
-$ cisternd
-```
+`cisternd` is the daemon that runs the tasks and holds the state. The first `cistern` command starts one and it keeps running afterwards, so there is nothing to start by hand. What it writes goes to `~/.local/state/cistern/daemon.log`.
 
-After that, `cistern` works from any directory. `--version` says whether the two sides are talking.
+`cistern` works from any directory. `--version` says whether the two sides are talking, and it starts no daemon, since a core that is not running is what it has to report.
 
 ```console
 $ cistern --version
@@ -40,11 +44,11 @@ cistern 0.1.0
 core    0.1.0
 ```
 
-Every command goes through the daemon, so without one a command prints `the core is not running` and exits 5. Ctrl-C stops the daemon.
+A command that cannot start a daemon, or that starts one which stops before answering, says so and exits 5. Ctrl-C stops the daemon.
 
 Run `cistern task add` from the repository you want the work done in. It walks up from the current directory to find one and refuses when there is none, and it records the path it found, so moving that repository afterwards leaves the task without one.
 
-After upgrading, restart the daemon. A command and a core of different versions refuse each other, and everything but `cistern --version` exits 5 until both sides are the same build.
+After upgrading, restart the daemon. A command and a core of different versions refuse each other, and every command that reaches the core exits 5 until both sides are the same build.
 
 One session runs at a time, and it opens when you run `run`.
 
@@ -117,8 +121,8 @@ The agent runs with `--permission-mode bypassPermissions`. A work area is not a 
 
 ## Known limitations
 
-- A budget declared as a percentage is measured against the vendor's limit, which is read from its status line, so `run --usage 50%` and `interrupt` wait up to 90 seconds and the daemon answers nothing else while they do. A budget declared in tokens does not read it.
-- That reading depends on how Claude Code presents its limit, so a change there stops percentage budgets from working until this catches up.
+- A budget declared as a percentage is measured against the vendor's limit, which is read from its status line, so `run --usage 50%` and `interrupt` wait up to 90 seconds. A budget declared in tokens does not read it.
+- That reading depends on how Claude Code presents its limit. The words it waits for and the place the figure sits are in the vendor definition, so a change there is a file to write rather than a release to wait for.
 - Work areas stay under the data directory and result branches stay in the repository. Nothing removes either for you.
 
 ## Contributing

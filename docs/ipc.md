@@ -11,7 +11,19 @@ The `cistern-contract` crate defines the envelope in Rust. The crate is the sour
 | Unix | `$XDG_RUNTIME_DIR/cistern/sock`, or `~/.local/state/cistern/sock` when that variable is unset |
 | Windows | the named pipe `\\.\pipe\cistern` |
 
+**The core runs on Unix.** The requirements say macOS or Linux, the daemon reads the vendor's limit through a pseudo-terminal, and nothing is built or run against Windows. The Windows address is written down and the code carries the arms for it so that the envelope is one document rather than two, but a Windows core is not something this project offers today. One thing already known to be missing: `interprocess` answers `Unsupported` to a receive timeout on a named pipe, and the wait on a request below is set through one.
+
 The core creates the socket when it starts and removes it when it exits. A surface that cannot connect reports that the core is not running.
+
+On Unix the directory holding the socket is created readable, writable, and searchable by its owner alone. `$XDG_RUNTIME_DIR` is already private to the user where the system sets it; where it is unset the socket goes under the home directory, which is commonly open to everyone on the machine, and a socket anyone may connect to is one anyone may give work to.
+
+## One core at a time
+
+On Unix the core takes an exclusive `flock` on `<socket directory>/lock` before it clears or binds the socket, and holds it until the process ends. A core that cannot take it exits rather than starting.
+
+The stores are held against a lock inside one process, which says nothing between two of them, so being the only core is what makes that lock true. Clearing a socket left behind by a killed core and binding a new one are also one step under it: two cores doing that at once each read the other's half-bound socket as dead and each take it away.
+
+The kernel gives the lock back when the holder ends, however it ended, which is what tells a core that is still running from a file a killed one left behind. On Windows the named pipe is a kernel object under a name only one process can hold, so the name itself does this and there is no lock file.
 
 One connection carries one request. The core never sends a message the surface did not ask for.
 
