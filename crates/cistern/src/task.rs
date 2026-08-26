@@ -8,6 +8,12 @@ use std::{
     ffi::OsString,
     io::{self, IsTerminal, Read, Write},
     process::ExitCode,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::{Duration, Instant},
 };
 
 use cistern_contract::{Response, code::CORE_ERROR, code::GENERAL_FAILURE, code::USAGE_ERROR};
@@ -73,6 +79,10 @@ fn add(
     // the core is a daemon and the person is here. What they choose goes back as the instruction,
     // so the second ask is an ordinary one and the gate reads it like any other.
     loop {
+        // Working out what a line meant means reading the repository and asking a model, which
+        // takes as long as it takes. A command that says nothing for a minute is one a person
+        // stops, so it says what it is doing and how long it has been at it.
+        let waiting = (!asked_already).then(Waiting::shown);
         let asked = asked(
             "task_add",
             serde_json::json!({
@@ -89,6 +99,7 @@ fn add(
             // a code this surface has more to say about than the core did.
             |_| None,
         );
+        drop(waiting);
         let answer = match asked {
             Ok(answer) => answer,
             Err(code) => return code,
@@ -103,6 +114,56 @@ fn add(
         };
         instruction = chosen;
         asked_already = true;
+    }
+}
+
+/// How long the core is given to answer before anything is said about waiting.
+///
+/// An instruction the author wrote out in full comes back at once, and a line that flashed up
+/// and away would be read as something having gone wrong.
+const BEFORE_SAYING_SO: Duration = Duration::from_millis(700);
+
+/// A line saying the core is working, taken away when it answers.
+///
+/// Written over itself as the seconds pass rather than added to, so what is left on the screen
+/// when the answer comes is what the answer wrote and nothing before it.
+struct Waiting {
+    going: Arc<AtomicBool>,
+    saying: Option<thread::JoinHandle<()>>,
+}
+
+impl Waiting {
+    fn shown() -> Self {
+        let going = Arc::new(AtomicBool::new(true));
+        let mine = Arc::clone(&going);
+        let saying = thread::spawn(move || {
+            let since = Instant::now();
+            thread::sleep(BEFORE_SAYING_SO);
+            while mine.load(Ordering::Relaxed) {
+                eprint!(
+                    "\r  working out what that means... {}s",
+                    since.elapsed().as_secs()
+                );
+                io::stderr().flush().ok();
+                thread::sleep(Duration::from_millis(500));
+            }
+        });
+        Waiting {
+            going,
+            saying: Some(saying),
+        }
+    }
+}
+
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        self.going.store(false, Ordering::Relaxed);
+        if let Some(saying) = self.saying.take() {
+            saying.join().ok();
+        }
+        // Written over with blanks rather than left for the answer to print under.
+        eprint!("\r{:60}\r", "");
+        io::stderr().flush().ok();
     }
 }
 
