@@ -15,7 +15,7 @@ use crate::core::{
         },
         outbound::{
             BacklogStore, Between, Draft, Drafted, Drafter, Grounding, Ran, RepositoryRoots,
-            Results, StoredBacklog, StoredConsumption, StoredTask, Surroundings,
+            Results, Room, StoredBacklog, StoredConsumption, StoredTask, Surroundings,
         },
     },
 };
@@ -78,7 +78,7 @@ impl<'a> BacklogService<'a> {
         let changes = self.surroundings.changes(root, CHANGES_SHOWN);
         let lately = self.surroundings.lately(root, COMMITS_SHOWN);
         let branch = self.surroundings.branch(root);
-        let tracks = self.surroundings.tracks(root, FILES_SHOWN);
+        let tracks = self.surroundings.tracks(root, FILES_TRACKED);
         let ask = || Draft {
             instruction: given.instruction,
             changes: &changes,
@@ -106,19 +106,20 @@ impl<'a> BacklogService<'a> {
 
         // What the repository would not hold up is the model's to answer for rather than the
         // author's: it named a file that is not there, and it is the one that can look again.
-        let amiss: Vec<String> = left
-            .iter()
-            .filter(|one| one.is_the_models())
-            .map(Undecided::left_to_decide)
-            .collect();
+        let theirs: Vec<&Undecided> = left.iter().filter(|one| one.is_the_models()).collect();
+        let amiss: Vec<String> = theirs.iter().map(|one| one.left_to_decide()).collect();
+        let named: Vec<Named> = theirs.iter().filter_map(|one| one.part()).collect();
         if !amiss.is_empty()
             && let Some(again) = self.drafter.draft_again(ask(), &drafted, &amiss)
         {
+            // Part by part, and only where the second answer settles what the first did not. A
+            // model asked to correct one part rewrites all of them, and a second answer that
+            // settles less is not a correction: it is the same question answered again, worse.
             let second = spec_from(&again, given.instruction);
-            let after = self.counted(&second, given.instruction, root);
-            // Taken only where it is better. A second answer that is worse is a second guess.
-            if after.len() < left.len() {
-                spec = second;
+            let mended = mended(&spec, second, &named);
+            let after = self.counted(&mended, given.instruction, root);
+            if after.len() <= left.len() {
+                spec = mended;
                 left = after;
             }
         }
@@ -141,7 +142,7 @@ impl<'a> BacklogService<'a> {
         // Asked before it is run: a command that is not there is the model's mistake, and a
         // command that fails is the task's whole point.
         let ran = spec
-            .success
+            .done_when
             .said
             .as_deref()
             .filter(|success| self.grounding.runnable(root, success))
@@ -591,12 +592,25 @@ fn unusable(e: &NotABacklog) -> String {
 
 /// How much of what surrounds a task reaches the model.
 ///
-/// A reader that is a model is paid for by the line, and a working tree can hold a rewrite. These
-/// are the first values: enough to see what is being done, not so much that adding a task costs
-/// what running one does.
-const CHANGES_SHOWN: usize = 200;
-const COMMITS_SHOWN: usize = 10;
-const FILES_SHOWN: usize = 300;
+/// A reader that is a model is paid for by the character, and a working tree can hold a rewrite.
+/// Each is bounded twice, by how many lines and by how many characters over all of them, because
+/// a count alone bounds nothing: two hundred lines of a lock file is a megabyte, and what adding
+/// a task costs would be the repository's to decide rather than this file's.
+///
+/// Together they hold what surrounds a task under about ten thousand tokens, whatever repository
+/// it is added from. First values, chosen to be enough to see what is being done.
+const CHANGES_SHOWN: Room = Room {
+    most: 200,
+    chars: 20_000,
+};
+const COMMITS_SHOWN: Room = Room {
+    most: 10,
+    chars: 2_000,
+};
+const FILES_TRACKED: Room = Room {
+    most: 300,
+    chars: 12_000,
+};
 
 /// How long the success condition is given to say whether it fails.
 ///
@@ -623,7 +637,7 @@ fn spec_from(drafted: &Drafted, _wrote: &str) -> Spec {
     for (named, proposed) in [
         (Named::Goal, &drafted.goal),
         (Named::Place, &drafted.place),
-        (Named::Success, &drafted.success),
+        (Named::DoneWhen, &drafted.done_when),
         (Named::OnFailure, &drafted.on_failure),
         (Named::Why, &drafted.why),
         (Named::Scope, &drafted.scope),
@@ -645,6 +659,35 @@ fn spec_from(drafted: &Drafted, _wrote: &str) -> Spec {
     spec
 }
 
+/// The first spec with the second's parts where those settle something the first did not.
+///
+/// What is kept is not only the value. A part the first answer left open carries the question it
+/// wrote about it and the answers it offered to choose between, and those are what a person is
+/// shown; a second answer that left the same part open with no question at all would take them
+/// away and leave a blank line.
+fn mended(held: &Spec, second: Spec, amiss: &[Named]) -> Spec {
+    let mut mended = held.clone();
+    for named in Named::ALL {
+        let (was, now) = (held.part(named), second.part(named));
+        let better = match (was.is_open(), now.is_open()) {
+            // It settled what the first could not.
+            (true, false) => true,
+            // Neither settled it, so what is kept is whichever has something to ask.
+            (true, true) => was.asks.is_none() && now.asks.is_some(),
+            // The first settled it, and the repository would not have it. That is the part the
+            // second answer was asked about, so its answer to it is the one to take.
+            (false, false) => amiss.contains(&named),
+            // The first settled it and the repository held it up. Emptying it now would be the
+            // second answer taking away what the first got right.
+            (false, true) => false,
+        };
+        if better {
+            *mended.part_mut(named) = now.clone();
+        }
+    }
+    mended
+}
+
 /// The spec and what it leaves, in the terms the surface showing it is answered in.
 fn unconfirmed(spec: &Spec, left: &[Undecided]) -> Unconfirmed {
     Unconfirmed {
@@ -663,6 +706,8 @@ fn unconfirmed(spec: &Spec, left: &[Undecided]) -> Unconfirmed {
             .iter()
             .map(|one| Left {
                 part: one.part().map(|named| named.label().to_owned()),
+                kind: one.kind().to_owned(),
+                files: one.files(),
                 decides: one.left_to_decide(),
             })
             .collect(),
@@ -681,7 +726,7 @@ mod tests {
     use super::*;
 
     /// A spec an author has already seen, which is what most of these tests register with.
-    static SEEN: &str = "goal: fix the parser\nplace: src/util.rs\nsuccess: cargo test util\non failure: stop after three attempts\nwhy: it panics\nscope: src/util.rs only";
+    static SEEN: &str = "goal: fix the parser\nplace: src/util.rs\ndone when: cargo test util\non failure: stop after three attempts\nwhy: it panics\nscope: src/util.rs only";
 
     /// A backlog held in memory, so the steps can be checked without a file.
     struct Remembered {
@@ -783,7 +828,7 @@ mod tests {
     }
 
     impl Surroundings for Around {
-        fn changes(&self, _repository: &str, _lines: usize) -> String {
+        fn changes(&self, _repository: &str, _room: Room) -> String {
             self.changed
                 .iter()
                 .map(|path| format!("--- a/{path}"))
@@ -791,7 +836,7 @@ mod tests {
                 .join("\n")
         }
 
-        fn lately(&self, _repository: &str, _commits: usize) -> String {
+        fn lately(&self, _repository: &str, _room: Room) -> String {
             String::new()
         }
 
@@ -799,7 +844,7 @@ mod tests {
             None
         }
 
-        fn tracks(&self, _repository: &str, _paths: usize) -> Vec<String> {
+        fn tracks(&self, _repository: &str, _room: Room) -> Vec<String> {
             let mut held = self.changed.clone();
             held.extend(self.holds.iter().cloned());
             held
@@ -951,7 +996,7 @@ mod tests {
         [
             "goal: stop the double count",
             "place: src/search.rs",
-            "success: cargo test search",
+            "done when: cargo test search",
             "on failure: stop after three attempts",
             "why: the counter is incremented twice",
             "scope: src/search.rs only",
@@ -1065,6 +1110,8 @@ mod tests {
             asked.undecided,
             vec![Left {
                 part: Some("on failure".to_owned()),
+                kind: "unsettled".to_owned(),
+                files: None,
                 decides: "what to do when it fails".to_owned(),
             }]
         );
@@ -1100,6 +1147,8 @@ mod tests {
             asked.undecided,
             vec![Left {
                 part: Some("place".to_owned()),
+                kind: "nowhere".to_owned(),
+                files: None,
                 decides: "where the work is, since nothing is there".to_owned(),
             }]
         );
@@ -1107,12 +1156,12 @@ mod tests {
 
     /// A sentence about what done would look like leaves the agent judging its own work.
     #[test]
-    fn a_success_condition_nothing_can_run_is_a_decision_left() {
+    fn a_way_to_tell_it_is_done_that_nothing_can_run_is_a_decision_left() {
         let tasks = Remembered::default();
         let mut given = registering("first");
         let held = SEEN.replace(
-            "success: cargo test util",
-            "success: the count should match the documents",
+            "done when: cargo test util",
+            "done when: the count should match the documents",
         );
         given.instruction = &held;
 
@@ -1121,7 +1170,9 @@ mod tests {
         assert_eq!(
             asked.undecided,
             vec![Left {
-                part: Some("success".to_owned()),
+                part: Some("done when".to_owned()),
+                kind: "unverifiable".to_owned(),
+                files: None,
                 decides: "whether it is done".to_owned(),
             }]
         );
@@ -1129,10 +1180,13 @@ mod tests {
 
     /// A command that passes already says either the work is done or that it does not tell.
     #[test]
-    fn a_success_condition_that_passes_already_is_a_decision_left() {
+    fn a_way_to_tell_it_is_done_that_passes_already_is_a_decision_left() {
         let tasks = Remembered::default();
         let mut given = registering("first");
-        let held = SEEN.replace("success: cargo test util", "success: cargo test passing");
+        let held = SEEN.replace(
+            "done when: cargo test util",
+            "done when: cargo test passing",
+        );
         given.instruction = &held;
 
         let asked = unconfirmed(in_a_repository(&tasks).add(given));
@@ -1140,7 +1194,9 @@ mod tests {
         assert_eq!(
             asked.undecided,
             vec![Left {
-                part: Some("success".to_owned()),
+                part: Some("done when".to_owned()),
+                kind: "already".to_owned(),
+                files: None,
                 decides: "whether there is anything to do".to_owned(),
             }]
         );
@@ -1167,7 +1223,7 @@ mod tests {
         let model = Proposing::of(Drafted {
             goal: proposing("stop the double count"),
             place: proposing("src/search.rs"),
-            success: proposing("cargo test search"),
+            done_when: proposing("cargo test search"),
             on_failure: None,
             why: proposing("the counter is incremented twice"),
             scope: proposing("src/search.rs only"),
@@ -1208,13 +1264,13 @@ mod tests {
         let tasks = Remembered::default();
         let model = Proposing::of(Drafted {
             place: proposing("src/serch.rs"),
-            success: proposing("cargo test search"),
+            done_when: proposing("cargo test search"),
             ..Drafted::default()
         })
         .then(Drafted {
             goal: proposing("stop the double count"),
             place: proposing("src/search.rs"),
-            success: proposing("cargo test search"),
+            done_when: proposing("cargo test search"),
             why: proposing("the counter is incremented twice"),
             scope: proposing("src/search.rs only"),
             on_failure: None,
@@ -1249,7 +1305,7 @@ mod tests {
         let model = Proposing::of(Drafted {
             goal: proposing("stop the double count"),
             place: proposing("src/serch.rs"),
-            success: proposing("cargo test search"),
+            done_when: proposing("cargo test search"),
             ..Drafted::default()
         })
         .then(Drafted::default());
@@ -1274,6 +1330,91 @@ mod tests {
             .find(|shown| shown.part == "goal")
             .unwrap();
         assert_eq!(goal.said.as_deref(), Some("stop the double count"));
+    }
+
+    /// The questions the first answer wrote are what a person is shown, so they are not lost.
+    ///
+    /// A model asked to correct one part rewrites all of them, and the second answer here is the
+    /// one that came back against a real repository: prose saying the instruction is too vague,
+    /// and questions for every part with answers to choose between for one of them.
+    #[test]
+    fn asking_again_keeps_the_questions_the_first_answer_wrote() {
+        let tasks = Remembered::default();
+        let asking = |said: &str| {
+            Some(Proposed {
+                said: String::new(),
+                drawn_from: None,
+                others: vec![said.to_owned(), "or this".to_owned()],
+                asks: Some(format!("what about {said}?")),
+            })
+        };
+        let model = Proposing::of(Drafted {
+            // A place that is nowhere, which is the model's to look at again.
+            place: proposing("src/nowhere.rs"),
+            goal: asking("this"),
+            done_when: asking("that"),
+            why: asking("the other"),
+            scope: asking("something"),
+            on_failure: asking("when it fails"),
+        })
+        .then(Drafted {
+            goal: proposing("stop the double count"),
+            ..Drafted::default()
+        });
+        let service = BacklogService::new(
+            &tasks,
+            &IN_A_REPOSITORY,
+            &NO_BRANCH,
+            &NOTHING_AROUND,
+            &GROUNDS,
+            &model,
+        );
+        let mut given = registering("first");
+        given.instruction = "make it stop double-counting";
+
+        let asked = unconfirmed(service.add(given));
+
+        // The one the second answer settled is settled.
+        let goal = asked
+            .parts
+            .iter()
+            .find(|shown| shown.part == "goal")
+            .unwrap();
+        assert_eq!(goal.said.as_deref(), Some("stop the double count"));
+        // The rest keep what the first wrote about them, rather than being emptied.
+        for named in ["done when", "why", "scope", "on failure"] {
+            let shown = asked.parts.iter().find(|part| part.part == named).unwrap();
+            assert!(shown.asks.is_some(), "{named} lost its question");
+            assert_eq!(shown.others.len(), 2, "{named} lost its answers");
+        }
+    }
+
+    /// A part nobody settled is not asked about twice: the model has already said it cannot tell.
+    #[test]
+    fn nothing_is_asked_again_where_the_repository_refused_nothing() {
+        let tasks = Remembered::default();
+        let model = Proposing::of(Drafted {
+            goal: proposing("stop the double count"),
+            place: proposing("src/search.rs"),
+            done_when: proposing("cargo test search"),
+            ..Drafted::default()
+        })
+        .then(Drafted::default());
+        let service = BacklogService::new(
+            &tasks,
+            &IN_A_REPOSITORY,
+            &NO_BRANCH,
+            &NOTHING_AROUND,
+            &GROUNDS,
+            &model,
+        );
+        let mut given = registering("first");
+        given.instruction = "make it stop double-counting";
+
+        unconfirmed(service.add(given));
+
+        // Everything it settled held up, and what it did not settle is the author's.
+        assert_eq!(model.asked.load(Ordering::Relaxed), 1);
     }
 
     /// A model that cannot be reached leaves every part open, and the author is asked all of it.

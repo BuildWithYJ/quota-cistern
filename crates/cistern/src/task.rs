@@ -19,7 +19,7 @@ use std::{
 use cistern_contract::{Response, code::CORE_ERROR, code::GENERAL_FAILURE, code::USAGE_ERROR};
 use serde_json::Value;
 
-use crate::{cli::TaskCommand, daemon};
+use crate::{cli::TaskCommand, daemon, words::Language};
 
 /// The mark `docs/cli.md` puts beside a task waiting to be assigned.
 ///
@@ -73,6 +73,9 @@ fn add(
     // two asks are separate requests, so the core cannot remember this and is told it instead.
     let wrote = instruction.clone();
     let mut asked_already = false;
+    // The words a person is answered in are the words they wrote in, decided once from what they
+    // typed rather than from each answer, which is the model's and may come back in either.
+    let said_in = Language::of(&wrote);
 
     // The core fills a loose instruction in from the repository, and where the repository allows
     // more than one fill it answers with them rather than picking. Asking is this side's to do:
@@ -82,7 +85,7 @@ fn add(
         // Working out what a line meant means reading the repository and asking a model, which
         // takes as long as it takes. A command that says nothing for a minute is one a person
         // stops, so it says what it is doing and how long it has been at it.
-        let waiting = (!asked_already).then(Waiting::shown);
+        let waiting = (!asked_already).then(|| Waiting::shown(said_in));
         let asked = asked(
             "task_add",
             serde_json::json!({
@@ -109,7 +112,7 @@ fn add(
             added(&answer);
             return ExitCode::SUCCESS;
         }
-        let Some(chosen) = chosen(&answer) else {
+        let Some(chosen) = chosen(&answer, said_in) else {
             return ExitCode::from(GENERAL_FAILURE);
         };
         instruction = chosen;
@@ -133,17 +136,23 @@ struct Waiting {
 }
 
 impl Waiting {
-    fn shown() -> Self {
+    fn shown(said_in: Language) -> Self {
+        // Written over itself, which is something only a terminal does. Anywhere else -- a pipe,
+        // a file, a log -- every count would be a line of its own, and a minute of waiting would
+        // be a hundred lines above the answer.
+        if !io::stderr().is_terminal() {
+            return Waiting {
+                going: Arc::new(AtomicBool::new(false)),
+                saying: None,
+            };
+        }
         let going = Arc::new(AtomicBool::new(true));
         let mine = Arc::clone(&going);
         let saying = thread::spawn(move || {
             let since = Instant::now();
             thread::sleep(BEFORE_SAYING_SO);
             while mine.load(Ordering::Relaxed) {
-                eprint!(
-                    "\r  working out what that means... {}s",
-                    since.elapsed().as_secs()
-                );
+                eprint!("\r  {}", said_in.working_out(since.elapsed().as_secs()));
                 io::stderr().flush().ok();
                 thread::sleep(Duration::from_millis(500));
             }
@@ -158,11 +167,12 @@ impl Waiting {
 impl Drop for Waiting {
     fn drop(&mut self) {
         self.going.store(false, Ordering::Relaxed);
-        if let Some(saying) = self.saying.take() {
-            saying.join().ok();
-        }
+        let Some(saying) = self.saying.take() else {
+            return;
+        };
+        saying.join().ok();
         // Written over with blanks rather than left for the answer to print under.
-        eprint!("\r{:60}\r", "");
+        eprint!("\r{:70}\r", "");
         io::stderr().flush().ok();
     }
 }
@@ -178,20 +188,14 @@ const UNCONFIRMED: &str = "unconfirmed";
 ///
 /// Nothing when there is nobody to ask, or when they said no. The spec is printed either way, so
 /// a command in a script says what it would have asked about.
-fn chosen(answer: &Value) -> Option<String> {
+fn chosen(answer: &Value, said_in: Language) -> Option<String> {
     let mut parts = parts(answer);
     let left: Vec<&Value> = answer.get("undecided")?.as_array()?.iter().collect();
 
-    shown(&parts, &left);
+    shown(&parts, &left, said_in);
 
     if !io::stdin().is_terminal() {
-        eprintln!(
-            "  nobody is here to settle {}, so nothing was registered. --force registers the instruction as written",
-            match left.len() {
-                1 => "it".to_owned(),
-                many => format!("{many} of them"),
-            }
-        );
+        eprintln!("  {}", said_in.nobody_here(left.len()));
         return None;
     }
 
@@ -200,12 +204,12 @@ fn chosen(answer: &Value) -> Option<String> {
     for one in &left {
         let named = text(one, "part")?;
         let asking = parts.iter().find(|part| part.named == named)?;
-        let said = settling(asking, text(one, "decides").unwrap_or("what it should be"))?;
+        let said = settling(asking, said_in)?;
         put(&mut parts, named, &said);
     }
 
     loop {
-        eprint!("  Register it? [enter=yes / 1-6=change that line / n=no] ");
+        eprint!("  {}", said_in.register(parts.len()));
         io::stderr().flush().ok()?;
         let mut typed = String::new();
         if io::stdin().read_line(&mut typed).ok()? == 0 {
@@ -224,9 +228,9 @@ fn chosen(answer: &Value) -> Option<String> {
                 let named = parts[at - 1].named.clone();
                 let said = typing(&format!("  {named}: "))?;
                 put(&mut parts, &named, &said);
-                shown(&parts, &[]);
+                shown(&parts, &[], said_in);
             }
-            _ => eprintln!("  there is no {typed} on the list"),
+            _ => eprintln!("  {}", said_in.no_such(typed.parse().unwrap_or(0))),
         }
     }
 }
@@ -284,6 +288,12 @@ fn parts(answer: &Value) -> Vec<Part> {
         })
         .unwrap_or_default()
 }
+
+/// The part a model is never asked to settle, and the one this offers an answer for itself.
+///
+/// Named here because this is where the answer is offered. The core knows it as a part like any
+/// other; that a person is the one who settles it is a thing the asking knows.
+const ON_FAILURE: &str = "on failure";
 
 /// How wide the column holding a part's name is, and how far a part's text is indented past it.
 const NAMED: usize = 11;
@@ -347,7 +357,7 @@ fn under(first: &str, text: &str, across: usize) -> String {
 /// Every part carries what it was drawn from, because a path on its own tells a reader nothing.
 /// What tells them whether to take it is that it is the file they have open with the count
 /// doubled on two lines.
-fn shown(parts: &[Part], left: &[&Value]) {
+fn shown(parts: &[Part], left: &[&Value], said_in: Language) {
     eprintln!();
     let across = across();
     for (at, part) in parts.iter().enumerate() {
@@ -359,7 +369,7 @@ fn shown(parts: &[Part], left: &[&Value]) {
         // with a word out of the core: that a part was worked out rather than typed is what the
         // line under it already says.
         let marked = match part.settled.as_str() {
-            "open" => "   <- nobody has settled this",
+            "open" => said_in.unsettled(),
             _ => "",
         };
         eprint!(
@@ -385,7 +395,7 @@ fn shown(parts: &[Part], left: &[&Value]) {
                 "{}",
                 under(
                     &format!("      {:<NAMED$}", ""),
-                    &format!("- also: {}", part.others.join(", ")),
+                    &format!("- {}: {}", said_in.also(), part.others.join(", ")),
                     across,
                 )
             );
@@ -399,23 +409,24 @@ fn shown(parts: &[Part], left: &[&Value]) {
     if left.is_empty() {
         return;
     }
-    eprintln!(
-        "  {} nobody has settled. Left as {} the agent would decide {} by itself:",
-        match left.len() {
-            1 => "1 thing".to_owned(),
-            many => format!("{many} things"),
-        },
-        match left.len() {
-            1 => "it is",
-            _ => "they are",
-        },
-        match left.len() {
-            1 => "it",
-            _ => "each of them",
-        },
-    );
+    eprintln!("  {}", said_in.left_over(left.len()));
     for one in left {
-        eprintln!("    - {}", text(one, "decides").unwrap_or("something"));
+        // The part's name and why it is still open. The core writes the reason in English and
+        // sends which kind it is beside it, so what a reader sees is in their own words.
+        eprint!(
+            "{}",
+            under(
+                &format!("    - {:<NAMED$}", text(one, "part").unwrap_or("something")),
+                &said_in.because(
+                    text(one, "kind").unwrap_or_default(),
+                    one.get("files")
+                        .and_then(Value::as_u64)
+                        .map(|files| files as usize),
+                    text(one, "decides").unwrap_or_default(),
+                ),
+                across,
+            )
+        );
     }
     eprintln!();
 }
@@ -425,39 +436,94 @@ fn shown(parts: &[Part], left: &[&Value]) {
 /// The question and the answers are the model's, written in the words the author typed in: it is
 /// the one that knows what is missing and which language to say it in. A surface writing them
 /// would ask in the same words whatever the author had written.
-fn settling(part: &Part, decides: &str) -> Option<String> {
+///
+/// Typing an answer of your own is the last thing on the list rather than a note beside the
+/// prompt. It is one of the answers, so it is offered as one, and the prompt is left with nothing
+/// to say but that it is your turn.
+fn settling(part: &Part, said_in: Language) -> Option<String> {
     let across = across();
     eprint!(
         "{}",
         under(
             "  ",
-            part.asks
-                .as_deref()
-                .unwrap_or(&format!("Nothing says {decides}. What should it be?")),
-            across,
+            part.asks.as_deref().unwrap_or(said_in.asking()),
+            across
         )
     );
-    for (at, one) in part.others.iter().enumerate() {
+    // What a run does when it cannot get there is offered first and written here, whatever the
+    // model proposed. It is the decision an agent settles by editing the test, and a model asked
+    // not to offer that has been seen to offer it anyway.
+    let stops = (part.named == ON_FAILURE).then(|| said_in.stops());
+    let offered: Vec<&str> = stops
+        .into_iter()
+        .chain(
+            part.others
+                .iter()
+                .map(String::as_str)
+                .filter(|one| Some(*one) != stops),
+        )
+        .collect();
+
+    // With nothing to choose between there is nothing to number. A list of one, whose one entry
+    // is "type your own", is a person asked to pick before they are asked to write.
+    if offered.is_empty() {
+        return typing(&format!("  {} > ", said_in.type_it()));
+    }
+
+    for (at, one) in offered.iter().enumerate() {
         eprint!("{}", under(&format!("    {}) ", at + 1), one, across));
+    }
+    let own = offered.len() + 1;
+    eprintln!("    {own}) {}", said_in.type_your_own());
+    // Said where there is more than one to choose between, which is where it is worth saying.
+    if offered.len() > 1 {
+        eprintln!("       {}", said_in.how_to_answer(own));
     }
 
     loop {
-        let typed = typing(&format!(
-            "  {} [{}]: ",
-            part.named,
-            match part.others.is_empty() {
-                true => "type an answer".to_owned(),
-                false => format!("1-{}, or type an answer", part.others.len()),
-            }
-        ))?;
-        match typed.parse::<usize>() {
-            Ok(at) if (1..=part.others.len()).contains(&at) => {
-                return Some(part.others[at - 1].to_owned());
-            }
-            Ok(at) => eprintln!("  there is no {at} on the list"),
-            Err(_) => return Some(typed),
+        let typed = typing("  > ")?;
+        let Some(chose) = chose(&typed, own) else {
+            // Not a list of numbers at all, so it is the answer itself, typed without being
+            // asked for. Taking it is what somebody who typed it meant.
+            return Some(typed);
+        };
+        if let Some(missing) = chose.iter().find(|at| **at > own) {
+            eprintln!("  {}", said_in.no_such(*missing));
+            continue;
+        }
+        // The last of them is the one that asks for an answer of your own, so choosing it asks
+        // for one, and choosing it beside others adds what is typed to them.
+        let mut said: Vec<String> = chose
+            .iter()
+            .filter(|at| **at <= offered.len())
+            .map(|at| offered[at - 1].to_owned())
+            .collect();
+        if chose.contains(&own)
+            && let Some(own) = typing(&format!("  {} > ", said_in.type_it()))
+        {
+            said.push(own);
+        }
+        if !said.is_empty() {
+            return Some(said.join(", "));
         }
     }
+}
+
+/// The numbers a line holds, where it holds numbers and nothing else.
+///
+/// Separated by commas or by spaces, since both are how a person writes a few of something.
+/// Nothing where any part of it is not a number: a line that is not a list of them is an answer
+/// typed out rather than a list somebody got wrong.
+fn chose(typed: &str, most: usize) -> Option<Vec<usize>> {
+    let held: Vec<&str> = typed
+        .split([',', ' '])
+        .map(str::trim)
+        .filter(|one| !one.is_empty())
+        .collect();
+    if held.is_empty() || held.len() > most {
+        return None;
+    }
+    held.iter().map(|one| one.parse().ok()).collect()
 }
 
 /// One line typed at a prompt, or nothing where there is no more input or it was left blank.
@@ -863,6 +929,31 @@ mod tests {
             under("  1  place      ", "one two three", INDENT + 7),
             "  1  place      one two\n                 three\n"
         );
+    }
+
+    /// A person choosing a few of something writes them with commas, or with spaces.
+    #[test]
+    fn a_list_of_numbers_is_read_as_the_ones_that_were_chosen() {
+        assert_eq!(chose("2", 4), Some(vec![2]));
+        assert_eq!(chose("1,2", 4), Some(vec![1, 2]));
+        assert_eq!(chose(" 1 , 3 ", 4), Some(vec![1, 3]));
+        assert_eq!(chose("1 2 3", 4), Some(vec![1, 2, 3]));
+    }
+
+    /// A line that is not a list of numbers is the answer, typed without being asked for.
+    #[test]
+    fn a_line_that_is_not_a_list_of_numbers_is_an_answer() {
+        assert_eq!(chose("cargo test search", 4), None);
+        assert_eq!(chose("2 files are wrong", 4), None);
+        assert_eq!(chose("", 4), None);
+        // More numbers than there are answers is not a list of them either.
+        assert_eq!(chose("1,2,3,4,5", 4), None);
+    }
+
+    /// A number nobody offered is still read, so that it can be said which one it was.
+    #[test]
+    fn a_number_past_the_list_is_read_and_not_mistaken_for_an_answer() {
+        assert_eq!(chose("9", 4), Some(vec![9]));
     }
 
     /// An instruction is printed as it was given, however many lines that is.

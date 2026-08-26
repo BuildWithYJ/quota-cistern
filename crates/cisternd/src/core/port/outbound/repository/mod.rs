@@ -13,5 +13,5 @@ mod worktree;
 pub use grounding::{Grounding, Ran};
 pub use result::{Between, Changes, Commit, Counts, NotApplied, Results, Touched};
 pub use roots::RepositoryRoots;
-pub use surroundings::Surroundings;
+pub use surroundings::{Room, Surroundings};
 pub use worktree::{Cut, Worktrees};

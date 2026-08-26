@@ -121,14 +121,14 @@ A task that runs unattended cannot stop to ask, so anything the instruction leav
 | --- | --- | --- |
 | `goal` | what the work is | the agent decides what to do |
 | `place` | where the work is | the agent decides where |
-| `success` | a command that says the work is done | the agent judges its own work |
+| `done when` | a command that says the work is done | the agent judges its own work |
 | `on failure` | what to do when it cannot get there | the agent invents a way around |
 | `why` | what goes wrong today | a reviewer has nothing to read it against |
 | `scope` | what may be changed and what may not | the agent decides how far to reach |
 
 The author writes a line as they always have. A model reads the repository -- the change they have open, what they committed lately, the branch, the file list -- and fills in what it can work out, each part carrying what it was drawn from. Nothing is registered until every part but `why` is settled, and nothing a model worked out is registered before the author has seen it.
 
-**What is checked, and what is not guessed.** A `place` is checked against what the repository tracks: a file reaches one, a directory reaches what it holds, and a name nothing tracks reaches nothing. A `success` is run once, and has to fail -- a command that passes already says either the work is done or that it does not tell that it is not, and a command that cannot be run at all was invented. It is run with no shell: the command is split on whitespace and the program started directly, so a semicolon or a redirect is an argument no program takes.
+**What is checked, and what is not guessed.** A `place` is checked against what the repository tracks: a file reaches one, a directory reaches what it holds, and a name nothing tracks reaches nothing. A `done when` is run once, and has to fail -- a command that passes already says either the work is done or that it does not tell that it is not, and a command that cannot be run at all was invented. It is run with no shell: the command is split on whitespace and the program started directly, so a semicolon or a redirect is an argument no program takes.
 
 What did not hold up goes back to the model to answer again once, before it reaches the author.
 
@@ -179,17 +179,17 @@ A line, worked out and shown:
 ```console
 $ cistern task add --title "stop double-counting" --instruction "이거 중복으로 세는거 고쳐줘"
 
-   1  goal       remove the double count in search results   [inferred]
+   1  goal       remove the double count in search results   
                  - src/search.rs:41,43, where the counter is incremented twice
-   2  place      src/search.rs   [inferred]
+   2  place      src/search.rs   
                  - edited and uncommitted
                  - also: src/index.rs
-   3  success    cargo test search_counts_once   [inferred]
+   3  done when  cargo test search_counts_once   
                  - tests/search.rs:88. failing right now
    4  on failure -----   [open]
-   5  why        the counter is incremented at both 41 and 43   [inferred]
+   5  why        the counter is incremented at both 41 and 43   
                  - src/search.rs:41,43
-   6  scope      src/search.rs only. nothing under tests/   [inferred]
+   6  scope      src/search.rs only. nothing under tests/   
                  - the place
 
   1 decision left for the agent to decide by itself:

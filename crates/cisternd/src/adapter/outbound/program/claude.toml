@@ -169,8 +169,17 @@ program = "claude"
 cheaper = "haiku"
 stronger = "sonnet"
 
-# How far one ask may go. A guard against an ask that goes nowhere, not a task's ceiling.
-turns = "5"
+# How far one ask may go.
+#
+# Two. This is a question to answer, not work to do: the instruction, the change, the commits and
+# the file list are all handed over before it starts, so there is little left to go and look up.
+# Many turns is an agent loop reading a repository it was already given, which costs what running
+# the task costs and answers no better.
+#
+# Not one. A model that reaches for a file once runs out of turns mid-answer and ends badly, and
+# one turn made that the common case rather than the rare one. What it wrote by then is read
+# either way, so this is room to finish rather than room to explore.
+turns = "2"
 
 # Grouped as `args` above is: a group holding a place nobody filled is dropped whole.
 args = [
@@ -183,7 +192,7 @@ args = [
 # so changing one changes what is asked and what is read together.
 goal = "GOAL"
 place = "PLACE"
-success = "SUCCESS"
+done_when = "DONEWHEN"
 on_failure = "ONFAIL"
 why = "WHY"
 scope = "SCOPE"
@@ -197,34 +206,38 @@ asks = "-ASK"
 # What is asked. Everything after the instruction is what the author was looking at when they
 # wrote it: `{changes}` is the change they have open, `{lately}` what they committed before it,
 # `{branch}` the branch they are on, `{files}` what the repository tracks.
+# What is asked.
+#
+# What does not change between one task and the next comes first, and what changes comes last.
+# A vendor holds what it has already read and charges a tenth for reading it again, and it holds
+# it from the front: a prompt that opens with the instruction is one where nothing before the
+# instruction can be held, which is all of it. The file list and the commits are the same for
+# every task added to a repository in a sitting, so they open it.
 prompt = """
 You are writing the specification for a coding task that will run unattended. Nobody will be \
 there to answer questions once it starts, so anything the specification leaves out is something \
 the agent will decide by itself.
 
-What the author typed:
-{instruction}
+Files the repository tracks:
+{files}
 
-The change they have open and uncommitted:
-{changes}
-
-What they committed lately:
+What was committed lately:
 {lately}
 
 The branch they are on: {branch}
 
-Files the repository tracks:
-{files}
-
-Work out what they meant, from what they were looking at.
-
 Write every value, every question and every choice in the same language the author typed in. \
-They will read this, and they wrote to you in their own words.
+They will read this, and they wrote to you in their own words. That holds for the answers below \
+as much as for the questions: where this asks you for an answer and describes what it should be, \
+describe it back to them in their language rather than repeating the description.
 
 Where you cannot settle a part, leave its value empty and write two things instead: a short \
 question asking what is missing, and two or three concrete answers to choose between, drawn from \
 this repository rather than invented. Never leave a part with no value and no question: an empty \
 value with nothing beside it is a person staring at a blank line with nothing to answer.
+
+Write the answers as the answers themselves, ready to be used as the value of that part. Do not \
+number them, and do not offer "type your own" among them: that one is offered for you.
 
 Answer with these lines and nothing else.
 
@@ -236,13 +249,17 @@ Answer with these lines and nothing else.
 {place}{drawn_from}: <why that one>
 {place}{others}: <other paths it could be, separated by commas>
 {place}{asks}: <a question, if you could not work it out>
-{success}: <a command that can be run in this repository and that fails right now>
-{success}{drawn_from}: <where you found it>
-{success}{asks}: <a question, if you could not find one>
-{success}{others}: <two or three commands to choose between>
+{done_when}: <a command that can be run in this repository, and that fails right now because \
+the work is not done. Not a sentence about what finished would look like: a command>
+{done_when}{drawn_from}: <where you found it, and how you know it fails right now>
+{done_when}{asks}: <a question, if you could not find one>
+{done_when}{others}: <two or three commands to choose between>
 {on_failure}: <leave this empty, always>
 {on_failure}{asks}: <ask what the agent should do when it cannot get there>
-{on_failure}{others}: <two or three answers to choose between. one of them must forbid editing the tests>
+{on_failure}{others}: <two or three answers, every one of which stops. Never offer editing or \
+deleting a test, changing what the success condition is, or leaving the work unfinished and \
+saying it passed: those are how an agent makes a failing check pass without doing the work, and \
+offering one is putting it a keystroke away>
 {why}: <what goes wrong today, with a file and line>
 {why}{drawn_from}: <the file and line>
 {why}{asks}: <a question, if you could not work it out>
@@ -250,7 +267,15 @@ Answer with these lines and nothing else.
 {scope}: <what may be changed and what may not>
 {scope}{drawn_from}: <why>
 {scope}{asks}: <a question, if you could not work it out>
-{scope}{others}: <two or three answers to choose between>"""
+{scope}{others}: <two or three answers to choose between>
+
+The change they have open and uncommitted:
+{changes}
+
+What the author typed:
+{instruction}
+
+Work out what they meant, from what they were looking at."""
 
 # What is asked the second time, once the repository has been asked about the first answer.
 again = """

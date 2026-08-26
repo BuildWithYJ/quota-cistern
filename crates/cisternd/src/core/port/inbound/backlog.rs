@@ -90,7 +90,11 @@ pub struct Shown {
 pub struct Left {
     /// The part it is about, where it is about one.
     pub part: Option<String>,
-    /// What the agent would settle for itself while this stands.
+    /// Which kind it is, for a surface to say in its own words.
+    pub kind: String,
+    /// How many files the place reaches, where that is what is wrong with it.
+    pub files: Option<usize>,
+    /// What the agent would settle for itself while this stands, in English.
     pub decides: String,
 }
 

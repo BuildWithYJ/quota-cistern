@@ -9,7 +9,7 @@ fn settled() -> (Spec, Grounded) {
         Spec {
             goal: Part::inferred("remove the double count", "diff:src/search.rs:41-43"),
             place: Part::inferred("src/search.rs", "edited and uncommitted"),
-            success: Part::given("cargo test search_counts_once"),
+            done_when: Part::given("cargo test search_counts_once"),
             on_failure: Part::given("stop after three attempts. do not edit tests/"),
             why: Part::inferred("the counter is incremented twice", "src/search.rs:41,43"),
             scope: Part::inferred("src/search.rs only", "the place"),
@@ -109,7 +109,7 @@ fn a_place_nobody_settled_is_counted_once_and_not_measured() {
 #[test]
 fn a_success_condition_nothing_can_run_leaves_the_agent_to_judge_itself() {
     let (mut spec, mut grounded) = settled();
-    spec.success = Part::given("the count should match the number of documents");
+    spec.done_when = Part::given("the count should match the number of documents");
     grounded.runnable = false;
 
     let left = left_to_decide(&spec, WROTE, grounded);
@@ -122,12 +122,12 @@ fn a_success_condition_nothing_can_run_leaves_the_agent_to_judge_itself() {
 #[test]
 fn a_success_condition_nobody_settled_is_counted_once() {
     let (mut spec, mut grounded) = settled();
-    spec.success = Part::open();
+    spec.done_when = Part::open();
     grounded.runnable = false;
 
     assert_eq!(
         left_to_decide(&spec, WROTE, grounded),
-        vec![Undecided::Unsettled(Named::Success)]
+        vec![Undecided::Unsettled(Named::DoneWhen)]
     );
 }
 
@@ -140,7 +140,7 @@ fn a_success_condition_nobody_settled_is_counted_once() {
 fn the_two_words_that_used_to_pass_leave_three_decisions() {
     let mut spec = Spec::open();
     spec.place = Part::given("src/search.rs");
-    spec.success = Part::given("cargo test");
+    spec.done_when = Part::given("cargo test");
 
     let left = left_to_decide(
         &spec,

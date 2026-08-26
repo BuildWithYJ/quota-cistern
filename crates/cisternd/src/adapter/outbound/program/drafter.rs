@@ -10,7 +10,10 @@
 //! Which program, which two models, what to hand them, and the words each part is read by are all
 //! in the definition. What stays here is the part that is the same whoever the vendor is.
 
-use std::process::{Command, Stdio};
+use std::{
+    process::{Command, Stdio},
+    time::Instant,
+};
 
 use crate::core::port::outbound::{Draft, Drafted, Drafter, Proposed};
 
@@ -47,7 +50,7 @@ impl ProgramDrafter {
                 ("files", &files),
                 ("goal", &drafting.goal),
                 ("place", &drafting.place),
-                ("success", &drafting.success),
+                ("done_when", &drafting.done_when),
                 ("on_failure", &drafting.on_failure),
                 ("why", &drafting.why),
                 ("scope", &drafting.scope),
@@ -59,8 +62,15 @@ impl ProgramDrafter {
     }
 
     /// Runs the program once and reads what it proposed, or nothing when it could not be reached.
+    ///
+    /// What came back is written to the daemon's log as it stands. A part that comes back empty
+    /// is a question the author is asked, and without the answer beside it there is no telling a
+    /// model that could not work something out from one that was asked the wrong thing. The
+    /// prompt is not written: it is the definition and the repository, both of which are there
+    /// to read, and it is a hundred times longer than what came back.
     fn asked(&self, model: &str, repository: &str, prompt: &str) -> Option<Drafted> {
         let drafting = &self.definition.drafter;
+        let since = Instant::now();
         let done = Command::new(&drafting.program)
             .current_dir(repository)
             // It reads only its arguments. Closing stdin keeps it from waiting on input that,
@@ -77,9 +87,20 @@ impl ProgramDrafter {
             .output()
             .ok()?;
 
-        done.status
-            .success()
-            .then(|| self.read(&String::from_utf8_lossy(&done.stdout)))
+        let took = since.elapsed().as_secs();
+        if !done.status.success() {
+            eprintln!(
+                "cisternd: {model} did not answer after {took}s: {}",
+                String::from_utf8_lossy(&done.stderr).trim()
+            );
+            return None;
+        }
+        let answer = String::from_utf8_lossy(&done.stdout);
+        eprintln!(
+            "cisternd: {model} answered in {took}s with:\n{}",
+            answer.trim()
+        );
+        Some(self.read(&answer))
     }
 
     /// Reads a spec out of the model's lines, by the words the definition names.
@@ -89,7 +110,7 @@ impl ProgramDrafter {
         Drafted {
             goal: part(&drafting.goal),
             place: part(&drafting.place),
-            success: part(&drafting.success),
+            done_when: part(&drafting.done_when),
             on_failure: part(&drafting.on_failure),
             why: part(&drafting.why),
             scope: part(&drafting.scope),
@@ -153,8 +174,9 @@ impl Drafter for ProgramDrafter {
             written(held, drafting),
             super::fill(drafting.again.trim(), &[("amiss", &amiss.join("\n"))])
         );
-        // Asked of the stronger model: the cheaper one has already had its answer taken apart.
-        self.asked(&drafting.stronger, ask.repository, &prompt)
+        // Asked of the cheaper model. It is being told which of its answers did not hold up and
+        // what the repository holds instead, which is a correction rather than a harder question.
+        self.asked(&drafting.cheaper, ask.repository, &prompt)
     }
 }
 
@@ -171,7 +193,7 @@ fn written(held: &Drafted, drafting: &super::Drafting) -> String {
     [
         (&drafting.goal, &held.goal),
         (&drafting.place, &held.place),
-        (&drafting.success, &held.success),
+        (&drafting.done_when, &held.done_when),
         (&drafting.on_failure, &held.on_failure),
         (&drafting.why, &held.why),
         (&drafting.scope, &held.scope),

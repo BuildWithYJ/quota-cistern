@@ -114,7 +114,7 @@ impl Part {
 pub enum Named {
     Goal,
     Place,
-    Success,
+    DoneWhen,
     OnFailure,
     Why,
     Scope,
@@ -125,18 +125,30 @@ impl Named {
     pub const ALL: [Named; 6] = [
         Named::Goal,
         Named::Place,
-        Named::Success,
+        Named::DoneWhen,
         Named::OnFailure,
         Named::Why,
         Named::Scope,
     ];
+
+    /// The same, written the way a name is written rather than the way a phrase is.
+    ///
+    /// `on failure` is two words, and a document naming it as a heading or a field writes it as
+    /// one. Both are read, so a spec kept in a file is read whichever way its author wrote it.
+    pub fn written(self) -> &'static str {
+        match self {
+            Named::OnFailure => "on_failure",
+            Named::DoneWhen => "done_when",
+            other => other.label(),
+        }
+    }
 
     /// What the part is called, in the words the spec is written in.
     pub fn label(self) -> &'static str {
         match self {
             Named::Goal => "goal",
             Named::Place => "place",
-            Named::Success => "success",
+            Named::DoneWhen => "done when",
             Named::OnFailure => "on failure",
             Named::Why => "why",
             Named::Scope => "scope",
@@ -149,7 +161,7 @@ impl Named {
         match self {
             Named::Goal => "what the work is",
             Named::Place => "where the work is",
-            Named::Success => "whether it is done",
+            Named::DoneWhen => "whether it is done",
             Named::OnFailure => "what to do when it fails",
             Named::Why => "what the work is for",
             Named::Scope => "how far to reach",
@@ -172,7 +184,8 @@ impl Display for Named {
 pub struct Spec {
     pub goal: Part,
     pub place: Part,
-    pub success: Part,
+    /// What has to be true, and runnable, for the work to be finished.
+    pub done_when: Part,
     pub on_failure: Part,
     pub why: Part,
     pub scope: Part,
@@ -184,7 +197,7 @@ impl Spec {
         Spec {
             goal: Part::open(),
             place: Part::open(),
-            success: Part::open(),
+            done_when: Part::open(),
             on_failure: Part::open(),
             why: Part::open(),
             scope: Part::open(),
@@ -196,7 +209,7 @@ impl Spec {
         match named {
             Named::Goal => &self.goal,
             Named::Place => &self.place,
-            Named::Success => &self.success,
+            Named::DoneWhen => &self.done_when,
             Named::OnFailure => &self.on_failure,
             Named::Why => &self.why,
             Named::Scope => &self.scope,
@@ -208,7 +221,7 @@ impl Spec {
         match named {
             Named::Goal => &mut self.goal,
             Named::Place => &mut self.place,
-            Named::Success => &mut self.success,
+            Named::DoneWhen => &mut self.done_when,
             Named::OnFailure => &mut self.on_failure,
             Named::Why => &mut self.why,
             Named::Scope => &mut self.scope,
@@ -232,11 +245,16 @@ impl Spec {
             .collect()
     }
 
-    /// Reads a spec back out of what [`Spec::written`] wrote.
+    /// Reads a spec out of text that names its parts.
     ///
     /// What a surface hands back after asking is the spec it was shown, so the two travel as one
     /// text and nothing else has to cross. Every part read this way is the author's own: they saw
     /// it and sent it back, whoever first worked it out.
+    ///
+    /// And what an author wrote themselves, however they wrote it. A specification is a document
+    /// before it is an argument -- kept in a file, edited, read by other people -- so the forms a
+    /// document is written in are read: a heading, a list, a name in bold, a name followed by a
+    /// colon. Nobody should have to strip the markup off a file to hand it over.
     ///
     /// Nothing where the text names no part at all, which is what an ordinary instruction does.
     pub fn read(text: &str) -> Option<Self> {
@@ -245,24 +263,30 @@ impl Spec {
         let mut last: Option<Named> = None;
 
         for line in text.lines() {
-            match Named::ALL
-                .into_iter()
-                .find(|named| starts_the_line(line, named.label()))
-            {
-                Some(named) => {
-                    let said = line[named.label().len() + 1..].trim();
-                    *spec.part_mut(named) = Part::given(said);
+            match named(line) {
+                Some((named, said)) => {
+                    // The marks a document sets a value apart with come off it too.
+                    *spec.part_mut(named) = Part::given(said.trim().trim_matches(DECORATES).trim());
                     named_one = true;
                     last = Some(named);
                 }
                 // A part that runs to more than a line keeps the rest of it.
                 None => {
-                    if let Some(named) = last
-                        && let Some(said) = spec.part_mut(named).said.as_mut()
-                    {
-                        said.push('\n');
-                        said.push_str(line);
+                    let Some(named) = last else { continue };
+                    let line = line.trim_end();
+                    // A blank line ends what was being said rather than being part of it: a
+                    // document puts one between a section and the next.
+                    if line.trim().is_empty() {
+                        last = None;
+                        continue;
                     }
+                    let Some(said) = spec.part_mut(named).said.as_mut() else {
+                        continue;
+                    };
+                    if !said.is_empty() {
+                        said.push('\n');
+                    }
+                    said.push_str(line);
                 }
             }
         }
@@ -294,11 +318,37 @@ impl Spec {
     }
 }
 
-/// Whether the line opens with the label and a colon.
-fn starts_the_line(line: &str, label: &str) -> bool {
-    line.strip_prefix(label)
-        .is_some_and(|rest| rest.starts_with(':'))
+/// Which part the line names, and what it says about it.
+///
+/// The line is read with what a document is written with taken off it first: the marks that open
+/// a heading or a list item, and the ones that set a word in bold or in code. What is left has to
+/// be the part's name and nothing else, so that a line about a goal is not read as the goal.
+fn named(line: &str) -> Option<(Named, &str)> {
+    let bare = line
+        .trim_start()
+        .trim_start_matches(OPENS_A_LINE)
+        .trim_start();
+    // A name and what it says on one line, or a name on a line of its own with what it says
+    // under it, which is how a heading names a section.
+    let (label, said) = bare.split_once(':').unwrap_or((bare, ""));
+    let label = label
+        .trim()
+        .trim_matches(DECORATES)
+        .trim()
+        .to_ascii_lowercase();
+    let named = Named::ALL
+        .into_iter()
+        .find(|named| named.label() == label || named.written() == label)?;
+    Some((named, said))
 }
+
+/// What opens a line in a document without being part of what the line says.
+///
+/// A heading, a list item, a quotation, and the numbers a list is sometimes written with.
+const OPENS_A_LINE: [char; 8] = ['#', '-', '*', '>', '+', ' ', '\t', '.'];
+
+/// What sets a word apart in a document without being part of the word.
+const DECORATES: [char; 3] = ['*', '_', '`'];
 
 #[cfg(test)]
 mod tests;

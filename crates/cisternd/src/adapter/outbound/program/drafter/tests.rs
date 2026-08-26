@@ -3,7 +3,7 @@ use super::*;
 /// The words the shipped definition reads an answer by.
 const GOAL: &str = "GOAL";
 const PLACE: &str = "PLACE";
-const SUCCESS: &str = "SUCCESS";
+const DONE_WHEN: &str = "DONEWHEN";
 
 fn shipped() -> ProgramDrafter {
     ProgramDrafter::new(Definition::of("claude", None).expect("the shipped definition parses"))
@@ -28,7 +28,7 @@ fn a_part_is_read_with_what_it_was_drawn_from_and_what_else_was_allowed() {
          PLACE: src/search.rs\n\
          PLACE-FROM: edited and uncommitted\n\
          PLACE-OR: src/index.rs, src/count.rs\n\
-         SUCCESS: cargo test search\n\
+         DONEWHEN: cargo test search\n\
          ONFAIL:\n\
          ONFAIL-ASK: What should it do when it cannot get there?\n\
          ONFAIL-OR: stop after three attempts, do not edit tests, put it back\n\
@@ -52,7 +52,7 @@ fn a_part_is_read_with_what_it_was_drawn_from_and_what_else_was_allowed() {
     );
     assert_eq!(on_failure.others.len(), 3);
     // A part with no evidence line is still a part.
-    assert_eq!(read.success.unwrap().drawn_from, None);
+    assert_eq!(read.done_when.unwrap().drawn_from, None);
 }
 
 /// `PLACE` must not be read off the `PLACE-FROM` line that follows it.
@@ -99,7 +99,7 @@ fn what_is_asked_is_filled_in_from_the_definition() {
     assert!(asked.contains("fix/search-dupe"));
     assert!(asked.contains("src/index.rs"));
     // The words are written in from the same place the reader takes them from.
-    for word in [GOAL, PLACE, SUCCESS, "-ASK", "-OR"] {
+    for word in [GOAL, PLACE, DONE_WHEN, "-ASK", "-OR"] {
         assert!(asked.contains(word), "{word} is not asked for");
     }
     for standing in [
@@ -139,7 +139,7 @@ fn an_empty_heading_says_that_it_is_empty() {
 #[test]
 fn asking_again_carries_the_first_answer_and_what_did_not_hold_up() {
     let drafter = shipped();
-    let held = drafter.read("PLACE: src/serch.rs\nSUCCESS: cargo test search");
+    let held = drafter.read("PLACE: src/serch.rs\nDONEWHEN: cargo test search");
     let asked = format!(
         "{}\n\n{}\n\n{}",
         drafter.asking(&asking("make it faster", "", &[])),

@@ -11,7 +11,7 @@ pub struct Draft<'a> {
     pub instruction: &'a str,
     /// What the working tree has changed, body and all, already capped.
     pub changes: &'a str,
-    /// What was committed lately, one line each with what it touched.
+    /// What was committed lately, one line each.
     pub lately: &'a str,
     /// The branch the tree is on, where it is on one.
     pub branch: Option<&'a str>,
@@ -45,7 +45,7 @@ pub struct Proposed {
 pub struct Drafted {
     pub goal: Option<Proposed>,
     pub place: Option<Proposed>,
-    pub success: Option<Proposed>,
+    pub done_when: Option<Proposed>,
     pub on_failure: Option<Proposed>,
     pub why: Option<Proposed>,
     pub scope: Option<Proposed>,

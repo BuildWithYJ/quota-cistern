@@ -71,24 +71,51 @@ impl Undecided {
         match self {
             Undecided::Unsettled(named) | Undecided::Echoed(named) => Some(*named),
             Undecided::Nowhere | Undecided::Reaches { .. } => Some(Named::Place),
-            Undecided::Unverifiable | Undecided::AlreadyDone => Some(Named::Success),
+            Undecided::Unverifiable | Undecided::AlreadyDone => Some(Named::DoneWhen),
         }
     }
 
     /// Whether it is the model's to answer for rather than the author's.
     ///
     /// A part that names a file which is not there, or a command nothing can run, is a mistake
-    /// the model made and the model can look again. What nobody said anything about at all is
-    /// the author's, and asking a model to invent it is asking it to make the decision the gate
-    /// exists to keep for a person.
+    /// the model made against a repository it can look at again, so it is worth asking again.
+    ///
+    /// A part nobody settled is not. The model was given everything there is and left it empty,
+    /// which is it saying it cannot tell; asking the same question again buys a second answer to
+    /// the same question, and a model asked twice whether it is sure answers whatever it thinks
+    /// is wanted. It is the author who knows, which is why they are asked.
     pub fn is_the_models(&self) -> bool {
         match self {
-            Undecided::Unsettled(named) => *named != Named::OnFailure,
+            Undecided::Unsettled(_) => false,
             Undecided::Echoed(_)
             | Undecided::Nowhere
             | Undecided::Reaches { .. }
             | Undecided::Unverifiable
             | Undecided::AlreadyDone => true,
+        }
+    }
+
+    /// Which kind it is, in a word a surface can answer in its own language.
+    ///
+    /// [`Undecided::left_to_decide`] says it in English, which is one language and this file's
+    /// rather than a reader's. A surface that has a person in front of it says it in theirs, and
+    /// what it needs to do that is which of these it is.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Undecided::Unsettled(_) => "unsettled",
+            Undecided::Echoed(_) => "echoed",
+            Undecided::Nowhere => "nowhere",
+            Undecided::Reaches { .. } => "reaches",
+            Undecided::Unverifiable => "unverifiable",
+            Undecided::AlreadyDone => "already",
+        }
+    }
+
+    /// How many files the place reaches, where that is what is wrong with it.
+    pub fn files(&self) -> Option<usize> {
+        match self {
+            Undecided::Reaches { files } => Some(*files),
+            _ => None,
         }
     }
 
@@ -140,7 +167,7 @@ pub fn left_to_decide(spec: &Spec, wrote: &str, grounded: Grounded) -> Vec<Undec
         }
     }
 
-    if !spec.success.is_open() {
+    if !spec.done_when.is_open() {
         match (grounded.runnable, grounded.already) {
             (false, _) => left.push(Undecided::Unverifiable),
             (true, true) => left.push(Undecided::AlreadyDone),

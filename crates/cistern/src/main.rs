@@ -9,6 +9,7 @@ mod review;
 mod session;
 mod task;
 mod version;
+mod words;
 
 fn main() -> ExitCode {
     let cli = cli::parse();

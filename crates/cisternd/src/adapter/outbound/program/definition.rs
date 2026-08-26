@@ -72,7 +72,7 @@ pub struct Drafting {
     /// what is read together rather than leaving the two to drift apart.
     pub goal: String,
     pub place: String,
-    pub success: String,
+    pub done_when: String,
     pub on_failure: String,
     pub why: String,
     pub scope: String,
