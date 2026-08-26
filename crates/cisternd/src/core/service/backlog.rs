@@ -725,6 +725,28 @@ mod tests {
         fn holding(&self, _repository: &str, _word: &str) -> Vec<String> {
             self.holds.clone()
         }
+
+        fn changes(&self, _repository: &str, _lines: usize) -> String {
+            self.changed
+                .iter()
+                .map(|path| format!("--- a/{path}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        fn lately(&self, _repository: &str, _commits: usize) -> String {
+            String::new()
+        }
+
+        fn branch(&self, _repository: &str) -> Option<String> {
+            None
+        }
+
+        fn tracks(&self, _repository: &str, _paths: usize) -> Vec<String> {
+            let mut held = self.changed.clone();
+            held.extend(self.holds.iter().cloned());
+            held
+        }
     }
 
     static NOTHING_AROUND: Around = Around {
