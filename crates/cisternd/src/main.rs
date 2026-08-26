@@ -34,7 +34,12 @@ use platform::work::Queue;
 /// its own.
 /// The core is told this number rather than holding one of its own, so that it never assigns
 /// more than there are threads to run.
-const AT_ONCE: usize = 4;
+///
+/// A placeholder. Nothing has measured what a machine carries, and the one thing known about
+/// the figure it replaces is that four bound before any budget worth declaring did. What would
+/// settle it is a session run against a real backlog until the machine or the vendor is the
+/// thing that gives, rather than this.
+const AT_ONCE: usize = 20;
 
 /// The vendor a configuration that names none falls back to.
 const BY_DEFAULT: &str = "claude";
