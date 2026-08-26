@@ -125,19 +125,26 @@ cistern task add --title <T> --instruction <I> [--branch <B>] [--after <task>] [
 
 `--after`를 주면 선행 작업이 `Completed`가 될 때까지 편성 대상이 아니며, 다른 종료 상태로 끝나면 `Pending`으로 남는다.
 
+자율 실행에 부족한 지시는 등록 전에 저장소에서 채워 넣는다. 저장소가 자리를 하나로 좁혀 주면 그대로 채워 등록하고, 여러 개가 남거나 규칙으로 좁히지 못해 모델이 제안했다면 아무것도 등록하지 않고 어느 쪽이었는지 되묻는다. `--force`는 적힌 그대로 받아 아무것도 묻지 않는다.
+
 **출력**
 
 
 | 필드            | 타입     | 설명               |
 | ------------- | ------ | ---------------- |
-| `id`          | string | 작업 식별자           |
-| `title`       | string | 작업 제목            |
-| `base_branch` | string | 기준 브랜치           |
-| `after`       | string | 선행 작업. 없으면 null  |
-| `model`       | string | 지정한 모델. 없으면 null |
-| `repository`  | string | 작업을 등록한 저장소       |
-| `state`       | enum   | 생성 직후 `Pending`  |
+| `outcome`     | enum   | `registered`, 또는 채움이 좁혀지지 않아 아무것도 등록하지 않았으면 `unconfirmed` |
+| `id`          | string | 작업 식별자. `registered`일 때만 |
+| `title`       | string | 작업 제목. `registered`일 때만 |
+| `base_branch` | string | 기준 브랜치. `registered`일 때만 |
+| `after`       | string | 선행 작업. 없으면 null. `registered`일 때만 |
+| `model`       | string | 지정한 모델. 없으면 null. `registered`일 때만 |
+| `repository`  | string | 작업을 등록한 저장소. `registered`일 때만 |
+| `state`       | enum   | 생성 직후 `Pending`. `registered`일 때만 |
+| `missing`     | string | 지시가 말하지 않은 것. `unconfirmed`일 때만 |
+| `choices`     | string 배열 | 각 채움이 남길 지시 전문. 그럴듯한 것부터, 최대 다섯 개. `unconfirmed`일 때만 |
 
+
+`unconfirmed` 응답에는 출력할 문장이 없다. 사람에게 무엇을 어떤 말로 묻는지는 묻는 표면의 몫이다.
 
 **종료 코드**
 
@@ -145,7 +152,7 @@ cistern task add --title <T> --instruction <I> [--branch <B>] [--after <task>] [
 | 코드  | 조건                          |
 | --- | --------------------------- |
 | 0   | 성공                          |
-| 1   | 지시가 어디서 일할지 또는 무엇으로 끝을 확인할지 말하지 않고 `--force`도 없음 |
+| 1   | 아무것도 등록하지 않음: 지시가 자율 실행에 부족하거나, 채움이 좁혀지지 않았는데 물어볼 사람이 없음. `--force`는 적힌 그대로 등록한다 |
 | 2   | 인자 오류 (예: `--title` 누락)     |
 | 3   | `--after`가 가리키는 작업 없음       |
 | 4   | 저장소 안에서 실행하지 않음             |
@@ -161,6 +168,22 @@ task:1 added to backlog
   branch: main (base)
   repo:   ~/work/api
 ```
+
+저장소가 좁혀 주지 못한 지시:
+
+```console
+$ cistern task add --title "중복 집계 수정" --instruction "중복으로 세는 것 고쳐; cargo test search 통과"
+cistern: the instruction does not say where to work
+  1) 중복으로 세는 것 고쳐; cargo test search 통과 (in src/search.rs)
+  2) 중복으로 세는 것 고쳐; cargo test search 통과 (in src/index.rs)
+  which did you mean? a number, or an instruction of your own: 1
+task:1 added to backlog
+  title:  중복 집계 수정
+  branch: main (base)
+  repo:   ~/work/api
+```
+
+번호 대신 지시를 입력하면 그 지시를 대신 등록하며, 처음 것과 같은 방식으로 읽는다. 등록되는 지시가 처음 입력한 문장과 다를 때 그 문장이 작업의 `original`로 남는다. 번호는 언제나 다르고, 직접 입력한 답은 처음부터 다시 읽으므로 있던 문장을 그대로 다시 치면 작업이 아니라 같은 질문으로 돌아온다. 빈 답은 아무것도 등록하지 않고 1로 끝난다. 터미널에 아무도 없으면 선택지만 출력하고 아무것도 등록하지 않으므로, 스크립트 안의 명령도 무엇을 물으려 했는지 남긴다.
 
 #### `cistern task rm`
 

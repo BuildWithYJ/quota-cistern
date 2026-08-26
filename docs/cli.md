@@ -115,24 +115,31 @@ The two may be given together. The task then waits for its predecessor and start
 
 With `--after`, the task is not eligible for assignment until the predecessor reaches `Completed`; if the predecessor ends in any other terminal state, the task stays `Pending`.
 
+An instruction that carries too little to run unattended is filled in from the repository before it is registered. Where the repository allows one place, the fill is taken and the task registers. Where it allows several, or where no rule could settle it and a model proposed one, nothing is registered and the command asks which was meant. `--force` takes the instruction as written and asks nothing.
+
 **Output**
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `id` | string | Task identifier |
-| `title` | string | Task title |
-| `base_branch` | string | Base branch |
-| `after` | string | Predecessor task, or null |
-| `model` | string | Model given for this task, or null |
-| `repository` | string | Repository the task was added from |
-| `state` | enum | `Pending` on creation |
+| `outcome` | enum | `registered`, or `unconfirmed` when a fill was not settled and nothing was registered |
+| `id` | string | Task identifier. `registered` only |
+| `title` | string | Task title. `registered` only |
+| `base_branch` | string | Base branch. `registered` only |
+| `after` | string | Predecessor task, or null. `registered` only |
+| `model` | string | Model given for this task, or null. `registered` only |
+| `repository` | string | Repository the task was added from. `registered` only |
+| `state` | enum | `Pending` on creation. `registered` only |
+| `missing` | string | What the instruction does not say. `unconfirmed` only |
+| `choices` | array of string | The instruction as each fill would leave it, the likeliest first, at most five. `unconfirmed` only |
+
+An `unconfirmed` answer carries no sentence to print. What a person is asked, and in which words, is the surface's.
 
 **Exit codes**
 
 | Code | Condition |
 | --- | --- |
 | 0 | Success |
-| 1 | The instruction does not say where to work, or how to tell it is done, and `--force` was not given |
+| 1 | Nothing was registered: the instruction carries too little to run unattended, or a fill was not settled and there was nobody to ask. `--force` registers it as written |
 | 2 | Argument error (missing `--title`) |
 | 3 | The task named by `--after` does not exist |
 | 4 | The command was not run inside a repository |
@@ -147,6 +154,22 @@ task:1 added to backlog
   branch: main (base)
   repo:   ~/work/api
 ```
+
+An instruction the repository does not settle:
+
+```console
+$ cistern task add --title "stop double-counting" --instruction "make it stop double-counting; cargo test search passes"
+cistern: the instruction does not say where to work
+  1) make it stop double-counting; cargo test search passes (in src/search.rs)
+  2) make it stop double-counting; cargo test search passes (in src/index.rs)
+  which did you mean? a number, or an instruction of your own: 1
+task:1 added to backlog
+  title:  stop double-counting
+  branch: main (base)
+  repo:   ~/work/api
+```
+
+Answering with an instruction rather than a number registers that instruction instead, read the same way this one was. An empty answer registers nothing and exits 1. Where nobody is at the terminal, the choices are printed and nothing is registered, so a command in a script says what it would have asked. The text that was typed first is kept as the task's `original` where the instruction that registers is not that same text. A number always differs from it, and an answer typed out is read afresh, so repeating what was already there leads back to the same question rather than to a task.
 
 #### `cistern task rm`
 

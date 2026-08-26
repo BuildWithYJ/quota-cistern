@@ -7,7 +7,8 @@ use crate::core::{
     },
     port::{
         inbound::{
-            Added, BacklogUseCase, Detail, Listing, Made, Refusal, Registration, Removed, Waiting,
+            Added, BacklogUseCase, Detail, Listing, Made, Refusal, Registered, Registration,
+            Removed, Unconfirmed, Waiting,
         },
         outbound::{
             BacklogStore, Between, Draft, Drafted, Drafter, RepositoryRoots, Results,
@@ -49,17 +50,27 @@ impl<'a> BacklogService<'a> {
     ///
     /// A ready instruction, or a forced one, is taken as written. One that is not ready is filled
     /// in with the place the author is working on, and taken only when that makes it ready.
-    fn readied(&self, instruction: &str, force: bool, root: &str) -> Result<String, Refusal> {
+    ///
+    /// A fill is taken on its own only where it was the one the surroundings allow. Where the
+    /// repository allows several, or where no rule could settle it and a model proposed one, the
+    /// fills are handed back to be chosen between: an unattended run cannot stop to ask, so the
+    /// asking has to happen before the task is registered rather than after.
+    fn readied(&self, instruction: &str, force: bool, root: &str) -> Result<Readied, Refusal> {
         let readiness = Readiness::read(instruction);
         if force || readiness.ready() {
-            return Ok(instruction.to_owned());
+            return Ok(Readied::Given(instruction.to_owned()));
         }
         // Fill from the surroundings by rule first; ask a model only for what a rule could not.
-        if let Some(filled) = filled(instruction, &readiness, self.surroundings, root) {
-            return Ok(filled);
+        let mut byrule = filled(instruction, &readiness, self.surroundings, root);
+        match byrule.len() {
+            0 => {}
+            1 => return Ok(Readied::Given(byrule.remove(0))),
+            _ => return Ok(Readied::Choose(byrule)),
         }
+        // What a model proposes is a guess however it is worded, and no rule was able to check
+        // the guess against the repository, so it is offered rather than taken.
         if let Some(drafted) = drafted(instruction, self.drafter, self.surroundings, root) {
-            return Ok(drafted);
+            return Ok(Readied::Choose(vec![drafted]));
         }
         Err(Refusal::NotReady {
             missing: readiness.missing(),
@@ -104,7 +115,7 @@ impl<'a> BacklogService<'a> {
 }
 
 impl BacklogUseCase for BacklogService<'_> {
-    fn add(&self, given: Registration<'_>) -> Result<Added, Refusal> {
+    fn add(&self, given: Registration<'_>) -> Result<Registered, Refusal> {
         if given.title.trim().is_empty() {
             return Err(Refusal::BadValue {
                 key: "title".to_owned(),
@@ -126,10 +137,23 @@ impl BacklogUseCase for BacklogService<'_> {
         // unattended is filled in from what the author is in the middle of, and turned back only
         // when the repository cannot settle it. Nothing is written for a run that could not have
         // gone anywhere.
-        let instruction = self.readied(given.instruction, given.force, &root)?;
+        let instruction = match self.readied(given.instruction, given.force, &root)? {
+            Readied::Given(instruction) => instruction,
+            // Nothing is written. The surface asks, and comes back with one of these as the
+            // instruction it was given, which is then read like any other.
+            Readied::Choose(choices) => {
+                return Ok(Registered::Unconfirmed(Unconfirmed {
+                    missing: Readiness::read(given.instruction).missing(),
+                    choices,
+                }));
+            }
+        };
         // Kept only when the run is given something other than what the author typed, so that its
         // presence is what says a fill happened, and a task written whole carries nothing extra.
-        let original = (instruction != given.instruction).then(|| given.instruction.to_owned());
+        // What the author typed is what arrived, unless a surface has already asked them a
+        // question and is saying what they started from.
+        let wrote = given.original.unwrap_or(given.instruction);
+        let original = (instruction != wrote).then(|| wrote.to_owned());
 
         change(self.store, |backlog| {
             if let Some(after) = after
@@ -152,7 +176,7 @@ impl BacklogUseCase for BacklogService<'_> {
                 Repository::new(root),
             );
 
-            Ok(Added {
+            Ok(Registered::Added(Added {
                 id: registered.id().labelled(),
                 title: registered.title().to_owned(),
                 base_branch: registered.base_branch(),
@@ -160,7 +184,7 @@ impl BacklogUseCase for BacklogService<'_> {
                 model: registered.model().map(str::to_owned),
                 repository: registered.repository().to_string(),
                 state: registered.state().to_string(),
-            })
+            }))
         })
     }
 
@@ -492,35 +516,57 @@ fn unusable(e: &NotABacklog) -> String {
     }
 }
 
-/// An instruction filled in with a place, when a place is what it is missing.
+/// What the instruction a run is given came to.
+enum Readied {
+    /// Take it: it was ready, it was forced, or one fill settled it.
+    Given(String),
+    /// Filled in more than one way, or by a model, and nobody has said which was meant.
+    Choose(Vec<String>),
+}
+
+/// The instruction filled in with a place, once for each place the repository allows.
 ///
 /// Only the place is filled: the surroundings say where the work is, not how to tell it is done.
-/// The filled-in instruction is returned only when it now carries enough to run.
+/// A filled-in instruction is kept only where it now carries enough to run, so a fill that
+/// answered nothing is not offered as though it had.
 fn filled(
     instruction: &str,
     readiness: &Readiness,
     surroundings: &dyn Surroundings,
     repository: &str,
-) -> Option<String> {
+) -> Vec<String> {
     if readiness.place {
-        return None;
+        return Vec::new();
     }
-    let place = a_place(surroundings, repository, instruction)?;
-    let filled = format!("{instruction} (in {place})");
-    Readiness::read(&filled).ready().then_some(filled)
+    places(surroundings, repository, instruction)
+        .into_iter()
+        .take(AT_MOST)
+        .map(|place| format!("{instruction} (in {place})"))
+        .filter(|filled| Readiness::read(filled).ready())
+        .collect()
 }
 
-/// A place to work: what the author is editing, or failing that what the repository holds by the
-/// instruction's most distinctive word.
+/// How many fills a question offers.
 ///
-/// What is open comes first: a file already changed is likelier what "this" means than one found
-/// by a word that could appear in many.
-fn a_place(surroundings: &dyn Surroundings, repository: &str, instruction: &str) -> Option<String> {
-    if let Some(edited) = surroundings.changed(repository).into_iter().next() {
-        return Some(edited);
+/// A word can match half a repository, and a list that long is not read: it is answered by
+/// picking the first, which is the fill that would have been taken without asking. The likeliest
+/// come first, so what is cut is the tail nobody would have chosen.
+const AT_MOST: usize = 5;
+
+/// The places to work the repository allows, the likeliest first.
+///
+/// What is open comes first and alone: a file already changed is likelier what "this" means than
+/// one found by a word that could appear in many, so a repository with uncommitted work is not
+/// asked about by name as well.
+fn places(surroundings: &dyn Surroundings, repository: &str, instruction: &str) -> Vec<String> {
+    let edited = surroundings.changed(repository);
+    if !edited.is_empty() {
+        return edited;
     }
-    let word = salient(instruction)?;
-    surroundings.holding(repository, word).into_iter().next()
+    let Some(word) = salient(instruction) else {
+        return Vec::new();
+    };
+    surroundings.holding(repository, word)
 }
 
 /// The most distinctive word to search a repository by, if the instruction has one.
@@ -736,6 +782,7 @@ mod tests {
             cwd: "/work/api/src",
             title,
             instruction: "fix parse() in src/util.rs; cargo test util",
+            original: None,
             branch: None,
             after: None,
             model: None,
@@ -744,7 +791,26 @@ mod tests {
     }
 
     fn register(tasks: &Remembered, title: &str) -> Added {
-        in_a_repository(tasks).add(registering(title)).unwrap()
+        added(in_a_repository(tasks).add(registering(title)))
+    }
+
+    /// The question a registration ended in, for a test that expects one.
+    fn unconfirmed(outcome: Result<Registered, Refusal>) -> Unconfirmed {
+        match outcome.expect("the registration was refused") {
+            Registered::Unconfirmed(asked) => asked,
+            Registered::Added(added) => panic!("a task, not a question: {added:?}"),
+        }
+    }
+
+    /// The task a registration ended in, for a test that expects one.
+    ///
+    /// A registration can also end in a question, which is not a task and not a refusal, so a
+    /// test that wanted one says which it wanted here rather than reading a field off an enum.
+    fn added(outcome: Result<Registered, Refusal>) -> Added {
+        match outcome.expect("the registration was refused") {
+            Registered::Added(added) => added,
+            Registered::Unconfirmed(asked) => panic!("a question, not a task: {asked:?}"),
+        }
     }
 
     #[test]
@@ -809,7 +875,7 @@ mod tests {
         given.instruction = "make search a bit better";
         given.force = true;
 
-        let added = in_a_repository(&tasks).add(given).unwrap();
+        let added = added(in_a_repository(&tasks).add(given));
         assert_eq!(added.state, "Pending");
     }
 
@@ -829,7 +895,7 @@ mod tests {
         // A way to check is given, but no place; a file is open.
         given.instruction = "make it stop double-counting; cargo test search passes";
 
-        let added = service.add(given).unwrap();
+        let added = added(service.add(given));
         assert_eq!(added.state, "Pending");
         let held = tasks.stored.lock().unwrap();
         assert!(
@@ -854,7 +920,7 @@ mod tests {
         let wrote = "make it stop double-counting; cargo test search passes";
         given.instruction = wrote;
 
-        service.add(given).unwrap();
+        added(service.add(given));
         let held = tasks.stored.lock().unwrap();
         assert_ne!(held.tasks[0].instruction, wrote);
         assert_eq!(held.tasks[0].original.as_deref(), Some(wrote));
@@ -875,7 +941,7 @@ mod tests {
         let mut given = registering("first");
         given.instruction = "fix parse() in src/util.rs; cargo test util passes";
 
-        service.add(given).unwrap();
+        added(service.add(given));
         let held = tasks.stored.lock().unwrap();
         assert_eq!(held.tasks[0].original, None);
     }
@@ -894,7 +960,7 @@ mod tests {
         let mut given = registering("first");
         let wrote = "make it stop double-counting; cargo test search passes";
         given.instruction = wrote;
-        let added = service.add(given).unwrap();
+        let added = added(service.add(given));
 
         let shown = service.show(&added.id).unwrap();
         assert!(
@@ -920,7 +986,7 @@ mod tests {
         // No place and nothing open, but a word to search by and a way to check.
         given.instruction = "the search results come back doubled; cargo test search passes";
 
-        let added = service.add(given).unwrap();
+        let added = added(service.add(given));
         assert_eq!(added.state, "Pending");
         let held = tasks.stored.lock().unwrap();
         assert!(
@@ -950,14 +1016,154 @@ mod tests {
         // Nothing a rule can seize: no place, no check, nothing open, no word that finds a file.
         given.instruction = "it feels off";
 
-        let added = service.add(given).unwrap();
-        assert_eq!(added.state, "Pending");
+        // A model proposes where no rule could reach, so nothing checked the proposal against
+        // the repository and it is offered rather than taken.
+        let asked = unconfirmed(service.add(given));
+        assert_eq!(asked.choices.len(), 1);
+        assert!(
+            asked.choices[0].contains("src/login.rs") && asked.choices[0].contains("cargo test"),
+            "{:?}",
+            asked.choices
+        );
+        assert!(
+            tasks.stored.lock().unwrap().tasks.is_empty(),
+            "a task was written for a fill nobody confirmed"
+        );
+
+        // What the author picks comes back as the instruction, and is read like any other.
+        let mut again = registering("first");
+        again.instruction = &asked.choices[0];
+        assert_eq!(added(service.add(again)).state, "Pending");
         let held = tasks.stored.lock().unwrap();
         assert!(
             held.tasks[0].instruction.contains("src/login.rs"),
             "{}",
             held.tasks[0].instruction
         );
+    }
+
+    /// A surface that asked says what the author started from, and it is kept.
+    ///
+    /// The question and the answer are two requests, so the text the author typed would otherwise
+    /// be gone by the time the chosen instruction is registered -- which is the one case where
+    /// something certainly was filled in on their behalf.
+    #[test]
+    fn a_fill_that_was_confirmed_keeps_what_the_author_wrote() {
+        let tasks = Remembered::default();
+        let service = in_a_repository(&tasks);
+
+        let wrote = "make it stop double-counting; cargo test search passes";
+        let mut given = registering("first");
+        given.instruction =
+            "make it stop double-counting; cargo test search passes (in src/search.rs)";
+        given.original = Some(wrote);
+
+        added(service.add(given));
+        let held = tasks.stored.lock().unwrap();
+        assert_eq!(held.tasks[0].original.as_deref(), Some(wrote));
+    }
+
+    /// An author who answered the question with what they had already written filled nothing in.
+    #[test]
+    fn an_original_that_is_the_instruction_is_not_kept_beside_it() {
+        let tasks = Remembered::default();
+        let service = in_a_repository(&tasks);
+
+        let wrote = "fix parse() in src/util.rs; cargo test util";
+        let mut given = registering("first");
+        given.instruction = wrote;
+        given.original = Some(wrote);
+
+        added(service.add(given));
+        assert_eq!(tasks.stored.lock().unwrap().tasks[0].original, None);
+    }
+
+    /// A repository that allows one place settles it, and nobody is asked.
+    #[test]
+    fn a_fill_the_repository_settles_registers_on_its_own() {
+        let tasks = Remembered::default();
+        let editing = Around {
+            changed: vec!["src/search.rs".to_owned()],
+            holds: Vec::new(),
+        };
+        let service =
+            BacklogService::new(&tasks, &IN_A_REPOSITORY, &NO_BRANCH, &editing, &NO_MODEL);
+
+        let mut given = registering("first");
+        given.instruction = "make it stop double-counting; cargo test search passes";
+
+        assert_eq!(added(service.add(given)).state, "Pending");
+    }
+
+    /// Where the repository allows several, picking one would spend a run on a guess nobody saw.
+    #[test]
+    fn a_fill_the_repository_does_not_settle_is_asked_about() {
+        let tasks = Remembered::default();
+        let editing = Around {
+            changed: vec!["src/search.rs".to_owned(), "src/index.rs".to_owned()],
+            holds: Vec::new(),
+        };
+        let service =
+            BacklogService::new(&tasks, &IN_A_REPOSITORY, &NO_BRANCH, &editing, &NO_MODEL);
+
+        let mut given = registering("first");
+        let wrote = "make it stop double-counting; cargo test search passes";
+        given.instruction = wrote;
+
+        let asked = unconfirmed(service.add(given));
+        assert_eq!(asked.missing, "where to work");
+        assert_eq!(asked.choices.len(), 2);
+        assert!(
+            asked.choices[0].contains("src/search.rs"),
+            "{:?}",
+            asked.choices
+        );
+        assert!(
+            asked.choices[1].contains("src/index.rs"),
+            "{:?}",
+            asked.choices
+        );
+        // Every choice is the whole instruction, so a surface hands one straight back.
+        assert!(asked.choices.iter().all(|choice| choice.starts_with(wrote)));
+        assert!(
+            tasks.stored.lock().unwrap().tasks.is_empty(),
+            "a task was written for a fill nobody confirmed"
+        );
+    }
+
+    /// A question is not asked about more than a person will read.
+    #[test]
+    fn no_more_places_are_offered_than_a_person_will_read() {
+        let tasks = Remembered::default();
+        let editing = Around {
+            changed: (0..12).map(|at| format!("src/file{at}.rs")).collect(),
+            holds: Vec::new(),
+        };
+        let service =
+            BacklogService::new(&tasks, &IN_A_REPOSITORY, &NO_BRANCH, &editing, &NO_MODEL);
+
+        let mut given = registering("first");
+        given.instruction = "make it stop double-counting; cargo test search passes";
+
+        assert_eq!(unconfirmed(service.add(given)).choices.len(), AT_MOST);
+    }
+
+    /// Forcing takes the instruction as written, so there is nothing to fill and nothing to ask.
+    #[test]
+    fn forcing_asks_nothing_however_many_places_there_are() {
+        let tasks = Remembered::default();
+        let editing = Around {
+            changed: vec!["src/search.rs".to_owned(), "src/index.rs".to_owned()],
+            holds: Vec::new(),
+        };
+        let service =
+            BacklogService::new(&tasks, &IN_A_REPOSITORY, &NO_BRANCH, &editing, &NO_MODEL);
+
+        let mut given = registering("first");
+        given.instruction = "make it faster";
+        given.force = true;
+
+        assert_eq!(added(service.add(given)).state, "Pending");
     }
 
     #[test]
@@ -980,7 +1186,7 @@ mod tests {
 
         let mut given = registering("second");
         given.after = Some(&first.id);
-        let second = in_a_repository(&tasks).add(given).unwrap();
+        let second = added(in_a_repository(&tasks).add(given));
 
         assert_eq!(second.after, Some(first.id.clone()));
         assert_eq!(second.base_branch, "cistern/1");
@@ -1015,7 +1221,7 @@ mod tests {
 
         let mut given = registering("second");
         given.after = Some(&first.id);
-        in_a_repository(&tasks).add(given).unwrap();
+        added(in_a_repository(&tasks).add(given));
 
         in_a_repository(&tasks).remove(&first.id).unwrap();
 
@@ -1078,7 +1284,7 @@ mod tests {
         given.branch = Some("develop");
         given.after = Some(&first.id);
         given.model = Some("opus");
-        in_a_repository(&tasks).add(given).unwrap();
+        added(in_a_repository(&tasks).add(given));
 
         // A second reader over the same store is what a restarted core is.
         let restarted = Remembered {
