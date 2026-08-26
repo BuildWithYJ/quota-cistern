@@ -220,8 +220,62 @@ fn parts(answer: &Value) -> Vec<Part> {
         .unwrap_or_default()
 }
 
-/// How wide the column holding a part's name is.
+/// How wide the column holding a part's name is, and how far a part's text is indented past it.
 const NAMED: usize = 11;
+const INDENT: usize = 6 + NAMED;
+
+/// How wide the screen is taken to be where nothing says.
+///
+/// A model writes a paragraph where it has a paragraph's worth to say, and a paragraph printed
+/// as one line is not read. `COLUMNS` is what a shell exports for this; where nothing exported
+/// it, this is a width every terminal has.
+const AS_WIDE_AS: usize = 80;
+
+/// How wide the screen is.
+fn across() -> usize {
+    env::var("COLUMNS")
+        .ok()
+        .and_then(|held| held.parse().ok())
+        .filter(|across| *across > INDENT + 20)
+        .unwrap_or(AS_WIDE_AS)
+}
+
+/// The text broken to fit, its own line breaks kept.
+///
+/// Broken between words. A word longer than the width left is put on its own line rather than cut,
+/// since a path cut in half is a path nobody can read back.
+fn broken(text: &str, across: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    for given in text.lines() {
+        let mut held = String::new();
+        for word in given.split_whitespace() {
+            if !held.is_empty() && held.chars().count() + 1 + word.chars().count() > across {
+                lines.push(std::mem::take(&mut held));
+            }
+            if !held.is_empty() {
+                held.push(' ');
+            }
+            held.push_str(word);
+        }
+        lines.push(held);
+    }
+    lines
+}
+
+/// One part's text, under its label and indented to it.
+fn under(first: &str, text: &str, across: usize) -> String {
+    let mut written = String::new();
+    for (at, line) in broken(text, across.saturating_sub(INDENT))
+        .iter()
+        .enumerate()
+    {
+        match at {
+            0 => written.push_str(&format!("{first}{line}\n")),
+            _ => written.push_str(&format!("{:INDENT$}{line}\n", "")),
+        }
+    }
+    written
+}
 
 /// The whole spec on one screen, and what it still leaves.
 ///
@@ -230,21 +284,49 @@ const NAMED: usize = 11;
 /// doubled on two lines.
 fn shown(parts: &[Part], left: &[&Value]) {
     eprintln!();
+    let across = across();
     for (at, part) in parts.iter().enumerate() {
         let said = match part.said.is_empty() {
             true => "-----",
             false => &part.said,
         };
+        // Only what nobody settled is marked. That a part was worked out rather than typed is
+        // what the line under it says, and saying it twice is a word in the way of the reading.
         let marked = match part.settled.as_str() {
-            "given" => String::new(),
-            other => format!("   [{other}]"),
+            "open" => "   [open]",
+            _ => "",
         };
-        eprintln!("  {:>2}  {:<NAMED$}{said}{marked}", at + 1, part.named);
+        eprint!(
+            "{}",
+            under(
+                &format!("  {:>2}  {:<NAMED$}", at + 1, part.named),
+                &format!("{said}{marked}"),
+                across,
+            )
+        );
         if let Some(drawn_from) = &part.drawn_from {
-            eprintln!("      {:<NAMED$}- {drawn_from}", "");
+            eprint!(
+                "{}",
+                under(
+                    &format!("      {:<NAMED$}", ""),
+                    &format!("- {drawn_from}"),
+                    across
+                )
+            );
         }
         if !part.others.is_empty() {
-            eprintln!("      {:<NAMED$}- also: {}", "", part.others.join(", "));
+            eprint!(
+                "{}",
+                under(
+                    &format!("      {:<NAMED$}", ""),
+                    &format!("- also: {}", part.others.join(", ")),
+                    across,
+                )
+            );
+        }
+        // A part with more than a line to it is given room, so the six do not run together.
+        if part.said.chars().count() + INDENT > across || part.drawn_from.is_some() {
+            eprintln!();
         }
     }
     eprintln!();
@@ -678,6 +760,36 @@ mod tests {
     #[test]
     fn a_path_elsewhere_is_left_alone() {
         assert_eq!(under_home("/srv/api", home("/home/a")), "/srv/api");
+    }
+
+    /// A model writes a paragraph where it has one, and a paragraph printed as one line is not
+    /// read.
+    #[test]
+    fn a_part_too_wide_for_the_screen_is_broken_between_words() {
+        assert_eq!(
+            broken("the counter is incremented at both 41 and 43", 20),
+            vec!["the counter is", "incremented at both", "41 and 43"]
+        );
+        // Its own line breaks are kept, since a model that broke a line meant to.
+        assert_eq!(broken("one\ntwo", 20), vec!["one", "two"]);
+    }
+
+    /// A path cut in half is a path nobody can read back.
+    #[test]
+    fn a_word_longer_than_the_room_left_is_put_on_its_own_line() {
+        assert_eq!(
+            broken("in crates/cisternd/src/core/domain/decisions.rs now", 12),
+            vec!["in", "crates/cisternd/src/core/domain/decisions.rs", "now"]
+        );
+    }
+
+    /// What runs on is indented to where it started, so the column still reads as a column.
+    #[test]
+    fn what_runs_past_the_first_line_is_indented_under_it() {
+        assert_eq!(
+            under("  1  place      ", "one two three", INDENT + 7),
+            "  1  place      one two\n                 three\n"
+        );
     }
 
     /// An instruction is printed as it was given, however many lines that is.
