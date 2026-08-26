@@ -137,6 +137,15 @@ struct Waiting {
 
 impl Waiting {
     fn shown(said_in: Language) -> Self {
+        // Written over itself, which is something only a terminal does. Anywhere else -- a pipe,
+        // a file, a log -- every count would be a line of its own, and a minute of waiting would
+        // be a hundred lines above the answer.
+        if !io::stderr().is_terminal() {
+            return Waiting {
+                going: Arc::new(AtomicBool::new(false)),
+                saying: None,
+            };
+        }
         let going = Arc::new(AtomicBool::new(true));
         let mine = Arc::clone(&going);
         let saying = thread::spawn(move || {
@@ -158,11 +167,12 @@ impl Waiting {
 impl Drop for Waiting {
     fn drop(&mut self) {
         self.going.store(false, Ordering::Relaxed);
-        if let Some(saying) = self.saying.take() {
-            saying.join().ok();
-        }
+        let Some(saying) = self.saying.take() else {
+            return;
+        };
+        saying.join().ok();
         // Written over with blanks rather than left for the answer to print under.
-        eprint!("\r{:60}\r", "");
+        eprint!("\r{:70}\r", "");
         io::stderr().flush().ok();
     }
 }
