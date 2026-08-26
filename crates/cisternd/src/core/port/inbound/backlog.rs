@@ -16,6 +16,13 @@ pub struct Registration<'a> {
     pub cwd: &'a str,
     pub title: &'a str,
     pub instruction: &'a str,
+    /// What the author wrote, where the instruction above is not it.
+    ///
+    /// A surface supplies it once it has asked which fill was meant: the question and the answer
+    /// are two requests and the core holds nothing between them, so the text the author started
+    /// from would otherwise be gone by the time a task is registered. Nothing where a surface has
+    /// asked nothing, which is every request that is not the second half of a question.
+    pub original: Option<&'a str>,
     pub branch: Option<&'a str>,
     pub after: Option<&'a str>,
     pub model: Option<&'a str>,
@@ -33,6 +40,34 @@ pub struct Added {
     pub model: Option<String>,
     pub repository: String,
     pub state: String,
+}
+
+/// What became of a registration.
+///
+/// A `task add` either put a task in the backlog or came back with a question, so the two are one
+/// answer rather than an answer and an error. Nothing was written in the second case: the
+/// instruction was filled in more than one way and no one has said which was meant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Registered {
+    /// The task is in the backlog.
+    Added(Added),
+    /// Nothing was written, and this is what has to be settled first.
+    Unconfirmed(Unconfirmed),
+}
+
+/// A fill that nobody has confirmed, and the instructions it could leave behind.
+///
+/// The core cannot ask: it runs as a daemon and the person is at a surface. So it answers with
+/// what it would have registered, and a surface that has somebody in front of it asks which.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unconfirmed {
+    /// What the instruction did not say, in the words [`Refusal::NotReady`] uses for it.
+    pub missing: String,
+    /// The instruction as each fill would leave it, the likeliest first.
+    ///
+    /// Whole instructions rather than the places they were filled from, so that a surface hands
+    /// one straight back rather than writing the fill a second way.
+    pub choices: Vec<String>,
 }
 
 /// A task that was taken out of the backlog.
@@ -97,7 +132,7 @@ pub struct Waiting {
 /// `task add`, `task rm`, `task show`, and `backlog`.
 pub trait BacklogUseCase {
     /// Registers a task.
-    fn add(&self, given: Registration<'_>) -> Result<Added, Refusal>;
+    fn add(&self, given: Registration<'_>) -> Result<Registered, Refusal>;
 
     /// Takes a task out of the backlog.
     fn remove(&self, id: &str) -> Result<Removed, Refusal>;

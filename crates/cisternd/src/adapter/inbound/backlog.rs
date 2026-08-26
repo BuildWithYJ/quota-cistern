@@ -3,7 +3,9 @@
 use cistern_contract::{Request, Response};
 use serde_json::Value;
 
-use crate::core::port::inbound::{Added, BacklogUseCase, Detail, Listing, Registration, Removed};
+use crate::core::port::inbound::{
+    BacklogUseCase, Detail, Listing, Registered, Registration, Removed,
+};
 
 use super::{answer, flag, missing, text};
 
@@ -40,6 +42,7 @@ fn add(backlog: &impl BacklogUseCase, request: Request) -> Response {
             cwd,
             title,
             instruction,
+            original: text(&request, "original"),
             branch: text(&request, "branch"),
             after: text(&request, "after"),
             model: text(&request, "model"),
@@ -72,16 +75,31 @@ fn list(backlog: &impl BacklogUseCase, request: Request) -> Response {
     answer(request.command, outcome)
 }
 
-fn registered(added: Added) -> Value {
-    serde_json::json!({
-        "id": added.id,
-        "title": added.title,
-        "base_branch": added.base_branch,
-        "after": added.after,
-        "model": added.model,
-        "repository": added.repository,
-        "state": added.state,
-    })
+/// What `task add` came to, as one answer with `outcome` saying which it is.
+///
+/// A question is not a failure -- nothing went wrong and nothing was refused -- so it comes back
+/// as an answer rather than as an error, and a surface tells the two apart by the field rather
+/// than by which keys it can find.
+fn registered(outcome: Registered) -> Value {
+    match outcome {
+        Registered::Added(added) => serde_json::json!({
+            "outcome": "registered",
+            "id": added.id,
+            "title": added.title,
+            "base_branch": added.base_branch,
+            "after": added.after,
+            "model": added.model,
+            "repository": added.repository,
+            "state": added.state,
+        }),
+        // What is missing and what would answer it, and no sentence: the words a person is asked
+        // in belong to the surface asking them, the way `--force` does.
+        Registered::Unconfirmed(unconfirmed) => serde_json::json!({
+            "outcome": "unconfirmed",
+            "missing": unconfirmed.missing,
+            "choices": unconfirmed.choices,
+        }),
+    }
 }
 
 fn taken(removed: Removed) -> Value {
@@ -137,7 +155,7 @@ mod tests {
     use cistern_contract::code::{NOT_FOUND, USAGE_ERROR};
 
     use super::super::tests::{asked, data, failure};
-    use crate::core::port::inbound::{Refusal, Waiting};
+    use crate::core::port::inbound::{Added, Refusal, Unconfirmed, Waiting};
 
     use super::*;
 
@@ -156,9 +174,18 @@ mod tests {
         /// What `branch` was, on the same. Read beside `reached`, which says a registration
         /// arrived at all: a branch nobody gave and a core nobody reached both read as nothing.
         branched: RefCell<Option<String>>,
+        /// What a registration ends in, where it is meant to end in a question.
+        asks: Option<Unconfirmed>,
     }
 
     impl Core {
+        fn asking(asks: Unconfirmed) -> Self {
+            Core {
+                asks: Some(asks),
+                ..Core::default()
+            }
+        }
+
         fn refusing(refusal: Refusal) -> Self {
             Core {
                 refuses: Some(refusal),
@@ -173,10 +200,13 @@ mod tests {
     }
 
     impl BacklogUseCase for Core {
-        fn add(&self, given: Registration<'_>) -> Result<Added, Refusal> {
+        fn add(&self, given: Registration<'_>) -> Result<Registered, Refusal> {
             self.forced.set(Some(given.force));
             *self.branched.borrow_mut() = given.branch.map(str::to_owned);
-            self.refused().unwrap_or(Ok(Added {
+            if let Some(asks) = self.asks.clone() {
+                return Ok(Registered::Unconfirmed(asks));
+            }
+            self.refused().unwrap_or(Ok(Registered::Added(Added {
                 id: "task:1".to_owned(),
                 title: given.title.to_owned(),
                 base_branch: "main".to_owned(),
@@ -184,7 +214,7 @@ mod tests {
                 model: None,
                 repository: "/work/api".to_owned(),
                 state: "Pending".to_owned(),
-            }))
+            })))
         }
 
         fn remove(&self, id: &str) -> Result<Removed, Refusal> {
@@ -250,11 +280,36 @@ mod tests {
         let core = Core::default();
         let data = data(answered(&core, "task_add", registering("refactor X")));
 
+        assert_eq!(data["outcome"], "registered");
         assert_eq!(data["id"], "task:1");
         assert_eq!(data["title"], "refactor X");
         assert_eq!(data["base_branch"], "main");
         assert_eq!(data["repository"], "/work/api");
         assert_eq!(data["state"], "Pending");
+    }
+
+    /// A question is an answer, not a refusal: nothing went wrong and nothing was refused.
+    ///
+    /// It carries no sentence. The words a person is asked in belong to the surface asking them,
+    /// which is where `--force` is spelled too.
+    #[test]
+    fn a_fill_nobody_confirmed_answers_with_what_it_would_have_registered() {
+        let core = Core::asking(Unconfirmed {
+            missing: "where to work".to_owned(),
+            choices: vec![
+                "make it faster (in src/search.rs)".to_owned(),
+                "make it faster (in src/index.rs)".to_owned(),
+            ],
+        });
+
+        let data = data(answered(&core, "task_add", registering("refactor X")));
+
+        assert_eq!(data["outcome"], "unconfirmed");
+        assert_eq!(data["missing"], "where to work");
+        assert_eq!(data["choices"][0], "make it faster (in src/search.rs)");
+        assert_eq!(data["choices"][1], "make it faster (in src/index.rs)");
+        // Nothing was registered, so nothing here says a task was.
+        assert!(data.get("id").is_none(), "{data}");
     }
 
     /// The path from the envelope to the registration, which nothing else crosses.

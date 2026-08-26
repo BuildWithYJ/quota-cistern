@@ -3,7 +3,12 @@
 //! What was typed goes to the core as it was given.
 //! Whether a value is allowed and whether a task exists are the core's to decide, so this file has no list of either.
 
-use std::{env, ffi::OsString, io::Read, process::ExitCode};
+use std::{
+    env,
+    ffi::OsString,
+    io::{self, IsTerminal, Read, Write},
+    process::ExitCode,
+};
 
 use cistern_contract::{Response, code::CORE_ERROR, code::GENERAL_FAILURE, code::USAGE_ERROR};
 use serde_json::Value;
@@ -50,28 +55,138 @@ fn add(
         eprintln!("cistern: the current directory cannot be read");
         return ExitCode::from(USAGE_ERROR);
     };
-    let instruction = match read_instruction(instruction) {
+    let mut instruction = match read_instruction(instruction) {
         Ok(instruction) => instruction,
         Err(e) => {
             eprintln!("cistern: the instruction cannot be read: {e}");
             return ExitCode::from(USAGE_ERROR);
         }
     };
+    let cwd = cwd.display().to_string();
+    // What the author typed, kept beside the instruction once one of the fills replaces it. The
+    // two asks are separate requests, so the core cannot remember this and is told it instead.
+    let wrote = instruction.clone();
+    let mut asked_already = false;
 
-    send_noting(
-        "task_add",
-        serde_json::json!({
-            "cwd": cwd.display().to_string(),
-            "title": title,
-            "instruction": instruction,
-            "branch": branch,
-            "after": after,
-            "model": model,
-            "force": force,
-        }),
-        added,
-        way_past,
-    )
+    // The core fills a loose instruction in from the repository, and where the repository allows
+    // more than one fill it answers with them rather than picking. Asking is this side's to do:
+    // the core is a daemon and the person is here. What they choose goes back as the instruction,
+    // so the second ask is an ordinary one and the gate reads it like any other.
+    loop {
+        let asked = asked(
+            "task_add",
+            serde_json::json!({
+                "cwd": cwd,
+                "title": title,
+                "instruction": instruction,
+                "original": asked_already.then_some(wrote.as_str()),
+                "branch": branch,
+                "after": after,
+                "model": model,
+                "force": force,
+            }),
+            way_past,
+        );
+        let answer = match asked {
+            Ok(answer) => answer,
+            Err(code) => return code,
+        };
+
+        if text(&answer, "outcome") != Some(UNCONFIRMED) {
+            added(&answer);
+            return ExitCode::SUCCESS;
+        }
+        let Some(chosen) = chosen(&answer) else {
+            return ExitCode::from(GENERAL_FAILURE);
+        };
+        instruction = chosen;
+        asked_already = true;
+    }
+}
+
+/// What `outcome` says when the core filled the instruction in and did not register anything.
+const UNCONFIRMED: &str = "unconfirmed";
+
+/// Asks which fill was meant, and answers with the instruction to send back.
+///
+/// Nothing was registered, so there is nothing to undo and no state to hold between the two asks:
+/// what comes back is an instruction like any other. A number picks one of the fills; anything
+/// else is taken as the instruction the author would rather give, which the gate then reads.
+///
+/// Nothing when there is nobody to ask, or when they declined by answering with a blank line. The
+/// choices are printed first either way, so a command in a script says what it would have asked.
+fn chosen(answer: &Value) -> Option<String> {
+    let choices: Vec<&str> = answer
+        .get("choices")?
+        .as_array()?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    if choices.is_empty() {
+        return None;
+    }
+
+    eprintln!(
+        "cistern: the instruction does not say {}",
+        text(answer, "missing").unwrap_or("enough to run unattended")
+    );
+    for (at, choice) in choices.iter().enumerate() {
+        eprintln!("  {}) {choice}", at + 1);
+    }
+
+    if !io::stdin().is_terminal() {
+        eprintln!("  give one of these as the instruction, or --force to register it as written");
+        return None;
+    }
+
+    loop {
+        eprint!("  which did you mean? a number, or an instruction of your own: ");
+        // Printed without a newline, so it has to be pushed out before the read blocks on it.
+        io::stderr().flush().ok()?;
+
+        let mut typed = String::new();
+        // Nothing read at all is the end of the input rather than an empty answer.
+        if io::stdin().read_line(&mut typed).ok()? == 0 {
+            eprintln!();
+            return None;
+        }
+        match picked(&typed, choices.len()) {
+            Picked::Choice(at) => return Some(choices[at].to_owned()),
+            Picked::Own(own) => return Some(own),
+            Picked::Nothing => return None,
+            // A number nobody offered is a slip rather than an instruction, so it is asked again.
+            Picked::NotOnTheList(number) => eprintln!("  there is no {number} on the list"),
+        }
+    }
+}
+
+/// What an answer to the question turned out to mean.
+enum Picked {
+    /// One of the fills, by where it sat on the list.
+    Choice(usize),
+    /// An instruction the author would rather give.
+    Own(String),
+    /// Never mind.
+    Nothing,
+    /// A number, but not one that was offered.
+    NotOnTheList(usize),
+}
+
+/// Reads what was typed against how many fills were offered.
+///
+/// Apart from the reading of it, so that what an answer means can be held without a terminal to
+/// type it on. A number is a pick and nothing else: an instruction that is only a number says
+/// nothing a run could work from, so reading it as one would take a slip at its word.
+fn picked(typed: &str, offered: usize) -> Picked {
+    let typed = typed.trim();
+    if typed.is_empty() {
+        return Picked::Nothing;
+    }
+    match typed.parse::<usize>() {
+        Ok(number) if (1..=offered).contains(&number) => Picked::Choice(number - 1),
+        Ok(number) => Picked::NotOnTheList(number),
+        Err(_) => Picked::Own(typed.to_owned()),
+    }
 }
 
 /// What to say after a refusal `task add` gets, beyond what the refusal says itself.
@@ -203,21 +318,36 @@ fn send_noting(
     print: fn(&Value),
     note: fn(u8) -> Option<&'static str>,
 ) -> ExitCode {
-    match daemon::ask(command, params) {
-        Ok(Response::Data(answer)) => {
-            print(&answer.data);
+    match asked(command, params, note) {
+        Ok(answer) => {
+            print(&answer);
             ExitCode::SUCCESS
         }
+        Err(code) => code,
+    }
+}
+
+/// Asks the core and hands back what it answered, or the code to end on.
+///
+/// Apart from printing it, because `task add` may ask twice: what comes back the first time can
+/// be a question rather than a task, and the second ask is made with the answer to it.
+fn asked(
+    command: &str,
+    params: Value,
+    note: fn(u8) -> Option<&'static str>,
+) -> Result<Value, ExitCode> {
+    match daemon::ask(command, params) {
+        Ok(Response::Data(answer)) => Ok(answer.data),
         Ok(Response::Error(failure)) => {
             eprintln!("cistern: {}", failure.message);
             if let Some(note) = note(failure.code) {
                 eprintln!("  {note}");
             }
-            ExitCode::from(failure.code)
+            Err(ExitCode::from(failure.code))
         }
         Err(e) => {
             eprintln!("cistern: the core is not running: {e}");
-            ExitCode::from(CORE_ERROR)
+            Err(ExitCode::from(CORE_ERROR))
         }
     }
 }
@@ -411,6 +541,30 @@ mod tests {
     #[test]
     fn a_path_elsewhere_is_left_alone() {
         assert_eq!(under_home("/srv/api", home("/home/a")), "/srv/api");
+    }
+
+    /// A number picks a fill; anything else is the instruction the author would rather give.
+    #[test]
+    fn what_was_typed_at_the_question_is_read_against_what_was_offered() {
+        assert!(matches!(picked("2", 3), Picked::Choice(1)));
+        assert!(matches!(picked("  1  ", 3), Picked::Choice(0)));
+        // A number nobody offered is a slip, and is told apart from an instruction.
+        assert!(matches!(picked("4", 3), Picked::NotOnTheList(4)));
+        assert!(matches!(picked("0", 3), Picked::NotOnTheList(0)));
+        // Nothing typed is nobody choosing, which is not the same as choosing badly.
+        assert!(matches!(picked("", 3), Picked::Nothing));
+        assert!(matches!(picked("   \n", 3), Picked::Nothing));
+    }
+
+    /// An instruction of the author's own is taken whole, whatever it holds.
+    #[test]
+    fn an_instruction_typed_at_the_question_is_taken_as_it_stands() {
+        assert!(matches!(
+            picked("  fix parse() in src/util.rs  ", 2),
+            Picked::Own(own) if own == "fix parse() in src/util.rs"
+        ));
+        // One that opens with a number is still an instruction: it is not only a number.
+        assert!(matches!(picked("2 files are wrong", 2), Picked::Own(_)));
     }
 
     /// An instruction is printed as it was given, however many lines that is.

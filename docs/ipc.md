@@ -47,7 +47,7 @@ A request is one line and so is the response. A connection closed before a reque
 | `type` | string | The command, in snake_case |
 | `params` | object | The command's arguments |
 
-`type` is the command name with spaces replaced by underscores: `task add` is `task_add`. What `params` holds is the argument table in that command's section of the CLI specification, together with what a surface supplies on the user's behalf. `task_add` carries `cwd`, the directory the command was run in, because the core runs as a daemon and its own working directory is not the user's.
+`type` is the command name with spaces replaced by underscores: `task add` is `task_add`. What `params` holds is the argument table in that command's section of the CLI specification, together with what a surface supplies on the user's behalf. `task_add` carries `cwd`, the directory the command was run in, because the core runs as a daemon and its own working directory is not the user's. It also carries `original`, the text the user typed, on the second of the two requests a surface makes when it asks which fill was meant: the core holds nothing between requests, so what the user started from has to travel with the answer.
 
 Every value in `params` crosses in the form its argument table gives it: a flag as a boolean, everything else as a string. An argument the user did not give crosses as null, or does not cross at all, and reads the same either way.
 
