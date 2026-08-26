@@ -97,22 +97,33 @@ fn set_aside(standing: &Standing, model: Option<&str>, free: u64, alone: bool) -
 /// What holds the session to what it declared is the first line: what is left, less what the
 /// runs already going are allowed. Nothing about that depends on any figure being right.
 ///
-/// Taken in order, so a task that does not fit ends the round rather than letting a shorter
-/// one behind it go first. How many of these actually start is the machine's to say, not this.
+/// A task that cannot start is passed over rather than ending the round. Three of the four
+/// reasons one cannot are about its own model, and a run of one model takes several times what
+/// a run of another does; a task at the head asking for more than is left would otherwise hold
+/// back every task behind it while the budget still covers them. Order is still the order they
+/// wait in, and nothing is sorted by size. What changes is that a task nobody can start no
+/// longer answers for the rest.
+///
+/// Nothing left to hand out is the exception. That one does answer for the rest, since a task
+/// behind is allowed out of the same nothing.
+///
+/// How many of these actually start is the machine's to say, not this.
 fn allow(standing: &Standing) -> Vec<Allowance> {
     let mut free = standing.left().saturating_sub(standing.booked);
     let mut given: Vec<Allowance> = Vec::new();
 
     for (task, model) in &standing.pending {
-        let alone = standing.running == 0 && given.is_empty();
-        if free == 0
-            || !fits_the_clock(standing, model.as_deref())
-            || !fits_the_budget(standing, model.as_deref(), alone)
-        {
+        if free == 0 {
             break;
         }
+        let alone = standing.running == 0 && given.is_empty();
+        if !fits_the_clock(standing, model.as_deref())
+            || !fits_the_budget(standing, model.as_deref(), alone)
+        {
+            continue;
+        }
         let Some(ceiling) = set_aside(standing, model.as_deref(), free, alone) else {
-            break;
+            continue;
         };
         given.push(Allowance {
             task: *task,

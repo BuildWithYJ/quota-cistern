@@ -44,6 +44,15 @@ fn ceilings(decision: Decision) -> Vec<u64> {
     }
 }
 
+/// Which tasks were allowed, in the order they were allowed, for a decision that is about
+/// which rather than about how much.
+fn assigned(decision: Decision) -> Vec<TaskId> {
+    match decision {
+        Decision::Start(allowed) => allowed.iter().map(|one| one.task).collect(),
+        Decision::Stop(why) => panic!("stopped for {why}"),
+    }
+}
+
 // what a decision comes to
 
 /// The policy is a value, so a session run under another one is another value rather than
@@ -586,5 +595,102 @@ fn tasks_left_that_none_may_start_is_not_everything_being_done() {
             ..standing()
         }),
         Decision::Stop(StoppedReason::Blocked)
+    );
+}
+
+// a head that cannot start does not answer for the rest
+
+/// A run of one model takes several times what a run of another does, so the task at the head
+/// asking for more than is left says nothing about the task behind it. Passing over the one
+/// that cannot start is what lets the budget reach the one that can.
+#[test]
+fn a_task_that_cannot_be_covered_does_not_hold_back_a_cheaper_one_behind_it() {
+    assert_eq!(
+        ceilings(decide(&Standing {
+            declared: 300,
+            before: Before {
+                cost: Sizings::under(
+                    Rule::default(),
+                    [
+                        Ran::finished(Some("opus"), 1_000),
+                        Ran::finished(Some("haiku"), 50),
+                    ]
+                ),
+                ..standing().before
+            },
+            pending: vec![
+                (task(1), Some("opus".to_owned())),
+                (task(2), Some("haiku".to_owned())),
+            ],
+            ..standing()
+        })),
+        [100]
+    );
+}
+
+/// The same where the clock is what turns the head away. A model that has taken longer than
+/// the session has left is one model, and the session still has time for another.
+#[test]
+fn a_task_with_no_time_for_its_model_does_not_hold_back_a_quicker_one_behind_it() {
+    assert_eq!(
+        assigned(decide(&Standing {
+            before: Before {
+                cost: Sizings::under(
+                    Rule::default(),
+                    [
+                        Ran::finished(Some("opus"), 100),
+                        Ran::finished(Some("haiku"), 50),
+                    ]
+                ),
+                lasting: Sizings::under(
+                    Rule::default(),
+                    [
+                        Ran::finished(Some("opus"), 9_000),
+                        Ran::finished(Some("haiku"), 60),
+                    ]
+                ),
+            },
+            time_left: 600,
+            pending: vec![
+                (task(1), Some("opus".to_owned())),
+                (task(2), Some("haiku".to_owned())),
+            ],
+            ..standing()
+        })),
+        [task(2)]
+    );
+}
+
+/// Order is untouched where both may start. The one that waits first is allowed first.
+#[test]
+fn among_tasks_that_may_start_the_one_waiting_first_is_allowed_first() {
+    assert_eq!(
+        assigned(decide(&Standing {
+            pending: vec![
+                (task(2), Some("opus".to_owned())),
+                (task(1), Some("opus".to_owned())),
+            ],
+            ..standing()
+        })),
+        [task(2), task(1)]
+    );
+}
+
+/// Nothing left to hand out still ends the round. A task behind would be allowed out of the
+/// same nothing, so passing over it buys nothing and costs a walk down the rest of the list.
+#[test]
+fn nothing_left_to_hand_out_ends_the_round() {
+    assert_eq!(
+        decide(&Standing {
+            declared: 200,
+            booked: 200,
+            running: 1,
+            pending: vec![
+                (task(1), Some("opus".to_owned())),
+                (task(2), Some("haiku".to_owned())),
+            ],
+            ..standing()
+        }),
+        Decision::Start(Vec::new())
     );
 }
