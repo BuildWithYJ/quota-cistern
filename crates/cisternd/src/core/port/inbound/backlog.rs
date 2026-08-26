@@ -55,19 +55,43 @@ pub enum Registered {
     Unconfirmed(Unconfirmed),
 }
 
-/// A fill that nobody has confirmed, and the instructions it could leave behind.
+/// A spec nobody has accepted, as it stands.
 ///
 /// The core cannot ask: it runs as a daemon and the person is at a surface. So it answers with
-/// what it would have registered, and a surface that has somebody in front of it asks which.
+/// the spec it would have registered and what that spec still leaves for the agent, and a surface
+/// that has somebody in front of it shows them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unconfirmed {
-    /// What the instruction did not say, in the words [`Refusal::NotReady`] uses for it.
-    pub missing: String,
-    /// The instruction as each fill would leave it, the likeliest first.
-    ///
-    /// Whole instructions rather than the places they were filled from, so that a surface hands
-    /// one straight back rather than writing the fill a second way.
-    pub choices: Vec<String>,
+    /// Every part of the spec, in reading order.
+    pub parts: Vec<Shown>,
+    /// What is still left for the agent to decide on its own.
+    pub undecided: Vec<Left>,
+}
+
+/// One part of a spec, as a surface shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Shown {
+    /// What the part is called.
+    pub part: String,
+    /// What it says, where anything does.
+    pub said: Option<String>,
+    /// Who settled it: the author, the repository, or nobody yet.
+    pub settled: String,
+    /// What it was drawn from, for a reader deciding whether to take it.
+    pub drawn_from: Option<String>,
+    /// The others the repository allows, or what to choose between where nothing was settled.
+    pub others: Vec<String>,
+    /// What to ask about it, in the words the author wrote in.
+    pub asks: Option<String>,
+}
+
+/// One decision the spec leaves for the agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Left {
+    /// The part it is about, where it is about one.
+    pub part: Option<String>,
+    /// What the agent would settle for itself while this stands.
+    pub decides: String,
 }
 
 /// A task that was taken out of the backlog.

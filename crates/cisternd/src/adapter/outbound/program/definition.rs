@@ -39,7 +39,7 @@ pub struct Definition {
     pub spend: String,
     pub answer: Answer,
     pub limit: Limit,
-    pub drafter: Drafter,
+    pub drafter: Drafting,
     pub trace: Trace,
 }
 
@@ -50,7 +50,7 @@ pub struct Definition {
 /// that asks holds no vendor's word of its own.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Drafter {
+pub struct Drafting {
     pub program: String,
     /// The model asked first, and the one asked only where the first found no place.
     ///
@@ -60,20 +60,29 @@ pub struct Drafter {
     pub stronger: String,
     /// How far one ask may go. A guard against an ask that goes nowhere, not a task's ceiling.
     pub turns: String,
-    /// How many of the repository's files to show, so the prompt stays small.
-    pub files_shown: usize,
     /// The arguments, grouped as the agent's are, with `{prompt}`, `{model}`, and `{turns}`
     /// standing for what one ask fills in.
     pub args: Vec<Vec<String>>,
     /// What is asked, with `{instruction}`, `{changed}`, `{files}`, `{place}`, and `{check}`
     /// standing for what one ask fills in.
     pub prompt: String,
-    /// The two words the answer is read by.
+    /// The words each part of the answer is read by.
     ///
     /// They are written into the prompt as well, so changing one changes what is asked and
     /// what is read together rather than leaving the two to drift apart.
+    pub goal: String,
     pub place: String,
-    pub check: String,
+    pub success: String,
+    pub on_failure: String,
+    pub why: String,
+    pub scope: String,
+    /// What is put after a part's word to ask what it was drawn from, what else was allowed,
+    /// and what to ask a person where nothing settled it.
+    pub drawn_from: String,
+    pub others: String,
+    pub asks: String,
+    /// What is asked the second time, with `{amiss}` standing for what did not hold up.
+    pub again: String,
 }
 
 /// How much of the vendor's allowance is left, and how to find out.

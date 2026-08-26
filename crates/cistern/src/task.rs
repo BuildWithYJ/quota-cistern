@@ -8,6 +8,12 @@ use std::{
     ffi::OsString,
     io::{self, IsTerminal, Read, Write},
     process::ExitCode,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::{Duration, Instant},
 };
 
 use cistern_contract::{Response, code::CORE_ERROR, code::GENERAL_FAILURE, code::USAGE_ERROR};
@@ -73,6 +79,10 @@ fn add(
     // the core is a daemon and the person is here. What they choose goes back as the instruction,
     // so the second ask is an ordinary one and the gate reads it like any other.
     loop {
+        // Working out what a line meant means reading the repository and asking a model, which
+        // takes as long as it takes. A command that says nothing for a minute is one a person
+        // stops, so it says what it is doing and how long it has been at it.
+        let waiting = (!asked_already).then(Waiting::shown);
         let asked = asked(
             "task_add",
             serde_json::json!({
@@ -85,8 +95,11 @@ fn add(
                 "model": model,
                 "force": force,
             }),
-            way_past,
+            // The core registers a task or asks about one. Nothing it refuses task_add with is
+            // a code this surface has more to say about than the core did.
+            |_| None,
         );
+        drop(waiting);
         let answer = match asked {
             Ok(answer) => answer,
             Err(code) => return code,
@@ -104,100 +117,381 @@ fn add(
     }
 }
 
+/// How long the core is given to answer before anything is said about waiting.
+///
+/// An instruction the author wrote out in full comes back at once, and a line that flashed up
+/// and away would be read as something having gone wrong.
+const BEFORE_SAYING_SO: Duration = Duration::from_millis(700);
+
+/// A line saying the core is working, taken away when it answers.
+///
+/// Written over itself as the seconds pass rather than added to, so what is left on the screen
+/// when the answer comes is what the answer wrote and nothing before it.
+struct Waiting {
+    going: Arc<AtomicBool>,
+    saying: Option<thread::JoinHandle<()>>,
+}
+
+impl Waiting {
+    fn shown() -> Self {
+        let going = Arc::new(AtomicBool::new(true));
+        let mine = Arc::clone(&going);
+        let saying = thread::spawn(move || {
+            let since = Instant::now();
+            thread::sleep(BEFORE_SAYING_SO);
+            while mine.load(Ordering::Relaxed) {
+                eprint!(
+                    "\r  working out what that means... {}s",
+                    since.elapsed().as_secs()
+                );
+                io::stderr().flush().ok();
+                thread::sleep(Duration::from_millis(500));
+            }
+        });
+        Waiting {
+            going,
+            saying: Some(saying),
+        }
+    }
+}
+
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        self.going.store(false, Ordering::Relaxed);
+        if let Some(saying) = self.saying.take() {
+            saying.join().ok();
+        }
+        // Written over with blanks rather than left for the answer to print under.
+        eprint!("\r{:60}\r", "");
+        io::stderr().flush().ok();
+    }
+}
+
 /// What `outcome` says when the core filled the instruction in and did not register anything.
 const UNCONFIRMED: &str = "unconfirmed";
 
-/// Asks which fill was meant, and answers with the instruction to send back.
+/// Shows the spec the core worked out, settles what is left, and answers with what to send back.
 ///
 /// Nothing was registered, so there is nothing to undo and no state to hold between the two asks:
-/// what comes back is an instruction like any other. A number picks one of the fills; anything
-/// else is taken as the instruction the author would rather give, which the gate then reads.
+/// what goes back is the spec as text, and the core reads it as the author's own because they
+/// have now seen it.
 ///
-/// Nothing when there is nobody to ask, or when they declined by answering with a blank line. The
-/// choices are printed first either way, so a command in a script says what it would have asked.
+/// Nothing when there is nobody to ask, or when they said no. The spec is printed either way, so
+/// a command in a script says what it would have asked about.
 fn chosen(answer: &Value) -> Option<String> {
-    let choices: Vec<&str> = answer
-        .get("choices")?
-        .as_array()?
-        .iter()
-        .filter_map(Value::as_str)
-        .collect();
-    if choices.is_empty() {
-        return None;
-    }
+    let mut parts = parts(answer);
+    let left: Vec<&Value> = answer.get("undecided")?.as_array()?.iter().collect();
 
-    eprintln!(
-        "cistern: the instruction does not say {}",
-        text(answer, "missing").unwrap_or("enough to run unattended")
-    );
-    for (at, choice) in choices.iter().enumerate() {
-        eprintln!("  {}) {choice}", at + 1);
-    }
+    shown(&parts, &left);
 
     if !io::stdin().is_terminal() {
-        eprintln!("  give one of these as the instruction, or --force to register it as written");
+        eprintln!(
+            "  nobody is here to settle {}, so nothing was registered. --force registers the instruction as written",
+            match left.len() {
+                1 => "it".to_owned(),
+                many => format!("{many} of them"),
+            }
+        );
         return None;
+    }
+
+    // What nobody settled, one at a time. A part an agent would otherwise settle for itself is
+    // the whole reason for asking, so there is no accepting past it.
+    for one in &left {
+        let named = text(one, "part")?;
+        let asking = parts.iter().find(|part| part.named == named)?;
+        let said = settling(asking, text(one, "decides").unwrap_or("what it should be"))?;
+        put(&mut parts, named, &said);
     }
 
     loop {
-        eprint!("  which did you mean? a number, or an instruction of your own: ");
-        // Printed without a newline, so it has to be pushed out before the read blocks on it.
+        eprint!("  Register it? [enter=yes / 1-6=change that line / n=no] ");
         io::stderr().flush().ok()?;
-
         let mut typed = String::new();
-        // Nothing read at all is the end of the input rather than an empty answer.
         if io::stdin().read_line(&mut typed).ok()? == 0 {
             eprintln!();
             return None;
         }
-        match picked(&typed, choices.len()) {
-            Picked::Choice(at) => return Some(choices[at].to_owned()),
-            Picked::Own(own) => return Some(own),
-            Picked::Nothing => return None,
-            // A number nobody offered is a slip rather than an instruction, so it is asked again.
-            Picked::NotOnTheList(number) => eprintln!("  there is no {number} on the list"),
+        let typed = typed.trim();
+        if typed.is_empty() {
+            return Some(written(&parts));
+        }
+        if typed.eq_ignore_ascii_case("n") {
+            return None;
+        }
+        match typed.parse::<usize>() {
+            Ok(at) if (1..=parts.len()).contains(&at) => {
+                let named = parts[at - 1].named.clone();
+                let said = typing(&format!("  {named}: "))?;
+                put(&mut parts, &named, &said);
+                shown(&parts, &[]);
+            }
+            _ => eprintln!("  there is no {typed} on the list"),
         }
     }
 }
 
-/// What an answer to the question turned out to mean.
-enum Picked {
-    /// One of the fills, by where it sat on the list.
-    Choice(usize),
-    /// An instruction the author would rather give.
-    Own(String),
-    /// Never mind.
-    Nothing,
-    /// A number, but not one that was offered.
-    NotOnTheList(usize),
+/// One part of a spec, as the core sent it.
+struct Part {
+    named: String,
+    said: String,
+    /// Who settled it: the author, the repository, or nobody yet.
+    settled: String,
+    /// What it was drawn from, for a reader deciding whether to take it.
+    drawn_from: Option<String>,
+    /// The others the repository allows, or what to choose between where nothing settled it.
+    others: Vec<String>,
+    /// What to ask about it, in the words the author wrote in.
+    asks: Option<String>,
 }
 
-/// Reads what was typed against how many fills were offered.
+impl Part {
+    /// Writes what somebody settled into it, which makes it theirs.
+    fn settle(&mut self, said: &str) {
+        self.said = said.to_owned();
+        self.settled = "given".to_owned();
+        self.drawn_from = None;
+        self.others.clear();
+    }
+}
+
+/// The spec as the core sent it, part by part, in the order it was read in.
+fn parts(answer: &Value) -> Vec<Part> {
+    answer
+        .get("parts")
+        .and_then(Value::as_array)
+        .map(|held| {
+            held.iter()
+                .map(|part| Part {
+                    named: text(part, "part").unwrap_or_default().to_owned(),
+                    said: text(part, "said").unwrap_or_default().to_owned(),
+                    settled: text(part, "settled").unwrap_or_default().to_owned(),
+                    drawn_from: text(part, "drawn_from").map(str::to_owned),
+                    asks: text(part, "asks").map(str::to_owned),
+                    others: part
+                        .get("others")
+                        .and_then(Value::as_array)
+                        .map(|others| {
+                            others
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_owned)
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// How wide the column holding a part's name is, and how far a part's text is indented past it.
+const NAMED: usize = 11;
+const INDENT: usize = 6 + NAMED;
+
+/// How wide the screen is taken to be where nothing says.
 ///
-/// Apart from the reading of it, so that what an answer means can be held without a terminal to
-/// type it on. A number is a pick and nothing else: an instruction that is only a number says
-/// nothing a run could work from, so reading it as one would take a slip at its word.
-fn picked(typed: &str, offered: usize) -> Picked {
+/// A model writes a paragraph where it has a paragraph's worth to say, and a paragraph printed
+/// as one line is not read. `COLUMNS` is what a shell exports for this; where nothing exported
+/// it, this is a width every terminal has.
+const AS_WIDE_AS: usize = 80;
+
+/// How wide the screen is.
+fn across() -> usize {
+    env::var("COLUMNS")
+        .ok()
+        .and_then(|held| held.parse().ok())
+        .filter(|across| *across > INDENT + 20)
+        .unwrap_or(AS_WIDE_AS)
+}
+
+/// The text broken to fit, its own line breaks kept.
+///
+/// Broken between words. A word longer than the width left is put on its own line rather than cut,
+/// since a path cut in half is a path nobody can read back.
+fn broken(text: &str, across: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    for given in text.lines() {
+        let mut held = String::new();
+        for word in given.split_whitespace() {
+            if !held.is_empty() && held.chars().count() + 1 + word.chars().count() > across {
+                lines.push(std::mem::take(&mut held));
+            }
+            if !held.is_empty() {
+                held.push(' ');
+            }
+            held.push_str(word);
+        }
+        lines.push(held);
+    }
+    lines
+}
+
+/// One part's text, under its label and indented to it.
+fn under(first: &str, text: &str, across: usize) -> String {
+    let mut written = String::new();
+    for (at, line) in broken(text, across.saturating_sub(INDENT))
+        .iter()
+        .enumerate()
+    {
+        match at {
+            0 => written.push_str(&format!("{first}{line}\n")),
+            _ => written.push_str(&format!("{:INDENT$}{line}\n", "")),
+        }
+    }
+    written
+}
+
+/// The whole spec on one screen, and what it still leaves.
+///
+/// Every part carries what it was drawn from, because a path on its own tells a reader nothing.
+/// What tells them whether to take it is that it is the file they have open with the count
+/// doubled on two lines.
+fn shown(parts: &[Part], left: &[&Value]) {
+    eprintln!();
+    let across = across();
+    for (at, part) in parts.iter().enumerate() {
+        let said = match part.said.is_empty() {
+            true => "-----",
+            false => &part.said,
+        };
+        // Only what nobody settled is marked, and it is marked with what it means rather than
+        // with a word out of the core: that a part was worked out rather than typed is what the
+        // line under it already says.
+        let marked = match part.settled.as_str() {
+            "open" => "   <- nobody has settled this",
+            _ => "",
+        };
+        eprint!(
+            "{}",
+            under(
+                &format!("  {:>2}  {:<NAMED$}", at + 1, part.named),
+                &format!("{said}{marked}"),
+                across,
+            )
+        );
+        if let Some(drawn_from) = &part.drawn_from {
+            eprint!(
+                "{}",
+                under(
+                    &format!("      {:<NAMED$}", ""),
+                    &format!("- {drawn_from}"),
+                    across
+                )
+            );
+        }
+        if !part.others.is_empty() {
+            eprint!(
+                "{}",
+                under(
+                    &format!("      {:<NAMED$}", ""),
+                    &format!("- also: {}", part.others.join(", ")),
+                    across,
+                )
+            );
+        }
+        // A part with more than a line to it is given room, so the six do not run together.
+        if part.said.chars().count() + INDENT > across || part.drawn_from.is_some() {
+            eprintln!();
+        }
+    }
+    eprintln!();
+    if left.is_empty() {
+        return;
+    }
+    eprintln!(
+        "  {} nobody has settled. Left as {} the agent would decide {} by itself:",
+        match left.len() {
+            1 => "1 thing".to_owned(),
+            many => format!("{many} things"),
+        },
+        match left.len() {
+            1 => "it is",
+            _ => "they are",
+        },
+        match left.len() {
+            1 => "it",
+            _ => "each of them",
+        },
+    );
+    for one in left {
+        eprintln!("    - {}", text(one, "decides").unwrap_or("something"));
+    }
+    eprintln!();
+}
+
+/// Settles one part nobody settled, by offering what to choose between or taking one typed out.
+///
+/// The question and the answers are the model's, written in the words the author typed in: it is
+/// the one that knows what is missing and which language to say it in. A surface writing them
+/// would ask in the same words whatever the author had written.
+fn settling(part: &Part, decides: &str) -> Option<String> {
+    let across = across();
+    eprint!(
+        "{}",
+        under(
+            "  ",
+            part.asks
+                .as_deref()
+                .unwrap_or(&format!("Nothing says {decides}. What should it be?")),
+            across,
+        )
+    );
+    for (at, one) in part.others.iter().enumerate() {
+        eprint!("{}", under(&format!("    {}) ", at + 1), one, across));
+    }
+
+    loop {
+        let typed = typing(&format!(
+            "  {} [{}]: ",
+            part.named,
+            match part.others.is_empty() {
+                true => "type an answer".to_owned(),
+                false => format!("1-{}, or type an answer", part.others.len()),
+            }
+        ))?;
+        match typed.parse::<usize>() {
+            Ok(at) if (1..=part.others.len()).contains(&at) => {
+                return Some(part.others[at - 1].to_owned());
+            }
+            Ok(at) => eprintln!("  there is no {at} on the list"),
+            Err(_) => return Some(typed),
+        }
+    }
+}
+
+/// One line typed at a prompt, or nothing where there is no more input or it was left blank.
+fn typing(prompt: &str) -> Option<String> {
+    eprint!("{prompt}");
+    // Printed without a newline, so it has to be pushed out before the read blocks on it.
+    io::stderr().flush().ok()?;
+
+    let mut typed = String::new();
+    if io::stdin().read_line(&mut typed).ok()? == 0 {
+        eprintln!();
+        return None;
+    }
     let typed = typed.trim();
-    if typed.is_empty() {
-        return Picked::Nothing;
-    }
-    match typed.parse::<usize>() {
-        Ok(number) if (1..=offered).contains(&number) => Picked::Choice(number - 1),
-        Ok(number) => Picked::NotOnTheList(number),
-        Err(_) => Picked::Own(typed.to_owned()),
+    (!typed.is_empty()).then(|| typed.to_owned())
+}
+
+/// Writes what was settled into the part it settles.
+fn put(parts: &mut [Part], named: &str, said: &str) {
+    if let Some(part) = parts.iter_mut().find(|part| part.named == named) {
+        part.settle(said);
     }
 }
 
-/// What to say after a refusal `task add` gets, beyond what the refusal says itself.
+/// The spec as one text, which is what goes back as the instruction.
 ///
-/// The exit codes in section 2.1 of `docs/cli.md` give `task add` one refusal at code 1: the
-/// instruction carries too little to run unattended and `--force` was not given. It names what it
-/// did not find, which leaves the author who meant the instruction as they wrote it with nowhere
-/// to go. The way past is `--force`, spelled on this surface and nowhere else, so the line is
-/// added here rather than by the core.
-fn way_past(code: u8) -> Option<&'static str> {
-    (code == GENERAL_FAILURE).then_some("--force registers it as written")
+/// The same lines the core wrote it in, so that what is sent is what was shown.
+fn written(parts: &[Part]) -> String {
+    parts
+        .iter()
+        .filter(|part| !part.said.trim().is_empty())
+        .map(|part| format!("{}: {}", part.named, part.said))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// `docs/cli.md` gives `-` the meaning of standard input.
@@ -522,8 +816,6 @@ fn text<'a>(value: &'a Value, field: &str) -> Option<&'a str> {
 
 #[cfg(test)]
 mod tests {
-    use cistern_contract::code::{NOT_FOUND, STATE_CONFLICT};
-
     use super::*;
 
     fn home(path: &str) -> Option<OsString> {
@@ -543,28 +835,34 @@ mod tests {
         assert_eq!(under_home("/srv/api", home("/home/a")), "/srv/api");
     }
 
-    /// A number picks a fill; anything else is the instruction the author would rather give.
+    /// A model writes a paragraph where it has one, and a paragraph printed as one line is not
+    /// read.
     #[test]
-    fn what_was_typed_at_the_question_is_read_against_what_was_offered() {
-        assert!(matches!(picked("2", 3), Picked::Choice(1)));
-        assert!(matches!(picked("  1  ", 3), Picked::Choice(0)));
-        // A number nobody offered is a slip, and is told apart from an instruction.
-        assert!(matches!(picked("4", 3), Picked::NotOnTheList(4)));
-        assert!(matches!(picked("0", 3), Picked::NotOnTheList(0)));
-        // Nothing typed is nobody choosing, which is not the same as choosing badly.
-        assert!(matches!(picked("", 3), Picked::Nothing));
-        assert!(matches!(picked("   \n", 3), Picked::Nothing));
+    fn a_part_too_wide_for_the_screen_is_broken_between_words() {
+        assert_eq!(
+            broken("the counter is incremented at both 41 and 43", 20),
+            vec!["the counter is", "incremented at both", "41 and 43"]
+        );
+        // Its own line breaks are kept, since a model that broke a line meant to.
+        assert_eq!(broken("one\ntwo", 20), vec!["one", "two"]);
     }
 
-    /// An instruction of the author's own is taken whole, whatever it holds.
+    /// A path cut in half is a path nobody can read back.
     #[test]
-    fn an_instruction_typed_at_the_question_is_taken_as_it_stands() {
-        assert!(matches!(
-            picked("  fix parse() in src/util.rs  ", 2),
-            Picked::Own(own) if own == "fix parse() in src/util.rs"
-        ));
-        // One that opens with a number is still an instruction: it is not only a number.
-        assert!(matches!(picked("2 files are wrong", 2), Picked::Own(_)));
+    fn a_word_longer_than_the_room_left_is_put_on_its_own_line() {
+        assert_eq!(
+            broken("in crates/cisternd/src/core/domain/decisions.rs now", 12),
+            vec!["in", "crates/cisternd/src/core/domain/decisions.rs", "now"]
+        );
+    }
+
+    /// What runs on is indented to where it started, so the column still reads as a column.
+    #[test]
+    fn what_runs_past_the_first_line_is_indented_under_it() {
+        assert_eq!(
+            under("  1  place      ", "one two three", INDENT + 7),
+            "  1  place      one two\n                 three\n"
+        );
     }
 
     /// An instruction is printed as it was given, however many lines that is.
@@ -583,23 +881,5 @@ mod tests {
     #[test]
     fn no_home_leaves_every_path_alone() {
         assert_eq!(under_home("/home/a/work/api", None), "/home/a/work/api");
-    }
-
-    /// Section 2.1 of `docs/cli.md` gives `task add` one refusal at code 1, and it is the
-    /// turned-back instruction.
-    #[test]
-    fn a_turned_back_instruction_is_told_how_to_be_registered() {
-        assert_eq!(
-            way_past(GENERAL_FAILURE),
-            Some("--force registers it as written")
-        );
-    }
-
-    /// Every other refusal has nothing this surface can add.
-    #[test]
-    fn another_refusal_is_left_as_the_core_put_it() {
-        for code in [USAGE_ERROR, NOT_FOUND, STATE_CONFLICT, CORE_ERROR] {
-            assert_eq!(way_past(code), None, "code {code}");
-        }
     }
 }

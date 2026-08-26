@@ -92,12 +92,22 @@ fn registered(outcome: Registered) -> Value {
             "repository": added.repository,
             "state": added.state,
         }),
-        // What is missing and what would answer it, and no sentence: the words a person is asked
-        // in belong to the surface asking them, the way `--force` does.
+        // The spec and what it leaves, and no sentence: the words a person is asked in belong to
+        // the surface asking them, the way `--force` does.
         Registered::Unconfirmed(unconfirmed) => serde_json::json!({
             "outcome": "unconfirmed",
-            "missing": unconfirmed.missing,
-            "choices": unconfirmed.choices,
+            "parts": unconfirmed.parts.into_iter().map(|part| serde_json::json!({
+                "part": part.part,
+                "said": part.said,
+                "settled": part.settled,
+                "drawn_from": part.drawn_from,
+                "others": part.others,
+                "asks": part.asks,
+            })).collect::<Vec<_>>(),
+            "undecided": unconfirmed.undecided.into_iter().map(|left| serde_json::json!({
+                "part": left.part,
+                "decides": left.decides,
+            })).collect::<Vec<_>>(),
         }),
     }
 }
@@ -155,7 +165,7 @@ mod tests {
     use cistern_contract::code::{NOT_FOUND, USAGE_ERROR};
 
     use super::super::tests::{asked, data, failure};
-    use crate::core::port::inbound::{Added, Refusal, Unconfirmed, Waiting};
+    use crate::core::port::inbound::{Added, Left, Refusal, Shown, Unconfirmed, Waiting};
 
     use super::*;
 
@@ -293,21 +303,46 @@ mod tests {
     /// It carries no sentence. The words a person is asked in belong to the surface asking them,
     /// which is where `--force` is spelled too.
     #[test]
-    fn a_fill_nobody_confirmed_answers_with_what_it_would_have_registered() {
+    fn a_spec_nobody_accepted_answers_with_the_spec_and_what_it_leaves() {
         let core = Core::asking(Unconfirmed {
-            missing: "where to work".to_owned(),
-            choices: vec![
-                "make it faster (in src/search.rs)".to_owned(),
-                "make it faster (in src/index.rs)".to_owned(),
+            parts: vec![
+                Shown {
+                    part: "place".to_owned(),
+                    said: Some("src/search.rs".to_owned()),
+                    settled: "inferred".to_owned(),
+                    drawn_from: Some("edited and uncommitted".to_owned()),
+                    others: vec!["src/index.rs".to_owned()],
+                    asks: None,
+                },
+                Shown {
+                    part: "on failure".to_owned(),
+                    said: None,
+                    settled: "open".to_owned(),
+                    drawn_from: None,
+                    others: Vec::new(),
+                    asks: Some("what should it do when it fails?".to_owned()),
+                },
             ],
+            undecided: vec![Left {
+                part: Some("on failure".to_owned()),
+                decides: "what to do when it fails".to_owned(),
+            }],
         });
 
         let data = data(answered(&core, "task_add", registering("refactor X")));
 
         assert_eq!(data["outcome"], "unconfirmed");
-        assert_eq!(data["missing"], "where to work");
-        assert_eq!(data["choices"][0], "make it faster (in src/search.rs)");
-        assert_eq!(data["choices"][1], "make it faster (in src/index.rs)");
+        assert_eq!(data["parts"][0]["part"], "place");
+        assert_eq!(data["parts"][0]["said"], "src/search.rs");
+        assert_eq!(data["parts"][0]["settled"], "inferred");
+        assert_eq!(data["parts"][0]["drawn_from"], "edited and uncommitted");
+        assert_eq!(data["parts"][0]["others"][0], "src/index.rs");
+        // A part nobody settled says so rather than being left out of the answer.
+        assert_eq!(data["parts"][1]["settled"], "open");
+        assert!(data["parts"][1]["said"].is_null());
+        // A part nobody settled carries what to ask about it, so a surface has words for it.
+        assert_eq!(data["parts"][1]["asks"], "what should it do when it fails?");
+        assert_eq!(data["undecided"][0]["decides"], "what to do when it fails");
         // Nothing was registered, so nothing here says a task was.
         assert!(data.get("id").is_none(), "{data}");
     }

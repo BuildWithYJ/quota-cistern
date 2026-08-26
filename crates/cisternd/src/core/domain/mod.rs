@@ -5,23 +5,25 @@
 
 mod configuration;
 mod consumption;
+mod decisions;
 mod policy;
-mod readiness;
 mod session;
 mod sizing;
+mod spec;
 mod spending;
 mod supervision;
 mod task;
 
 pub use configuration::{Configuration, Key, Known, Setting};
 pub use consumption::{Consumption, Observation};
+pub use decisions::{Grounded, Undecided, left_to_decide};
 pub use policy::{Locking, Pacing, Policy, Timing};
-pub use readiness::Readiness;
 pub use session::{
     Budget, Held, Measured, NotASessionSet, NotOpened, Opening, Session, SessionId, SessionState,
     Sessions, Span, StoppedReason, Usage,
 };
 pub use sizing::{Before, Priced, Rule, Sizings, moved_per_millionth, sampled};
+pub use spec::{Named, Part, Spec};
 pub use spending::{HUNDREDTHS, Spending};
 pub use supervision::{Decision, Standing, decide, done_waiting, nothing_more};
 pub use task::{

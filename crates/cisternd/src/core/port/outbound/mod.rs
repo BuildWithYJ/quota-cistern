@@ -17,14 +17,14 @@ pub use backlog::{BacklogStore, StoredBacklog, StoredConsumption, StoredTask};
 pub use clock::Clock;
 pub use configuration::ConfigurationStore;
 pub use repository::{
-    Between, Changes, Commit, Counts, Cut, NotApplied, RepositoryRoots, Results, Surroundings,
-    Touched, Worktrees,
+    Between, Changes, Commit, Counts, Cut, Grounding, NotApplied, Ran, RepositoryRoots, Results,
+    Surroundings, Touched, Worktrees,
 };
 pub use run::{Run, Runs};
 pub use session::{SessionStore, StoredSession, StoredSessions};
 pub use trace::{Event, Keeping, Read, Traces};
 pub use vendor::{
-    Agent, Draft, Drafted, Drafter, Ended, Limit, Observed, Outcome, Reading, Spent, Work,
+    Agent, Draft, Drafted, Drafter, Ended, Limit, Observed, Outcome, Proposed, Reading, Spent, Work,
 };
 
 /// The outside could not be reached or could not be understood.

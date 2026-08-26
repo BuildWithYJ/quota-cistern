@@ -12,7 +12,7 @@ pub mod drafter;
 pub mod limit;
 pub mod path;
 
-pub use definition::Definition;
+pub use definition::{Definition, Drafting};
 
 /// The arguments a definition writes, with every place filled and every group that kept a
 /// place nobody filled dropped whole.

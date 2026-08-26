@@ -10,8 +10,8 @@ mod review;
 mod work;
 
 pub use backlog::{
-    Added, BacklogUseCase, Detail, Listing, Made, Registered, Registration, Removed, Unconfirmed,
-    Waiting,
+    Added, BacklogUseCase, Detail, Left, Listing, Made, Registered, Registration, Removed, Shown,
+    Unconfirmed, Waiting,
 };
 pub use configuration::{Applied, ConfigurationUseCase, View};
 pub use execution::{
@@ -36,8 +36,6 @@ pub enum Refusal {
     UnknownKey { key: String },
     /// A key that exists, holding a value it does not take.
     BadValue { key: String, value: String },
-    /// The instruction carries too little to run unattended: no place to work, or no check.
-    NotReady { missing: String },
     /// No task carries that number.
     NoSuchTask { id: String },
     /// No session carries that identifier.

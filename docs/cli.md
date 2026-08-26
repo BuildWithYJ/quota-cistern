@@ -115,13 +115,30 @@ The two may be given together. The task then waits for its predecessor and start
 
 With `--after`, the task is not eligible for assignment until the predecessor reaches `Completed`; if the predecessor ends in any other terminal state, the task stays `Pending`.
 
-An instruction that carries too little to run unattended is filled in from the repository before it is registered. Where the repository allows one place, the fill is taken and the task registers. Where it allows several, or where no rule could settle it and a model proposed one, nothing is registered and the command asks which was meant. `--force` takes the instruction as written and asks nothing.
+A task that runs unattended cannot stop to ask, so anything the instruction leaves out is something the agent decides by itself. Before a task is registered the instruction is worked out into a spec of six parts, and what the spec still leaves is counted.
+
+| part | what it says | left open |
+| --- | --- | --- |
+| `goal` | what the work is | the agent decides what to do |
+| `place` | where the work is | the agent decides where |
+| `success` | a command that says the work is done | the agent judges its own work |
+| `on failure` | what to do when it cannot get there | the agent invents a way around |
+| `why` | what goes wrong today | a reviewer has nothing to read it against |
+| `scope` | what may be changed and what may not | the agent decides how far to reach |
+
+The author writes a line as they always have. A model reads the repository -- the change they have open, what they committed lately, the branch, the file list -- and fills in what it can work out, each part carrying what it was drawn from. Nothing is registered until every part but `why` is settled, and nothing a model worked out is registered before the author has seen it.
+
+**What is checked, and what is not guessed.** A `place` is checked against what the repository tracks: a file reaches one, a directory reaches what it holds, and a name nothing tracks reaches nothing. A `success` is run once, and has to fail -- a command that passes already says either the work is done or that it does not tell that it is not, and a command that cannot be run at all was invented. It is run with no shell: the command is split on whitespace and the program started directly, so a semicolon or a redirect is an argument no program takes.
+
+What did not hold up goes back to the model to answer again once, before it reaches the author.
+
+`--force` reaches none of this and registers the instruction as written.
 
 **Output**
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `outcome` | enum | `registered`, or `unconfirmed` when a fill was not settled and nothing was registered |
+| `outcome` | enum | `registered`, or `unconfirmed` when nothing was registered |
 | `id` | string | Task identifier. `registered` only |
 | `title` | string | Task title. `registered` only |
 | `base_branch` | string | Base branch. `registered` only |
@@ -129,8 +146,8 @@ An instruction that carries too little to run unattended is filled in from the r
 | `model` | string | Model given for this task, or null. `registered` only |
 | `repository` | string | Repository the task was added from. `registered` only |
 | `state` | enum | `Pending` on creation. `registered` only |
-| `missing` | string | What the instruction does not say. `unconfirmed` only |
-| `choices` | array of string | The instruction as each fill would leave it, the likeliest first, at most five. `unconfirmed` only |
+| `parts` | array of object | The spec, one entry per part: `part`, `said`, `settled` (`given`, `inferred`, or `open`), `drawn_from`, `others`. `unconfirmed` only |
+| `undecided` | array of object | What is still left for the agent: `part` and `decides`. `unconfirmed` only |
 
 An `unconfirmed` answer carries no sentence to print. What a person is asked, and in which words, is the surface's.
 
@@ -139,7 +156,7 @@ An `unconfirmed` answer carries no sentence to print. What a person is asked, an
 | Code | Condition |
 | --- | --- |
 | 0 | Success |
-| 1 | Nothing was registered: the instruction carries too little to run unattended, or a fill was not settled and there was nobody to ask. `--force` registers it as written |
+| 1 | Nothing was registered: the spec still leaves something for the agent to decide and there was nobody to settle it. `--force` registers the instruction as written |
 | 2 | Argument error (missing `--title`) |
 | 3 | The task named by `--after` does not exist |
 | 4 | The command was not run inside a repository |
@@ -147,29 +164,47 @@ An `unconfirmed` answer carries no sentence to print. What a person is asked, an
 
 **Example**
 
+A spec that leaves nothing registers without a word:
+
 ```console
-$ cistern task add --title "refactor X" --instruction "tidy up src/utils/format.rs; cargo test utils passes"
+$ cistern task add --title "refactor X" --instruction "tidy up src/utils/format.rs; cargo test utils passes" --force
 task:1 added to backlog
   title:  refactor X
   branch: main (base)
   repo:   ~/work/api
 ```
 
-An instruction the repository does not settle:
+A line, worked out and shown:
 
 ```console
-$ cistern task add --title "stop double-counting" --instruction "make it stop double-counting; cargo test search passes"
-cistern: the instruction does not say where to work
-  1) make it stop double-counting; cargo test search passes (in src/search.rs)
-  2) make it stop double-counting; cargo test search passes (in src/index.rs)
-  which did you mean? a number, or an instruction of your own: 1
-task:1 added to backlog
-  title:  stop double-counting
-  branch: main (base)
-  repo:   ~/work/api
+$ cistern task add --title "stop double-counting" --instruction "이거 중복으로 세는거 고쳐줘"
+
+   1  goal       remove the double count in search results   [inferred]
+                 - src/search.rs:41,43, where the counter is incremented twice
+   2  place      src/search.rs   [inferred]
+                 - edited and uncommitted
+                 - also: src/index.rs
+   3  success    cargo test search_counts_once   [inferred]
+                 - tests/search.rs:88. failing right now
+   4  on failure -----   [open]
+   5  why        the counter is incremented at both 41 and 43   [inferred]
+                 - src/search.rs:41,43
+   6  scope      src/search.rs only. nothing under tests/   [inferred]
+                 - the place
+
+  1 decision left for the agent to decide by itself:
+    - what to do when it fails
+
+  nothing says what to do when it fails.
+    1) stop after three attempts and leave the branch as it is. do not edit the tests   (recommended)
+    2) put back what was changed and say why it stopped
+    3) type your own
+  on failure: 1
+  register as it stands? [enter=yes / a number=change that line / n=no]
+task:2 added to backlog
 ```
 
-Answering with an instruction rather than a number registers that instruction instead, read the same way this one was. An empty answer registers nothing and exits 1. Where nobody is at the terminal, the choices are printed and nothing is registered, so a command in a script says what it would have asked. The text that was typed first is kept as the task's `original` where the instruction that registers is not that same text. A number always differs from it, and an answer typed out is read afresh, so repeating what was already there leads back to the same question rather than to a task.
+Answering with a number changes that line; answering with `n`, or with a blank line at any question, registers nothing and exits 1. The text that was typed first is kept as the task's `original`, since what registers is the spec rather than the line. Where nobody is at the terminal, the spec is printed and nothing is registered, so a command in a script says what it would have asked about.
 
 #### `cistern task rm`
 
