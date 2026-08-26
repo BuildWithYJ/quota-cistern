@@ -4,13 +4,13 @@
 
 use std::process::Command;
 
-use crate::core::port::outbound::Surroundings;
+use crate::core::port::outbound::{Room, Surroundings};
 
 /// The uncommitted changes and by-word matches read out of the repository a task was added from.
 pub struct GitSurroundings;
 
 impl Surroundings for GitSurroundings {
-    fn changes(&self, repository: &str, lines: usize) -> String {
+    fn changes(&self, repository: &str, room: Room) -> String {
         // Against HEAD, staged or not, and with the body rather than the names: what is being
         // done to a file is what says which file was meant.
         //
@@ -18,19 +18,22 @@ impl Surroundings for GitSurroundings {
         // function the line sits in, and the test below it, does not have to go and read the
         // file; a reader that goes and reads the file is an agent loop, and one costs what
         // running the task costs.
-        capped(
+        within(
             run(repository, &["diff", "HEAD", "--unified=40"]).unwrap_or_default(),
-            lines,
+            room,
         )
     }
 
-    fn lately(&self, repository: &str, commits: usize) -> String {
-        let how_many = format!("-{commits}");
+    fn lately(&self, repository: &str, room: Room) -> String {
+        let how_many = format!("-{}", room.most);
         // A repository with no commits at all fails rather than printing nothing, which is the
         // same thing to a reader either way.
         // Subjects alone. What each commit touched is another line per file and five times the
         // reading, and what the repository holds is already listed in full further down.
-        run(repository, &["log", &how_many, "--oneline", "--no-color"]).unwrap_or_default()
+        within(
+            run(repository, &["log", &how_many, "--oneline", "--no-color"]).unwrap_or_default(),
+            room,
+        )
     }
 
     fn branch(&self, repository: &str) -> Option<String> {
@@ -40,25 +43,14 @@ impl Surroundings for GitSurroundings {
         (!named.is_empty()).then(|| named.to_owned())
     }
 
-    fn tracks(&self, repository: &str, paths: usize) -> Vec<String> {
-        run(repository, &["ls-files"])
-            .map(|held| held.lines().take(paths).map(str::to_owned).collect())
-            .unwrap_or_default()
+    fn tracks(&self, repository: &str, room: Room) -> Vec<String> {
+        let held = run(repository, &["ls-files"]).unwrap_or_default();
+        within(held, room)
+            .lines()
+            .filter(|path| !path.starts_with(LEFT_OFF))
+            .map(str::to_owned)
+            .collect()
     }
-}
-
-/// The first lines of what a command printed, and a line saying what was left off.
-///
-/// Left off rather than cut short in the middle: a reader given half a hunk reads a change that
-/// was never made.
-fn capped(out: String, lines: usize) -> String {
-    let held: Vec<&str> = out.lines().collect();
-    if held.len() <= lines {
-        return out;
-    }
-    let mut capped = held[..lines].join("\n");
-    capped.push_str(&format!("\n... and {} more lines", held.len() - lines));
-    capped
 }
 
 /// Runs one git command in the repository and hands back what it printed, nothing when it failed.
@@ -72,6 +64,58 @@ fn run(repository: &str, args: &[&str]) -> Option<String> {
     done.status
         .success()
         .then(|| String::from_utf8_lossy(&done.stdout).into_owned())
+}
+
+/// What fits in the room, and a line saying what was left off.
+///
+/// Two limits, and whichever runs out first is the one that stops it. A count of lines bounds
+/// nothing on its own: a lock file and a minified script are each one line per thousand
+/// characters, and two hundred of them is a megabyte. What a task costs to add is not a
+/// repository's to decide.
+///
+/// Left off rather than cut short in the middle: a reader given half a hunk reads a change that
+/// was never made.
+fn within(out: String, room: Room) -> String {
+    let mut kept: Vec<String> = Vec::new();
+    let mut chars = 0;
+    let mut left_off = 0;
+
+    for line in out.lines() {
+        let line = narrowed(line);
+        if kept.len() >= room.most || chars + line.chars().count() > room.chars {
+            left_off += 1;
+            continue;
+        }
+        chars += line.chars().count() + 1;
+        kept.push(line);
+    }
+    if left_off > 0 {
+        kept.push(format!("{LEFT_OFF} and {left_off} more lines"));
+    }
+    kept.join("\n")
+}
+
+/// What opens the line saying what was left off, so that a reader of paths can tell it from one.
+const LEFT_OFF: &str = "...";
+
+/// How wide a line may be before what is past that is generated rather than written.
+///
+/// A line of code someone typed is not this wide. One that is holds a minified script, a lock
+/// file, or a line of data, and what is past the width is more of the same.
+const WIDEST: usize = 400;
+
+/// The line, cut to a width a person would have written within.
+fn narrowed(line: &str) -> String {
+    match line.chars().count() > WIDEST {
+        false => line.to_owned(),
+        true => {
+            let held: String = line.chars().take(WIDEST).collect();
+            format!(
+                "{held} {LEFT_OFF} and {} more characters",
+                line.chars().count() - WIDEST
+            )
+        }
+    }
 }
 
 #[cfg(test)]
@@ -117,6 +161,12 @@ mod tests {
         held
     }
 
+    /// More room than any of these needs, for a test about something other than the room.
+    const ROOMY: Room = Room {
+        most: 500,
+        chars: 100_000,
+    };
+
     fn at(held: &TempDir) -> &str {
         held.path().to_str().unwrap()
     }
@@ -126,7 +176,7 @@ mod tests {
     fn what_is_open_comes_back_as_the_change_itself() {
         let held = in_a_repository();
 
-        let changes = GitSurroundings.changes(at(&held), 200);
+        let changes = GitSurroundings.changes(at(&held), ROOMY);
 
         assert!(changes.contains("src/search.rs"), "{changes}");
         assert!(
@@ -148,7 +198,13 @@ mod tests {
         )
         .unwrap();
 
-        let changes = GitSurroundings.changes(at(&held), 20);
+        let changes = GitSurroundings.changes(
+            at(&held),
+            Room {
+                most: 20,
+                chars: 20_000,
+            },
+        );
 
         assert_eq!(changes.lines().count(), 21, "{changes}");
         assert!(changes.ends_with("more lines"), "{changes}");
@@ -158,7 +214,7 @@ mod tests {
     fn what_was_committed_lately_comes_back_by_its_subject() {
         let held = in_a_repository();
 
-        let lately = GitSurroundings.lately(at(&held), 10);
+        let lately = GitSurroundings.lately(at(&held), ROOMY);
 
         assert!(lately.contains("add search"), "{lately}");
     }
@@ -184,10 +240,62 @@ mod tests {
         let held = in_a_repository();
 
         assert_eq!(
-            GitSurroundings.tracks(at(&held), 100),
+            GitSurroundings.tracks(at(&held), ROOMY),
             vec!["src/search.rs".to_owned()]
         );
-        assert!(GitSurroundings.tracks(at(&held), 0).is_empty());
+        assert!(
+            GitSurroundings
+                .tracks(at(&held), Room { most: 0, chars: 0 })
+                .is_empty()
+        );
+    }
+
+    /// A count of lines bounds nothing: two hundred lines of a lock file is a megabyte.
+    #[test]
+    fn what_is_shown_is_bounded_by_characters_and_not_only_by_lines() {
+        let held = in_a_repository();
+        // One line per thousand characters, which is what a lock file and a minified script are.
+        std::fs::write(
+            held.path().join("src/search.rs"),
+            (0..50)
+                .map(|at| format!("// {}\n", "x".repeat(1000 + at)))
+                .collect::<String>(),
+        )
+        .unwrap();
+
+        let changes = GitSurroundings.changes(
+            at(&held),
+            Room {
+                most: 200,
+                chars: 2_000,
+            },
+        );
+
+        assert!(
+            changes.chars().count() < 4_000,
+            "{}",
+            changes.chars().count()
+        );
+        assert!(changes.ends_with("more lines"), "{changes}");
+    }
+
+    /// A line nobody typed is cut to a width somebody would have.
+    #[test]
+    fn a_line_too_wide_to_have_been_written_is_cut_to_a_width_that_was() {
+        let held = in_a_repository();
+        std::fs::write(
+            held.path().join("src/search.rs"),
+            format!("// {}\n", "x".repeat(10_000)),
+        )
+        .unwrap();
+
+        let changes = GitSurroundings.changes(at(&held), ROOMY);
+
+        assert!(changes.contains("more characters"), "{changes}");
+        assert!(
+            changes.lines().all(|line| line.chars().count() < 500),
+            "a line was left as wide as it came"
+        );
     }
 
     /// A place that is not a repository answers with nothing rather than failing.
@@ -196,9 +304,9 @@ mod tests {
         let held = TempDir::new().unwrap();
         let at = at(&held);
 
-        assert!(GitSurroundings.changes(at, 200).is_empty());
-        assert!(GitSurroundings.lately(at, 10).is_empty());
+        assert!(GitSurroundings.changes(at, ROOMY).is_empty());
+        assert!(GitSurroundings.lately(at, ROOMY).is_empty());
         assert_eq!(GitSurroundings.branch(at), None);
-        assert!(GitSurroundings.tracks(at, 100).is_empty());
+        assert!(GitSurroundings.tracks(at, ROOMY).is_empty());
     }
 }

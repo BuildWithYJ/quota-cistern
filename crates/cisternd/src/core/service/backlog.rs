@@ -15,7 +15,7 @@ use crate::core::{
         },
         outbound::{
             BacklogStore, Between, Draft, Drafted, Drafter, Grounding, Ran, RepositoryRoots,
-            Results, StoredBacklog, StoredConsumption, StoredTask, Surroundings,
+            Results, Room, StoredBacklog, StoredConsumption, StoredTask, Surroundings,
         },
     },
 };
@@ -78,7 +78,7 @@ impl<'a> BacklogService<'a> {
         let changes = self.surroundings.changes(root, CHANGES_SHOWN);
         let lately = self.surroundings.lately(root, COMMITS_SHOWN);
         let branch = self.surroundings.branch(root);
-        let tracks = self.surroundings.tracks(root, FILES_SHOWN);
+        let tracks = self.surroundings.tracks(root, FILES_TRACKED);
         let ask = || Draft {
             instruction: given.instruction,
             changes: &changes,
@@ -591,12 +591,25 @@ fn unusable(e: &NotABacklog) -> String {
 
 /// How much of what surrounds a task reaches the model.
 ///
-/// A reader that is a model is paid for by the line, and a working tree can hold a rewrite. These
-/// are the first values: enough to see what is being done, not so much that adding a task costs
-/// what running one does.
-const CHANGES_SHOWN: usize = 200;
-const COMMITS_SHOWN: usize = 10;
-const FILES_SHOWN: usize = 300;
+/// A reader that is a model is paid for by the character, and a working tree can hold a rewrite.
+/// Each is bounded twice, by how many lines and by how many characters over all of them, because
+/// a count alone bounds nothing: two hundred lines of a lock file is a megabyte, and what adding
+/// a task costs would be the repository's to decide rather than this file's.
+///
+/// Together they hold what surrounds a task under about ten thousand tokens, whatever repository
+/// it is added from. First values, chosen to be enough to see what is being done.
+const CHANGES_SHOWN: Room = Room {
+    most: 200,
+    chars: 20_000,
+};
+const COMMITS_SHOWN: Room = Room {
+    most: 10,
+    chars: 2_000,
+};
+const FILES_TRACKED: Room = Room {
+    most: 300,
+    chars: 12_000,
+};
 
 /// How long the success condition is given to say whether it fails.
 ///
@@ -783,7 +796,7 @@ mod tests {
     }
 
     impl Surroundings for Around {
-        fn changes(&self, _repository: &str, _lines: usize) -> String {
+        fn changes(&self, _repository: &str, _room: Room) -> String {
             self.changed
                 .iter()
                 .map(|path| format!("--- a/{path}"))
@@ -791,7 +804,7 @@ mod tests {
                 .join("\n")
         }
 
-        fn lately(&self, _repository: &str, _commits: usize) -> String {
+        fn lately(&self, _repository: &str, _room: Room) -> String {
             String::new()
         }
 
@@ -799,7 +812,7 @@ mod tests {
             None
         }
 
-        fn tracks(&self, _repository: &str, _paths: usize) -> Vec<String> {
+        fn tracks(&self, _repository: &str, _room: Room) -> Vec<String> {
             let mut held = self.changed.clone();
             held.extend(self.holds.iter().cloned());
             held
