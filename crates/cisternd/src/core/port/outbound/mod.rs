@@ -17,8 +17,8 @@ pub use backlog::{BacklogStore, StoredBacklog, StoredConsumption, StoredTask};
 pub use clock::Clock;
 pub use configuration::ConfigurationStore;
 pub use repository::{
-    Between, Changes, Commit, Counts, Cut, NotApplied, RepositoryRoots, Results, Surroundings,
-    Touched, Worktrees,
+    Between, Changes, Commit, Counts, Cut, Grounding, NotApplied, Ran, RepositoryRoots, Results,
+    Surroundings, Touched, Worktrees,
 };
 pub use run::{Run, Runs};
 pub use session::{SessionStore, StoredSession, StoredSessions};
