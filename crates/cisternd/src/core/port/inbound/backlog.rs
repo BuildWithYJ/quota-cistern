@@ -79,8 +79,10 @@ pub struct Shown {
     pub settled: String,
     /// What it was drawn from, for a reader deciding whether to take it.
     pub drawn_from: Option<String>,
-    /// The others the repository allows, for a reader who does not take this one.
+    /// The others the repository allows, or what to choose between where nothing was settled.
     pub others: Vec<String>,
+    /// What to ask about it, in the words the author wrote in.
+    pub asks: Option<String>,
 }
 
 /// One decision the spec leaves for the agent.

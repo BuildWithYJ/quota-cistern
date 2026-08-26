@@ -24,11 +24,16 @@ pub struct Draft<'a> {
 /// One part of a spec as a model proposed it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Proposed {
+    /// What the part should say, empty where the model could not settle it.
     pub said: String,
     /// What it was drawn from, for the author to judge it by rather than take on trust.
     pub drawn_from: Option<String>,
     /// The others the repository allows, where the model found the question open.
+    ///
+    /// What a person is offered to choose between, where nothing was settled.
     pub others: Vec<String>,
+    /// What to ask a person about it, in the words the author wrote in.
+    pub asks: Option<String>,
 }
 
 /// What a model proposed a spec should say, part by part.

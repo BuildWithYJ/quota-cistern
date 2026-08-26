@@ -39,6 +39,7 @@ fn a_part_that_says_nothing_is_open_however_it_was_marked() {
         settled: Settled::Inferred,
         drawn_from: Some("nowhere".to_owned()),
         others: Vec::new(),
+        asks: None,
     };
 
     assert!(empty.is_open());

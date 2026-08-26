@@ -629,11 +629,17 @@ fn spec_from(drafted: &Drafted, _wrote: &str) -> Spec {
         (Named::Scope, &drafted.scope),
     ] {
         let Some(proposed) = proposed else { continue };
-        let mut part = Part::inferred(
-            &proposed.said,
-            proposed.drawn_from.as_deref().unwrap_or("the repository"),
-        );
+        // A model that could not settle a part still says what to ask about it and what to
+        // choose between, so the part stays open and carries the question with it.
+        let mut part = match proposed.said.trim().is_empty() {
+            true => Part::open(),
+            false => Part::inferred(
+                &proposed.said,
+                proposed.drawn_from.as_deref().unwrap_or("the repository"),
+            ),
+        };
         part.others = proposed.others.clone();
+        part.asks = proposed.asks.clone();
         *spec.part_mut(named) = part;
     }
     spec
@@ -650,6 +656,7 @@ fn unconfirmed(spec: &Spec, left: &[Undecided]) -> Unconfirmed {
                 settled: part.settled.to_string(),
                 drawn_from: part.drawn_from.clone(),
                 others: part.others.clone(),
+                asks: part.asks.clone(),
             })
             .collect(),
         undecided: left
@@ -810,6 +817,7 @@ mod tests {
             said: said.to_owned(),
             drawn_from: Some("the diff".to_owned()),
             others: Vec::new(),
+            asks: None,
         })
     }
 

@@ -53,6 +53,7 @@ impl ProgramDrafter {
                 ("scope", &drafting.scope),
                 ("drawn_from", &drafting.drawn_from),
                 ("others", &drafting.others),
+                ("asks", &drafting.asks),
             ],
         )
     }
@@ -95,22 +96,31 @@ impl ProgramDrafter {
         }
     }
 
-    /// One part, with what it was drawn from and what else was allowed beside it.
+    /// One part: what it should say, where that came from, what else it could be, and what to
+    /// ask about it where nothing settled it.
+    ///
+    /// A part with nothing to say is still a part where the model wrote a question about it. That
+    /// is the whole of what a person is shown for one nobody settled, so it does not come back as
+    /// though the model had said nothing at all.
     fn part(&self, answer: &str, key: &str) -> Option<Proposed> {
         let drafting = &self.definition.drafter;
-        let said = field(answer, key)?;
-        Some(Proposed {
-            said,
+        let said = field(answer, key);
+        let asks = field(answer, &format!("{key}{}", drafting.asks));
+        let others: Vec<String> = field(answer, &format!("{key}{}", drafting.others))
+            .map(|held| {
+                held.split(',')
+                    .map(str::trim)
+                    .filter(|other| !other.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        (said.is_some() || asks.is_some() || !others.is_empty()).then(|| Proposed {
+            said: said.unwrap_or_default(),
             drawn_from: field(answer, &format!("{key}{}", drafting.drawn_from)),
-            others: field(answer, &format!("{key}{}", drafting.others))
-                .map(|held| {
-                    held.split(',')
-                        .map(str::trim)
-                        .filter(|other| !other.is_empty())
-                        .map(str::to_owned)
-                        .collect()
-                })
-                .unwrap_or_default(),
+            others,
+            asks,
         })
     }
 }

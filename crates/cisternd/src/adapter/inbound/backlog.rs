@@ -102,6 +102,7 @@ fn registered(outcome: Registered) -> Value {
                 "settled": part.settled,
                 "drawn_from": part.drawn_from,
                 "others": part.others,
+                "asks": part.asks,
             })).collect::<Vec<_>>(),
             "undecided": unconfirmed.undecided.into_iter().map(|left| serde_json::json!({
                 "part": left.part,
@@ -311,6 +312,7 @@ mod tests {
                     settled: "inferred".to_owned(),
                     drawn_from: Some("edited and uncommitted".to_owned()),
                     others: vec!["src/index.rs".to_owned()],
+                    asks: None,
                 },
                 Shown {
                     part: "on failure".to_owned(),
@@ -318,6 +320,7 @@ mod tests {
                     settled: "open".to_owned(),
                     drawn_from: None,
                     others: Vec::new(),
+                    asks: Some("what should it do when it fails?".to_owned()),
                 },
             ],
             undecided: vec![Left {
@@ -337,6 +340,8 @@ mod tests {
         // A part nobody settled says so rather than being left out of the answer.
         assert_eq!(data["parts"][1]["settled"], "open");
         assert!(data["parts"][1]["said"].is_null());
+        // A part nobody settled carries what to ask about it, so a surface has words for it.
+        assert_eq!(data["parts"][1]["asks"], "what should it do when it fails?");
         assert_eq!(data["undecided"][0]["decides"], "what to do when it fails");
         // Nothing was registered, so nothing here says a task was.
         assert!(data.get("id").is_none(), "{data}");

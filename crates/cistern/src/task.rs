@@ -186,7 +186,7 @@ fn chosen(answer: &Value) -> Option<String> {
 
     if !io::stdin().is_terminal() {
         eprintln!(
-            "  nobody is here to settle {}. --force registers the instruction as written",
+            "  nobody is here to settle {}, so nothing was registered. --force registers the instruction as written",
             match left.len() {
                 1 => "it".to_owned(),
                 many => format!("{many} of them"),
@@ -199,12 +199,13 @@ fn chosen(answer: &Value) -> Option<String> {
     // the whole reason for asking, so there is no accepting past it.
     for one in &left {
         let named = text(one, "part")?;
-        let said = settling(named, text(one, "decides").unwrap_or("it"))?;
+        let asking = parts.iter().find(|part| part.named == named)?;
+        let said = settling(asking, text(one, "decides").unwrap_or("what it should be"))?;
         put(&mut parts, named, &said);
     }
 
     loop {
-        eprint!("  register as it stands? [enter=yes / a number=change that line / n=no] ");
+        eprint!("  Register it? [enter=yes / 1-6=change that line / n=no] ");
         io::stderr().flush().ok()?;
         let mut typed = String::new();
         if io::stdin().read_line(&mut typed).ok()? == 0 {
@@ -238,8 +239,10 @@ struct Part {
     settled: String,
     /// What it was drawn from, for a reader deciding whether to take it.
     drawn_from: Option<String>,
-    /// The others the repository allows, for a reader who does not take this one.
+    /// The others the repository allows, or what to choose between where nothing settled it.
     others: Vec<String>,
+    /// What to ask about it, in the words the author wrote in.
+    asks: Option<String>,
 }
 
 impl Part {
@@ -264,6 +267,7 @@ fn parts(answer: &Value) -> Vec<Part> {
                     said: text(part, "said").unwrap_or_default().to_owned(),
                     settled: text(part, "settled").unwrap_or_default().to_owned(),
                     drawn_from: text(part, "drawn_from").map(str::to_owned),
+                    asks: text(part, "asks").map(str::to_owned),
                     others: part
                         .get("others")
                         .and_then(Value::as_array)
@@ -351,10 +355,11 @@ fn shown(parts: &[Part], left: &[&Value]) {
             true => "-----",
             false => &part.said,
         };
-        // Only what nobody settled is marked. That a part was worked out rather than typed is
-        // what the line under it says, and saying it twice is a word in the way of the reading.
+        // Only what nobody settled is marked, and it is marked with what it means rather than
+        // with a word out of the core: that a part was worked out rather than typed is what the
+        // line under it already says.
         let marked = match part.settled.as_str() {
-            "open" => "   [open]",
+            "open" => "   <- nobody has settled this",
             _ => "",
         };
         eprint!(
@@ -395,11 +400,19 @@ fn shown(parts: &[Part], left: &[&Value]) {
         return;
     }
     eprintln!(
-        "  {} left for the agent to decide by itself:",
+        "  {} nobody has settled. Left as {} the agent would decide {} by itself:",
         match left.len() {
-            1 => "1 decision".to_owned(),
-            many => format!("{many} decisions"),
-        }
+            1 => "1 thing".to_owned(),
+            many => format!("{many} things"),
+        },
+        match left.len() {
+            1 => "it is",
+            _ => "they are",
+        },
+        match left.len() {
+            1 => "it",
+            _ => "each of them",
+        },
     );
     for one in left {
         eprintln!("    - {}", text(one, "decides").unwrap_or("something"));
@@ -407,40 +420,39 @@ fn shown(parts: &[Part], left: &[&Value]) {
     eprintln!();
 }
 
-/// What a run does when it cannot get there, which no model may answer on an author's behalf.
+/// Settles one part nobody settled, by offering what to choose between or taking one typed out.
 ///
-/// The common unattended accident is an agent that could not pass a test and edited the test, so
-/// this is the one decision a person makes. The recommended answer is first, and costs one key.
-const WHEN_IT_FAILS: [&str; 2] = [
-    "stop after three attempts and leave the branch as it is. do not edit the tests",
-    "put back what was changed and say why it stopped",
-];
-
-/// Settles one part nobody settled, by offering answers or by taking one typed out.
-fn settling(named: &str, decides: &str) -> Option<String> {
-    eprintln!("  nothing says {decides}.");
-    let offered: &[&str] = match named {
-        "on failure" => &WHEN_IT_FAILS,
-        _ => &[],
-    };
-    for (at, one) in offered.iter().enumerate() {
-        let recommended = match at {
-            0 => "   (recommended)",
-            _ => "",
-        };
-        eprintln!("    {}) {one}{recommended}", at + 1);
-    }
-    if !offered.is_empty() {
-        eprintln!("    {}) type your own", offered.len() + 1);
+/// The question and the answers are the model's, written in the words the author typed in: it is
+/// the one that knows what is missing and which language to say it in. A surface writing them
+/// would ask in the same words whatever the author had written.
+fn settling(part: &Part, decides: &str) -> Option<String> {
+    let across = across();
+    eprint!(
+        "{}",
+        under(
+            "  ",
+            part.asks
+                .as_deref()
+                .unwrap_or(&format!("Nothing says {decides}. What should it be?")),
+            across,
+        )
+    );
+    for (at, one) in part.others.iter().enumerate() {
+        eprint!("{}", under(&format!("    {}) ", at + 1), one, across));
     }
 
     loop {
-        let typed = typing(&format!("  {named}: "))?;
+        let typed = typing(&format!(
+            "  {} [{}]: ",
+            part.named,
+            match part.others.is_empty() {
+                true => "type an answer".to_owned(),
+                false => format!("1-{}, or type an answer", part.others.len()),
+            }
+        ))?;
         match typed.parse::<usize>() {
-            Ok(at) if (1..=offered.len()).contains(&at) => return Some(offered[at - 1].to_owned()),
-            // The number past the offered ones is the one that asks for an answer of your own.
-            Ok(at) if at == offered.len() + 1 && !offered.is_empty() => {
-                return typing(&format!("  {named}: "));
+            Ok(at) if (1..=part.others.len()).contains(&at) => {
+                return Some(part.others[at - 1].to_owned());
             }
             Ok(at) => eprintln!("  there is no {at} on the list"),
             Err(_) => return Some(typed),

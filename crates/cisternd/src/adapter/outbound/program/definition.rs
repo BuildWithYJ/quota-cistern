@@ -76,9 +76,11 @@ pub struct Drafting {
     pub on_failure: String,
     pub why: String,
     pub scope: String,
-    /// What is put after a part's word to ask what it was drawn from, and what else was allowed.
+    /// What is put after a part's word to ask what it was drawn from, what else was allowed,
+    /// and what to ask a person where nothing settled it.
     pub drawn_from: String,
     pub others: String,
+    pub asks: String,
     /// What is asked the second time, with `{amiss}` standing for what did not hold up.
     pub again: String,
 }

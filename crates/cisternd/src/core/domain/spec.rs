@@ -52,6 +52,12 @@ pub struct Part {
     /// number nobody can check; a repository that allows three places is uncertain in a way that
     /// can be counted, so this is read for it rather than a figure the model reports.
     pub others: Vec<String>,
+    /// What to ask a person about it, in the words the author wrote in.
+    ///
+    /// Written by whoever could not settle the part, because they are the one who knows what is
+    /// missing and in which language to say it. A surface that wrote the question itself would
+    /// have to know both, and would ask it in the same words whatever the author had typed.
+    pub asks: Option<String>,
 }
 
 impl Part {
@@ -62,6 +68,7 @@ impl Part {
             settled: Settled::Given,
             drawn_from: None,
             others: Vec::new(),
+            asks: None,
         }
     }
 
@@ -72,6 +79,7 @@ impl Part {
             settled: Settled::Inferred,
             drawn_from: Some(drawn_from.to_owned()),
             others: Vec::new(),
+            asks: None,
         }
     }
 
@@ -82,6 +90,7 @@ impl Part {
             settled: Settled::Open,
             drawn_from: None,
             others: Vec::new(),
+            asks: None,
         }
     }
 
