@@ -223,7 +223,9 @@ What was committed lately:
 The branch they are on: {branch}
 
 Write every value, every question and every choice in the same language the author typed in. \
-They will read this, and they wrote to you in their own words.
+They will read this, and they wrote to you in their own words. That holds for the answers below \
+as much as for the questions: where this asks you for an answer and describes what it should be, \
+describe it back to them in their language rather than repeating the description.
 
 Where you cannot settle a part, leave its value empty and write two things instead: a short \
 question asking what is missing, and two or three concrete answers to choose between, drawn from \
@@ -249,7 +251,10 @@ Answer with these lines and nothing else.
 {success}{others}: <two or three commands to choose between>
 {on_failure}: <leave this empty, always>
 {on_failure}{asks}: <ask what the agent should do when it cannot get there>
-{on_failure}{others}: <two or three answers to choose between. one of them must forbid editing the tests>
+{on_failure}{others}: <two or three answers, every one of which stops. Never offer editing or \
+deleting a test, changing what the success condition is, or leaving the work unfinished and \
+saying it passed: those are how an agent makes a failing check pass without doing the work, and \
+offering one is putting it a keystroke away>
 {why}: <what goes wrong today, with a file and line>
 {why}{drawn_from}: <the file and line>
 {why}{asks}: <a question, if you could not work it out>

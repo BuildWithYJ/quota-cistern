@@ -92,6 +92,30 @@ impl Undecided {
         }
     }
 
+    /// Which kind it is, in a word a surface can answer in its own language.
+    ///
+    /// [`Undecided::left_to_decide`] says it in English, which is one language and this file's
+    /// rather than a reader's. A surface that has a person in front of it says it in theirs, and
+    /// what it needs to do that is which of these it is.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Undecided::Unsettled(_) => "unsettled",
+            Undecided::Echoed(_) => "echoed",
+            Undecided::Nowhere => "nowhere",
+            Undecided::Reaches { .. } => "reaches",
+            Undecided::Unverifiable => "unverifiable",
+            Undecided::AlreadyDone => "already",
+        }
+    }
+
+    /// How many files the place reaches, where that is what is wrong with it.
+    pub fn files(&self) -> Option<usize> {
+        match self {
+            Undecided::Reaches { files } => Some(*files),
+            _ => None,
+        }
+    }
+
     /// What the agent would settle for itself while this stands.
     pub fn left_to_decide(&self) -> String {
         match self {

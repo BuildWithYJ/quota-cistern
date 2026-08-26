@@ -676,6 +676,8 @@ fn unconfirmed(spec: &Spec, left: &[Undecided]) -> Unconfirmed {
             .iter()
             .map(|one| Left {
                 part: one.part().map(|named| named.label().to_owned()),
+                kind: one.kind().to_owned(),
+                files: one.files(),
                 decides: one.left_to_decide(),
             })
             .collect(),
@@ -1078,6 +1080,8 @@ mod tests {
             asked.undecided,
             vec![Left {
                 part: Some("on failure".to_owned()),
+                kind: "unsettled".to_owned(),
+                files: None,
                 decides: "what to do when it fails".to_owned(),
             }]
         );
@@ -1113,6 +1117,8 @@ mod tests {
             asked.undecided,
             vec![Left {
                 part: Some("place".to_owned()),
+                kind: "nowhere".to_owned(),
+                files: None,
                 decides: "where the work is, since nothing is there".to_owned(),
             }]
         );
@@ -1135,6 +1141,8 @@ mod tests {
             asked.undecided,
             vec![Left {
                 part: Some("success".to_owned()),
+                kind: "unverifiable".to_owned(),
+                files: None,
                 decides: "whether it is done".to_owned(),
             }]
         );
@@ -1154,6 +1162,8 @@ mod tests {
             asked.undecided,
             vec![Left {
                 part: Some("success".to_owned()),
+                kind: "already".to_owned(),
+                files: None,
                 decides: "whether there is anything to do".to_owned(),
             }]
         );

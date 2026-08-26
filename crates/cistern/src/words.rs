@@ -132,6 +132,44 @@ impl Language {
         }
     }
 
+    /// Why a part is still unsettled, said in the words its reader wrote in.
+    ///
+    /// The core says it in English, which is one language and the core's rather than a reader's,
+    /// and sends which kind it is beside it so this can say it in theirs. A kind this does not
+    /// know is answered with what the core said, since a sentence a reader has to translate is
+    /// better than none.
+    pub fn because(self, kind: &str, files: Option<usize>, said: &str) -> String {
+        match (self, kind) {
+            (Language::English, _) => said.to_owned(),
+            (Language::Korean, "unsettled") => "\u{c544}\u{bb34}\u{b3c4} \u{c815}\u{d558}\u{c9c0} \u{c54a}\u{c558}\u{c2b5}\u{b2c8}\u{b2e4}".to_owned(),
+            (Language::Korean, "echoed") => "\u{c801}\u{c5b4} \u{c8fc}\u{c2e0} \u{bb38}\u{c7a5} \u{adf8}\u{b300}\u{b85c}\u{b77c}, \u{c54c}\u{c544}\u{b0b8} \u{ac83}\u{c774} \u{c5c6}\u{c2b5}\u{b2c8}\u{b2e4}".to_owned(),
+            (Language::Korean, "nowhere") => "\u{c800}\u{c7a5}\u{c18c}\u{c5d0} \u{adf8}\u{b7f0} \u{d30c}\u{c77c}\u{c774} \u{c5c6}\u{c2b5}\u{b2c8}\u{b2e4}".to_owned(),
+            (Language::Korean, "reaches") => {
+                format!("\u{d30c}\u{c77c} {}\u{ac1c}\u{c5d0} \u{ac78}\u{ccd0} \u{c788}\u{c5b4}, \u{c5b4}\u{b514}\u{ae4c}\u{c9c0} \u{c190}\u{b308}\u{c9c0}\u{ac00} \u{c815}\u{d574}\u{c9c0}\u{c9c0} \u{c54a}\u{c558}\u{c2b5}\u{b2c8}\u{b2e4}", files.unwrap_or_default())
+            }
+            (Language::Korean, "unverifiable") => "\u{c2e4}\u{d589}\u{d560} \u{c218} \u{c788}\u{b294} \u{ba85}\u{b839}\u{c774} \u{c544}\u{b2c8}\u{b77c}, \u{b05d}\u{b0ac}\u{b294}\u{c9c0} \u{d655}\u{c778}\u{d560} \u{bc29}\u{bc95}\u{c774} \u{c5c6}\u{c2b5}\u{b2c8}\u{b2e4}".to_owned(),
+            (Language::Korean, "already") => "\u{c9c0}\u{ae08}\u{b3c4} \u{d1b5}\u{acfc}\u{d569}\u{b2c8}\u{b2e4}. \u{c774}\u{bbf8} \u{b05d}\u{b0ac}\u{ac70}\u{b098}, \u{c774} \u{ba85}\u{b839}\u{c73c}\u{b85c}\u{b294} \u{d655}\u{c778}\u{c774} \u{c548} \u{b429}\u{b2c8}\u{b2e4}".to_owned(),
+            (Language::Korean, _) => said.to_owned(),
+        }
+    }
+
+    /// What a run does when it cannot get there, offered whatever the model proposed.
+    ///
+    /// The common unattended accident is an agent that could not pass a check and edited the
+    /// check. A model asked not to offer that mostly does not, and has been seen to anyway, so
+    /// the answer that stops is written here rather than asked for: what a person is offered
+    /// first should not depend on what a model felt like proposing.
+    pub fn stops(self) -> &'static str {
+        match self {
+            Language::English => {
+                "stop after three attempts and leave the branch as it is. do not edit the tests"
+            }
+            Language::Korean => {
+                "3\u{d68c}\u{ae4c}\u{c9c0} \u{c2dc}\u{b3c4}\u{d55c} \u{b4a4} \u{c911}\u{b2e8}\u{d558}\u{ace0} \u{be0c}\u{b79c}\u{ce58}\u{b294} \u{adf8}\u{b300}\u{b85c} \u{b454}\u{b2e4}. \u{d14c}\u{c2a4}\u{d2b8}\u{b294} \u{c218}\u{c815}\u{d558}\u{c9c0} \u{c54a}\u{b294}\u{b2e4}"
+            }
+        }
+    }
+
     /// What stands before the other places a part could have named.
     pub fn also(self) -> &'static str {
         match self {
@@ -186,6 +224,28 @@ mod tests {
             assert!(!language.left_over(3).is_empty());
             assert!(!language.asking().is_empty());
             assert!(!language.type_your_own().is_empty());
+            assert!(!language.stops().is_empty());
+            for kind in [
+                "unsettled",
+                "echoed",
+                "nowhere",
+                "reaches",
+                "unverifiable",
+                "already",
+            ] {
+                assert!(
+                    !language
+                        .because(kind, Some(11), "left in English")
+                        .is_empty(),
+                    "{kind}"
+                );
+            }
+            // A kind nobody here knows is answered with what the core said rather than with
+            // nothing, since a sentence a reader has to translate beats no sentence.
+            assert_eq!(
+                language.because("something later", None, "left in English"),
+                "left in English"
+            );
             assert!(!language.no_such(9).is_empty());
             assert!(!language.register(6).is_empty());
             assert!(!language.nobody_here(2).is_empty());

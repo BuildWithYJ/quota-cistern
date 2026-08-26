@@ -289,6 +289,12 @@ fn parts(answer: &Value) -> Vec<Part> {
         .unwrap_or_default()
 }
 
+/// The part a model is never asked to settle, and the one this offers an answer for itself.
+///
+/// Named here because this is where the answer is offered. The core knows it as a part like any
+/// other; that a person is the one who settles it is a thing the asking knows.
+const ON_FAILURE: &str = "on failure";
+
 /// How wide the column holding a part's name is, and how far a part's text is indented past it.
 const NAMED: usize = 11;
 const INDENT: usize = 6 + NAMED;
@@ -405,10 +411,22 @@ fn shown(parts: &[Part], left: &[&Value], said_in: Language) {
     }
     eprintln!("  {}", said_in.left_over(left.len()));
     for one in left {
-        // The part's own name, since what the core says is left undecided is written in the
-        // core's words and a person is answered in theirs. What each of them means is asked
-        // in a moment, in the model's own question.
-        eprintln!("    - {}", text(one, "part").unwrap_or("something"));
+        // The part's name and why it is still open. The core writes the reason in English and
+        // sends which kind it is beside it, so what a reader sees is in their own words.
+        eprint!(
+            "{}",
+            under(
+                &format!("    - {:<NAMED$}", text(one, "part").unwrap_or("something")),
+                &said_in.because(
+                    text(one, "kind").unwrap_or_default(),
+                    one.get("files")
+                        .and_then(Value::as_u64)
+                        .map(|files| files as usize),
+                    text(one, "decides").unwrap_or_default(),
+                ),
+                across,
+            )
+        );
     }
     eprintln!();
 }
@@ -432,17 +450,31 @@ fn settling(part: &Part, said_in: Language) -> Option<String> {
             across
         )
     );
-    for (at, one) in part.others.iter().enumerate() {
+    // What a run does when it cannot get there is offered first and written here, whatever the
+    // model proposed. It is the decision an agent settles by editing the test, and a model asked
+    // not to offer that has been seen to offer it anyway.
+    let stops = (part.named == ON_FAILURE).then(|| said_in.stops());
+    let offered: Vec<&str> = stops
+        .into_iter()
+        .chain(
+            part.others
+                .iter()
+                .map(String::as_str)
+                .filter(|one| Some(*one) != stops),
+        )
+        .collect();
+
+    for (at, one) in offered.iter().enumerate() {
         eprint!("{}", under(&format!("    {}) ", at + 1), one, across));
     }
-    let own = part.others.len() + 1;
+    let own = offered.len() + 1;
     eprintln!("    {own}) {}", said_in.type_your_own());
 
     loop {
         let typed = typing("  > ")?;
         match typed.parse::<usize>() {
-            Ok(at) if (1..=part.others.len()).contains(&at) => {
-                return Some(part.others[at - 1].to_owned());
+            Ok(at) if (1..=offered.len()).contains(&at) => {
+                return Some(offered[at - 1].to_owned());
             }
             // The last one on the list is the one that asks for an answer of your own.
             Ok(at) if at == own => return typing("  > "),
