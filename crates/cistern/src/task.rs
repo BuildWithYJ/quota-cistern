@@ -19,7 +19,7 @@ use std::{
 use cistern_contract::{Response, code::CORE_ERROR, code::GENERAL_FAILURE, code::USAGE_ERROR};
 use serde_json::Value;
 
-use crate::{cli::TaskCommand, daemon};
+use crate::{cli::TaskCommand, daemon, words::Language};
 
 /// The mark `docs/cli.md` puts beside a task waiting to be assigned.
 ///
@@ -73,6 +73,9 @@ fn add(
     // two asks are separate requests, so the core cannot remember this and is told it instead.
     let wrote = instruction.clone();
     let mut asked_already = false;
+    // The words a person is answered in are the words they wrote in, decided once from what they
+    // typed rather than from each answer, which is the model's and may come back in either.
+    let said_in = Language::of(&wrote);
 
     // The core fills a loose instruction in from the repository, and where the repository allows
     // more than one fill it answers with them rather than picking. Asking is this side's to do:
@@ -82,7 +85,7 @@ fn add(
         // Working out what a line meant means reading the repository and asking a model, which
         // takes as long as it takes. A command that says nothing for a minute is one a person
         // stops, so it says what it is doing and how long it has been at it.
-        let waiting = (!asked_already).then(Waiting::shown);
+        let waiting = (!asked_already).then(|| Waiting::shown(said_in));
         let asked = asked(
             "task_add",
             serde_json::json!({
@@ -109,7 +112,7 @@ fn add(
             added(&answer);
             return ExitCode::SUCCESS;
         }
-        let Some(chosen) = chosen(&answer) else {
+        let Some(chosen) = chosen(&answer, said_in) else {
             return ExitCode::from(GENERAL_FAILURE);
         };
         instruction = chosen;
@@ -133,17 +136,14 @@ struct Waiting {
 }
 
 impl Waiting {
-    fn shown() -> Self {
+    fn shown(said_in: Language) -> Self {
         let going = Arc::new(AtomicBool::new(true));
         let mine = Arc::clone(&going);
         let saying = thread::spawn(move || {
             let since = Instant::now();
             thread::sleep(BEFORE_SAYING_SO);
             while mine.load(Ordering::Relaxed) {
-                eprint!(
-                    "\r  working out what that means... {}s",
-                    since.elapsed().as_secs()
-                );
+                eprint!("\r  {}", said_in.working_out(since.elapsed().as_secs()));
                 io::stderr().flush().ok();
                 thread::sleep(Duration::from_millis(500));
             }
@@ -178,20 +178,14 @@ const UNCONFIRMED: &str = "unconfirmed";
 ///
 /// Nothing when there is nobody to ask, or when they said no. The spec is printed either way, so
 /// a command in a script says what it would have asked about.
-fn chosen(answer: &Value) -> Option<String> {
+fn chosen(answer: &Value, said_in: Language) -> Option<String> {
     let mut parts = parts(answer);
     let left: Vec<&Value> = answer.get("undecided")?.as_array()?.iter().collect();
 
-    shown(&parts, &left);
+    shown(&parts, &left, said_in);
 
     if !io::stdin().is_terminal() {
-        eprintln!(
-            "  nobody is here to settle {}, so nothing was registered. --force registers the instruction as written",
-            match left.len() {
-                1 => "it".to_owned(),
-                many => format!("{many} of them"),
-            }
-        );
+        eprintln!("  {}", said_in.nobody_here(left.len()));
         return None;
     }
 
@@ -200,12 +194,12 @@ fn chosen(answer: &Value) -> Option<String> {
     for one in &left {
         let named = text(one, "part")?;
         let asking = parts.iter().find(|part| part.named == named)?;
-        let said = settling(asking, text(one, "decides").unwrap_or("what it should be"))?;
+        let said = settling(asking, said_in)?;
         put(&mut parts, named, &said);
     }
 
     loop {
-        eprint!("  Register it? [enter=yes / 1-6=change that line / n=no] ");
+        eprint!("  {}", said_in.register(parts.len()));
         io::stderr().flush().ok()?;
         let mut typed = String::new();
         if io::stdin().read_line(&mut typed).ok()? == 0 {
@@ -224,9 +218,9 @@ fn chosen(answer: &Value) -> Option<String> {
                 let named = parts[at - 1].named.clone();
                 let said = typing(&format!("  {named}: "))?;
                 put(&mut parts, &named, &said);
-                shown(&parts, &[]);
+                shown(&parts, &[], said_in);
             }
-            _ => eprintln!("  there is no {typed} on the list"),
+            _ => eprintln!("  {}", said_in.no_such(typed.parse().unwrap_or(0))),
         }
     }
 }
@@ -347,7 +341,7 @@ fn under(first: &str, text: &str, across: usize) -> String {
 /// Every part carries what it was drawn from, because a path on its own tells a reader nothing.
 /// What tells them whether to take it is that it is the file they have open with the count
 /// doubled on two lines.
-fn shown(parts: &[Part], left: &[&Value]) {
+fn shown(parts: &[Part], left: &[&Value], said_in: Language) {
     eprintln!();
     let across = across();
     for (at, part) in parts.iter().enumerate() {
@@ -359,7 +353,7 @@ fn shown(parts: &[Part], left: &[&Value]) {
         // with a word out of the core: that a part was worked out rather than typed is what the
         // line under it already says.
         let marked = match part.settled.as_str() {
-            "open" => "   <- nobody has settled this",
+            "open" => said_in.unsettled(),
             _ => "",
         };
         eprint!(
@@ -385,7 +379,7 @@ fn shown(parts: &[Part], left: &[&Value]) {
                 "{}",
                 under(
                     &format!("      {:<NAMED$}", ""),
-                    &format!("- also: {}", part.others.join(", ")),
+                    &format!("- {}: {}", said_in.also(), part.others.join(", ")),
                     across,
                 )
             );
@@ -399,23 +393,12 @@ fn shown(parts: &[Part], left: &[&Value]) {
     if left.is_empty() {
         return;
     }
-    eprintln!(
-        "  {} nobody has settled. Left as {} the agent would decide {} by itself:",
-        match left.len() {
-            1 => "1 thing".to_owned(),
-            many => format!("{many} things"),
-        },
-        match left.len() {
-            1 => "it is",
-            _ => "they are",
-        },
-        match left.len() {
-            1 => "it",
-            _ => "each of them",
-        },
-    );
+    eprintln!("  {}", said_in.left_over(left.len()));
     for one in left {
-        eprintln!("    - {}", text(one, "decides").unwrap_or("something"));
+        // The part's own name, since what the core says is left undecided is written in the
+        // core's words and a person is answered in theirs. What each of them means is asked
+        // in a moment, in the model's own question.
+        eprintln!("    - {}", text(one, "part").unwrap_or("something"));
     }
     eprintln!();
 }
@@ -425,36 +408,35 @@ fn shown(parts: &[Part], left: &[&Value]) {
 /// The question and the answers are the model's, written in the words the author typed in: it is
 /// the one that knows what is missing and which language to say it in. A surface writing them
 /// would ask in the same words whatever the author had written.
-fn settling(part: &Part, decides: &str) -> Option<String> {
+///
+/// Typing an answer of your own is the last thing on the list rather than a note beside the
+/// prompt. It is one of the answers, so it is offered as one, and the prompt is left with nothing
+/// to say but that it is your turn.
+fn settling(part: &Part, said_in: Language) -> Option<String> {
     let across = across();
     eprint!(
         "{}",
         under(
             "  ",
-            part.asks
-                .as_deref()
-                .unwrap_or(&format!("Nothing says {decides}. What should it be?")),
-            across,
+            part.asks.as_deref().unwrap_or(said_in.asking()),
+            across
         )
     );
     for (at, one) in part.others.iter().enumerate() {
         eprint!("{}", under(&format!("    {}) ", at + 1), one, across));
     }
+    let own = part.others.len() + 1;
+    eprintln!("    {own}) {}", said_in.type_your_own());
 
     loop {
-        let typed = typing(&format!(
-            "  {} [{}]: ",
-            part.named,
-            match part.others.is_empty() {
-                true => "type an answer".to_owned(),
-                false => format!("1-{}, or type an answer", part.others.len()),
-            }
-        ))?;
+        let typed = typing("  > ")?;
         match typed.parse::<usize>() {
             Ok(at) if (1..=part.others.len()).contains(&at) => {
                 return Some(part.others[at - 1].to_owned());
             }
-            Ok(at) => eprintln!("  there is no {at} on the list"),
+            // The last one on the list is the one that asks for an answer of your own.
+            Ok(at) if at == own => return typing("  > "),
+            Ok(at) => eprintln!("  {}", said_in.no_such(at)),
             Err(_) => return Some(typed),
         }
     }

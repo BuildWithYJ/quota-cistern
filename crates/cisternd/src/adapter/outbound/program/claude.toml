@@ -226,6 +226,9 @@ question asking what is missing, and two or three concrete answers to choose bet
 this repository rather than invented. Never leave a part with no value and no question: an empty \
 value with nothing beside it is a person staring at a blank line with nothing to answer.
 
+Write the answers as the answers themselves, ready to be used as the value of that part. Do not \
+number them, and do not offer "type your own" among them: that one is offered for you.
+
 Answer with these lines and nothing else.
 
 {goal}: <what the work is, in one sentence>
