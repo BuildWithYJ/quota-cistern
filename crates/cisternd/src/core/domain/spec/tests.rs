@@ -131,3 +131,72 @@ fn a_part_left_out_of_the_text_is_read_as_open() {
         vec![Named::Goal, Named::OnFailure, Named::Scope]
     );
 }
+
+/// A specification is a document before it is an argument, and a document is written with marks.
+#[test]
+fn a_spec_kept_as_a_document_is_read_as_one() {
+    let read = Spec::read(
+        "# The task\n\
+         \n\
+         ## goal\n\
+         stop the double count\n\
+         \n\
+         - **place**: `src/search.rs`\n\
+         - **success**: cargo test search\n\
+         \n\
+         ### On Failure\n\
+         stop after three attempts\n\
+         \n\
+         * why: the counter is incremented twice\n\
+         > scope: src/search.rs only\n",
+    )
+    .expect("it names parts");
+
+    assert_eq!(read.goal.said.as_deref(), Some("stop the double count"));
+    assert_eq!(read.place.said.as_deref(), Some("src/search.rs"));
+    assert_eq!(read.success.said.as_deref(), Some("cargo test search"));
+    assert_eq!(
+        read.on_failure.said.as_deref(),
+        Some("stop after three attempts")
+    );
+    assert_eq!(
+        read.why.said.as_deref(),
+        Some("the counter is incremented twice")
+    );
+    assert_eq!(read.scope.said.as_deref(), Some("src/search.rs only"));
+    assert!(read.undecided().is_empty());
+}
+
+/// A field is written as one word where a document names it as a field.
+#[test]
+fn a_part_of_two_words_is_read_written_as_one() {
+    let read = Spec::read("on_failure: stop after three attempts\nplace: src/util.rs").unwrap();
+
+    assert_eq!(
+        read.on_failure.said.as_deref(),
+        Some("stop after three attempts")
+    );
+}
+
+/// A line about a goal is not the goal, or every sentence with a colon in it would be a part.
+#[test]
+fn a_line_that_only_mentions_a_part_does_not_name_one() {
+    assert_eq!(Spec::read("the goal here: make it faster"), None);
+    assert_eq!(Spec::read("note: the place is unclear"), None);
+    // A heading with nothing after the colon still names the part, and settles nothing.
+    assert!(Spec::read("goal:").unwrap().goal.is_open());
+}
+
+/// What runs to a paragraph keeps its shape, since a document is where a paragraph is written.
+#[test]
+fn a_part_written_as_a_paragraph_keeps_its_lines() {
+    let read = Spec::read(
+        "## why\nthe counter is incremented twice,\nonce at line 41 and once at 43\n## place\nsrc/search.rs",
+    )
+    .unwrap();
+
+    assert_eq!(
+        read.why.said.as_deref(),
+        Some("the counter is incremented twice,\nonce at line 41 and once at 43")
+    );
+}

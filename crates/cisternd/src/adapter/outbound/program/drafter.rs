@@ -10,7 +10,10 @@
 //! Which program, which two models, what to hand them, and the words each part is read by are all
 //! in the definition. What stays here is the part that is the same whoever the vendor is.
 
-use std::process::{Command, Stdio};
+use std::{
+    process::{Command, Stdio},
+    time::Instant,
+};
 
 use crate::core::port::outbound::{Draft, Drafted, Drafter, Proposed};
 
@@ -59,8 +62,15 @@ impl ProgramDrafter {
     }
 
     /// Runs the program once and reads what it proposed, or nothing when it could not be reached.
+    ///
+    /// What came back is written to the daemon's log as it stands. A part that comes back empty
+    /// is a question the author is asked, and without the answer beside it there is no telling a
+    /// model that could not work something out from one that was asked the wrong thing. The
+    /// prompt is not written: it is the definition and the repository, both of which are there
+    /// to read, and it is a hundred times longer than what came back.
     fn asked(&self, model: &str, repository: &str, prompt: &str) -> Option<Drafted> {
         let drafting = &self.definition.drafter;
+        let since = Instant::now();
         let done = Command::new(&drafting.program)
             .current_dir(repository)
             // It reads only its arguments. Closing stdin keeps it from waiting on input that,
@@ -77,9 +87,20 @@ impl ProgramDrafter {
             .output()
             .ok()?;
 
-        done.status
-            .success()
-            .then(|| self.read(&String::from_utf8_lossy(&done.stdout)))
+        let took = since.elapsed().as_secs();
+        if !done.status.success() {
+            eprintln!(
+                "cisternd: {model} did not answer after {took}s: {}",
+                String::from_utf8_lossy(&done.stderr).trim()
+            );
+            return None;
+        }
+        let answer = String::from_utf8_lossy(&done.stdout);
+        eprintln!(
+            "cisternd: {model} answered in {took}s with:\n{}",
+            answer.trim()
+        );
+        Some(self.read(&answer))
     }
 
     /// Reads a spec out of the model's lines, by the words the definition names.
