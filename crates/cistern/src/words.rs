@@ -94,6 +94,26 @@ impl Language {
         }
     }
 
+    /// How to answer a list of them, said under the list.
+    pub fn how_to_answer(self, offered: usize) -> String {
+        match self {
+            Language::English => {
+                format!("a number from 1 to {offered}, or several separated by commas")
+            }
+            Language::Korean => format!(
+                "1-{offered} \u{c911} \u{d558}\u{b098}, \u{c5ec}\u{b7ec} \u{ac1c}\u{b294} \u{c27c}\u{d45c}\u{b85c}"
+            ),
+        }
+    }
+
+    /// What is said when the last of them was chosen and there is nothing yet to choose.
+    pub fn type_it(self) -> &'static str {
+        match self {
+            Language::English => "type it",
+            Language::Korean => "\u{c801}\u{c5b4} \u{c8fc}\u{c138}\u{c694}",
+        }
+    }
+
     /// What is said to a number nobody offered.
     pub fn no_such(self, at: usize) -> String {
         match self {
@@ -225,6 +245,8 @@ mod tests {
             assert!(!language.asking().is_empty());
             assert!(!language.type_your_own().is_empty());
             assert!(!language.stops().is_empty());
+            assert!(!language.how_to_answer(4).is_empty());
+            assert!(!language.type_it().is_empty());
             for kind in [
                 "unsettled",
                 "echoed",
@@ -261,6 +283,8 @@ mod tests {
         assert!(Language::English.left_over(1).contains("1 thing "));
         assert!(Language::Korean.no_such(9).contains('9'));
         assert!(Language::English.register(6).contains("1-6"));
+        assert!(Language::Korean.how_to_answer(4).contains("1-4"));
+        assert!(Language::English.how_to_answer(4).contains('4'));
         assert!(Language::Korean.register(6).contains("1-6"));
     }
 }

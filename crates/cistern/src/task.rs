@@ -464,24 +464,66 @@ fn settling(part: &Part, said_in: Language) -> Option<String> {
         )
         .collect();
 
+    // With nothing to choose between there is nothing to number. A list of one, whose one entry
+    // is "type your own", is a person asked to pick before they are asked to write.
+    if offered.is_empty() {
+        return typing(&format!("  {} > ", said_in.type_it()));
+    }
+
     for (at, one) in offered.iter().enumerate() {
         eprint!("{}", under(&format!("    {}) ", at + 1), one, across));
     }
     let own = offered.len() + 1;
     eprintln!("    {own}) {}", said_in.type_your_own());
+    // Said where there is more than one to choose between, which is where it is worth saying.
+    if offered.len() > 1 {
+        eprintln!("       {}", said_in.how_to_answer(own));
+    }
 
     loop {
         let typed = typing("  > ")?;
-        match typed.parse::<usize>() {
-            Ok(at) if (1..=offered.len()).contains(&at) => {
-                return Some(offered[at - 1].to_owned());
-            }
-            // The last one on the list is the one that asks for an answer of your own.
-            Ok(at) if at == own => return typing("  > "),
-            Ok(at) => eprintln!("  {}", said_in.no_such(at)),
-            Err(_) => return Some(typed),
+        let Some(chose) = chose(&typed, own) else {
+            // Not a list of numbers at all, so it is the answer itself, typed without being
+            // asked for. Taking it is what somebody who typed it meant.
+            return Some(typed);
+        };
+        if let Some(missing) = chose.iter().find(|at| **at > own) {
+            eprintln!("  {}", said_in.no_such(*missing));
+            continue;
+        }
+        // The last of them is the one that asks for an answer of your own, so choosing it asks
+        // for one, and choosing it beside others adds what is typed to them.
+        let mut said: Vec<String> = chose
+            .iter()
+            .filter(|at| **at <= offered.len())
+            .map(|at| offered[at - 1].to_owned())
+            .collect();
+        if chose.contains(&own)
+            && let Some(own) = typing(&format!("  {} > ", said_in.type_it()))
+        {
+            said.push(own);
+        }
+        if !said.is_empty() {
+            return Some(said.join(", "));
         }
     }
+}
+
+/// The numbers a line holds, where it holds numbers and nothing else.
+///
+/// Separated by commas or by spaces, since both are how a person writes a few of something.
+/// Nothing where any part of it is not a number: a line that is not a list of them is an answer
+/// typed out rather than a list somebody got wrong.
+fn chose(typed: &str, most: usize) -> Option<Vec<usize>> {
+    let held: Vec<&str> = typed
+        .split([',', ' '])
+        .map(str::trim)
+        .filter(|one| !one.is_empty())
+        .collect();
+    if held.is_empty() || held.len() > most {
+        return None;
+    }
+    held.iter().map(|one| one.parse().ok()).collect()
 }
 
 /// One line typed at a prompt, or nothing where there is no more input or it was left blank.
@@ -887,6 +929,31 @@ mod tests {
             under("  1  place      ", "one two three", INDENT + 7),
             "  1  place      one two\n                 three\n"
         );
+    }
+
+    /// A person choosing a few of something writes them with commas, or with spaces.
+    #[test]
+    fn a_list_of_numbers_is_read_as_the_ones_that_were_chosen() {
+        assert_eq!(chose("2", 4), Some(vec![2]));
+        assert_eq!(chose("1,2", 4), Some(vec![1, 2]));
+        assert_eq!(chose(" 1 , 3 ", 4), Some(vec![1, 3]));
+        assert_eq!(chose("1 2 3", 4), Some(vec![1, 2, 3]));
+    }
+
+    /// A line that is not a list of numbers is the answer, typed without being asked for.
+    #[test]
+    fn a_line_that_is_not_a_list_of_numbers_is_an_answer() {
+        assert_eq!(chose("cargo test search", 4), None);
+        assert_eq!(chose("2 files are wrong", 4), None);
+        assert_eq!(chose("", 4), None);
+        // More numbers than there are answers is not a list of them either.
+        assert_eq!(chose("1,2,3,4,5", 4), None);
+    }
+
+    /// A number nobody offered is still read, so that it can be said which one it was.
+    #[test]
+    fn a_number_past_the_list_is_read_and_not_mistaken_for_an_answer() {
+        assert_eq!(chose("9", 4), Some(vec![9]));
     }
 
     /// An instruction is printed as it was given, however many lines that is.
