@@ -16,7 +16,7 @@ You could build something yourself to run an agent unattended. Preparing it and 
 
 - macOS or Linux. The daemon listens on a Unix socket and reads the vendor's limit through a pseudo-terminal.
 - git.
-- Claude Code on your `PATH`, already logged in. 0.1.0 was verified against 2.1.227.
+- Claude Code on your `PATH`, already logged in. 0.2.0 was verified against 2.1.237.
 
 ## Getting started
 
@@ -40,8 +40,8 @@ macOS refuses to run a marked file that nobody signed.
 
 ```console
 $ cistern --version
-cistern 0.1.0
-core    0.1.0
+cistern 0.2.0
+core    0.2.0
 ```
 
 A command that cannot start a daemon, or that starts one which stops before answering, says so and exits 5. Ctrl-C stops the daemon.

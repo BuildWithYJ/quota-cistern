@@ -14,7 +14,7 @@ quota-cistern은 그 제약을 없앱니다. 위임할 작업을 등록하고 �
 
 - macOS 또는 Linux. 데몬은 유닉스 소켓으로 통신하고 의사 터미널로 벤더의 한도를 읽습니다.
 - git.
-- `PATH`에 있고 로그인된 Claude Code. 0.1.0은 2.1.227에서 확인했습니다.
+- `PATH`에 있고 로그인된 Claude Code. 0.2.0은 2.1.237에서 확인했습니다.
 
 ## 시작하기
 
@@ -33,8 +33,8 @@ $ curl -L https://github.com/BuildWithYJ/quota-cistern/releases/latest/download/
 
 ```console
 $ cistern --version
-cistern 0.1.0
-core    0.1.0
+cistern 0.2.0
+core    0.2.0
 ```
 
 데몬을 실행하지 못하거나 실행한 데몬이 답하기 전에 종료하면 이유를 출력하고 종료 코드 5로 끝납니다. 데몬은 Ctrl-C로 중단합니다.
