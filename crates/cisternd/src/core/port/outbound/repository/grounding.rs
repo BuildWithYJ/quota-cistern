@@ -1,9 +1,5 @@
 //! Whether what a spec says about a repository is so.
 
-// Nothing asks these yet. The service asks them when it counts what a spec leaves to decide,
-// which is a later commit; this comes off with it.
-#![allow(dead_code)]
-
 use std::time::Duration;
 
 /// What running a success condition said.

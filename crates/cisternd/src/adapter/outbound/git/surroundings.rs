@@ -1,10 +1,6 @@
-//! What the working tree has changed, and what the repository holds by a word, as git reads it.
+//! What a task is being added amid, as git reads it.
 //!
 //! The only place that knows the commands, and none of it reaches the core.
-
-// What answers the four new reads reaches nothing yet. The service asks them when it hands a
-// model what a task is being added amid, which is a later commit; this comes off with it.
-#![allow(dead_code)]
 
 use std::process::Command;
 
@@ -14,37 +10,6 @@ use crate::core::port::outbound::Surroundings;
 pub struct GitSurroundings;
 
 impl Surroundings for GitSurroundings {
-    fn changed(&self, repository: &str) -> Vec<String> {
-        // Changes against HEAD, staged or not. What is committed is behind the author, not what
-        // they are in the middle of.
-        run(repository, &["diff", "--name-only", "HEAD"])
-            .map(paths)
-            .unwrap_or_default()
-    }
-
-    fn holding(&self, repository: &str, word: &str) -> Vec<String> {
-        // A file that uses the word in a line, then one that only carries it in its name. A line
-        // is a closer match than a name, so those come first.
-        let mut found = run(
-            repository,
-            &["grep", "--name-only", "--ignore-case", "-e", word],
-        )
-        .map(paths)
-        .unwrap_or_default();
-
-        if let Some(named) = run(repository, &["ls-files"]) {
-            let word = word.to_ascii_lowercase();
-            for path in named.lines() {
-                if path.to_ascii_lowercase().contains(&word)
-                    && !found.iter().any(|held| held == path)
-                {
-                    found.push(path.to_owned());
-                }
-            }
-        }
-        found
-    }
-
     fn changes(&self, repository: &str, lines: usize) -> String {
         // Against HEAD, staged or not, and with the body rather than the names: what is being
         // done to a file is what says which file was meant.
@@ -104,11 +69,6 @@ fn run(repository: &str, args: &[&str]) -> Option<String> {
     done.status
         .success()
         .then(|| String::from_utf8_lossy(&done.stdout).into_owned())
-}
-
-/// The lines of git's output as owned paths.
-fn paths(out: String) -> Vec<String> {
-    out.lines().map(str::to_owned).collect()
 }
 
 #[cfg(test)]

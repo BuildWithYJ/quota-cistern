@@ -99,6 +99,7 @@ fn main() -> ExitCode {
     let roots = outbound::git::roots::GitRoots;
     let results = outbound::git::result::GitResults;
     let surroundings = outbound::git::surroundings::GitSurroundings;
+    let grounding = outbound::grounding::RepositoryGrounding;
     let clock = outbound::clock::SystemClock;
     // Asked before a task is registered rather than while one runs, so it holds a
     // definition of its own rather than taking one from the agent.
@@ -106,7 +107,14 @@ fn main() -> ExitCode {
     let agent = outbound::program::agent::ProgramAgent::new(definition);
 
     let configuration = ConfigurationService::new(&configuration_store, known);
-    let backlog = BacklogService::new(&backlog_store, &roots, &results, &surroundings, &drafter);
+    let backlog = BacklogService::new(
+        &backlog_store,
+        &roots,
+        &results,
+        &surroundings,
+        &grounding,
+        &drafter,
+    );
     let review = ReviewService::new(&backlog_store, &results, &worktrees);
     // The ports, once. Each service takes its own copy rather than reaching for another's.
     let outside = Outside {

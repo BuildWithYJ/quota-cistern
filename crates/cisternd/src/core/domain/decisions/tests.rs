@@ -17,6 +17,7 @@ fn settled() -> (Spec, Grounded) {
         Grounded {
             files: Some(1),
             runnable: true,
+            already: false,
         },
     )
 }
@@ -147,6 +148,7 @@ fn the_two_words_that_used_to_pass_leave_three_decisions() {
         Grounded {
             files: Some(1),
             runnable: true,
+            already: false,
         },
     );
 
@@ -158,4 +160,35 @@ fn the_two_words_that_used_to_pass_leave_three_decisions() {
             Undecided::Unsettled(Named::Scope),
         ]
     );
+}
+
+/// A command that passes already says the work is done, or that it does not tell that it is not.
+#[test]
+fn a_success_condition_that_passes_already_leaves_that_to_decide() {
+    let (spec, mut grounded) = settled();
+    grounded.already = true;
+
+    let left = left_to_decide(&spec, WROTE, grounded);
+
+    assert_eq!(left, vec![Undecided::AlreadyDone]);
+    assert_eq!(left[0].left_to_decide(), "whether there is anything to do");
+    // The model can look for a command that does tell, so it is asked again before anybody is.
+    assert!(left[0].is_the_models());
+}
+
+/// A place the repository does not hold was invented, and an agent sent there works elsewhere.
+#[test]
+fn a_place_that_is_nowhere_is_a_decision_left() {
+    let (spec, mut grounded) = settled();
+    grounded.files = None;
+
+    let left = left_to_decide(&spec, WROTE, grounded);
+
+    assert_eq!(left, vec![Undecided::Nowhere]);
+    assert_eq!(
+        left[0].left_to_decide(),
+        "where the work is, since nothing is there"
+    );
+    // The model named it, so the model is asked again before the author is.
+    assert!(left[0].is_the_models());
 }

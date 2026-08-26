@@ -24,7 +24,7 @@ pub use run::{Run, Runs};
 pub use session::{SessionStore, StoredSession, StoredSessions};
 pub use trace::{Event, Keeping, Read, Traces};
 pub use vendor::{
-    Agent, Draft, Drafted, Drafter, Ended, Limit, Observed, Outcome, Reading, Spent, Work,
+    Agent, Draft, Drafted, Drafter, Ended, Limit, Observed, Outcome, Proposed, Reading, Spent, Work,
 };
 
 /// The outside could not be reached or could not be understood.

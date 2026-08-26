@@ -172,9 +172,6 @@ stronger = "sonnet"
 # How far one ask may go. A guard against an ask that goes nowhere, not a task's ceiling.
 turns = "5"
 
-# How many of the repository's files to show, so the prompt stays small.
-files_shown = 300
-
 # Grouped as `args` above is: a group holding a place nobody filled is dropped whole.
 args = [
   ["-p", "{prompt}"],
@@ -182,29 +179,67 @@ args = [
   ["--max-turns", "{turns}"],
 ]
 
-# The two words the answer is read by. They are written into the prompt below as well, so
-# changing one changes what is asked and what is read together.
+# The word each part of the answer is read by. They are written into the prompt below as well,
+# so changing one changes what is asked and what is read together.
+goal = "GOAL"
 place = "PLACE"
-check = "CHECK"
+success = "SUCCESS"
+on_failure = "ONFAIL"
+why = "WHY"
+scope = "SCOPE"
 
-# What is asked. `{changed}` is what the author has open and uncommitted, and `{files}` the
-# files the repository tracks, both already narrowed before they arrive here.
+# What is put after a part's word to ask what it was drawn from, and what else was allowed.
+drawn_from = "-FROM"
+others = "-OR"
+
+# What is asked. Everything after the instruction is what the author was looking at when they
+# wrote it: `{changes}` is the change they have open, `{lately}` what they committed before it,
+# `{branch}` the branch they are on, `{files}` what the repository tracks.
 prompt = """
-You are preparing a coding task to run unattended, with no one to answer questions.
+You are writing the specification for a coding task that will run unattended. Nobody will be \
+there to answer questions once it starts, so anything the specification leaves out is something \
+the agent will decide by itself.
 
-Task instruction:
+What the author typed:
 {instruction}
 
-Files changed but not committed:
-{changed}
+The change they have open and uncommitted:
+{changes}
 
-Files in the repository:
+What they committed lately:
+{lately}
+
+The branch they are on: {branch}
+
+Files the repository tracks:
 {files}
 
-Name where the work should happen and how to tell it is done. Answer with exactly two lines \
-and nothing else:
-{place}: <one file path from the list above, or the word none>
-{check}: <a shell command or test that verifies the work, or the word none>"""
+Work out what they meant, from what they were looking at. Answer with these lines and nothing \
+else. Leave a value empty if you cannot work it out from what you were given -- an empty part is \
+a question the author will be asked, and a part filled in to look complete is worse than no part \
+at all.
+
+{goal}: <what the work is, in one sentence>
+{goal}{drawn_from}: <the file, line, or commit you read it from>
+{place}: <one path that appears in the files above>
+{place}{drawn_from}: <why that one>
+{place}{others}: <other paths it could be, separated by commas, or empty>
+{success}: <a command that can be run in this repository and that fails right now>
+{success}{drawn_from}: <where you found it>
+{on_failure}: <leave this empty>
+{why}: <what goes wrong today, with a file and line>
+{why}{drawn_from}: <the file and line>
+{scope}: <what may be changed and what may not>
+{scope}{drawn_from}: <why>"""
+
+# What is asked the second time, once the repository has been asked about the first answer.
+again = """
+You wrote a specification and some of it did not hold up against the repository:
+
+{amiss}
+
+Answer again in the same lines, correcting those. Leave a part empty rather than replacing it \
+with something else that is not there."""
 
 # What one line of what a run wrote amounts to.
 #

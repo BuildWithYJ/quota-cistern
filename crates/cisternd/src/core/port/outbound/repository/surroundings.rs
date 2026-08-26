@@ -1,26 +1,11 @@
 //! What a task is added amid, in the repository it was added from.
 
-// The four reads below reach nothing yet. The service asks them when it hands a model what a
-// task is being added amid, which is a later commit; this comes off with it.
-#![allow(dead_code)]
-
 /// What the working tree is in the middle of.
 ///
-/// When an instruction points at "this" or names no place, what the author has open but not
-/// committed is the likeliest thing they mean.
+/// An instruction pointing at "this" points here. What the author has open but not committed,
+/// what they committed before it, and the branch they are on are what they were reading when
+/// they wrote the line, so they are what a reader working out the line has to be given.
 pub trait Surroundings: Sync {
-    /// The files the working tree has changed and not committed, the nearest work first.
-    ///
-    /// Empty when nothing is uncommitted, and empty again when the repository cannot be read:
-    /// neither is a place to send a run, so both come back the same.
-    fn changed(&self, repository: &str) -> Vec<String>;
-
-    /// The files the repository holds that mention the word, by a line of code or by name.
-    ///
-    /// What an instruction points at without editing: the word it used, found where the code uses
-    /// it. Empty when nothing matches, or when the repository cannot be read.
-    fn holding(&self, repository: &str, word: &str) -> Vec<String>;
-
     /// What the working tree has changed, in full, capped at the given number of lines.
     ///
     /// A list of filenames says which files are open and nothing about what is being done to

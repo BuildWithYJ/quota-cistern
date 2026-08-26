@@ -7,11 +7,6 @@
 //! Nothing here reads a repository or asks a model. Which parts a spec has, and which of them are
 //! still open, is all this decides.
 
-// Nothing reads a spec yet, and nothing outside the domain names one. The gate is rebuilt on
-// this over the commits that follow; this comes off, and `core::domain` re-exports it, with the
-// commit that has the service read one.
-#![allow(dead_code)]
-
 use std::fmt::{self, Display};
 
 /// Who settled a part of a spec.
@@ -27,6 +22,16 @@ pub enum Settled {
     Inferred,
     /// Nobody has settled it.
     Open,
+}
+
+impl Display for Settled {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        out.write_str(match self {
+            Settled::Given => "given",
+            Settled::Inferred => "inferred",
+            Settled::Open => "open",
+        })
+    }
 }
 
 /// One part of a spec, and how it came to say what it says.
@@ -80,12 +85,6 @@ impl Part {
         }
     }
 
-    /// The same, with the others the repository allows beside it.
-    pub fn beside(mut self, others: &[String]) -> Self {
-        self.others = others.to_vec();
-        self
-    }
-
     /// Whether anybody has settled it.
     ///
     /// A part carrying no text is open whatever it was marked, so that a model answering with an
@@ -98,11 +97,6 @@ impl Part {
                 .map(str::trim)
                 .unwrap_or_default()
                 .is_empty()
-    }
-
-    /// Whether the author still has to see it before a run is given it.
-    pub fn wants_seeing(&self) -> bool {
-        self.settled == Settled::Inferred && !self.is_open()
     }
 }
 
@@ -229,23 +223,42 @@ impl Spec {
             .collect()
     }
 
-    /// The parts the author has not seen yet.
-    pub fn unseen(&self) -> Vec<Named> {
-        self.parts()
-            .filter(|(_, part)| part.wants_seeing())
-            .map(|(named, _)| named)
-            .collect()
-    }
+    /// Reads a spec back out of what [`Spec::written`] wrote.
+    ///
+    /// What a surface hands back after asking is the spec it was shown, so the two travel as one
+    /// text and nothing else has to cross. Every part read this way is the author's own: they saw
+    /// it and sent it back, whoever first worked it out.
+    ///
+    /// Nothing where the text names no part at all, which is what an ordinary instruction does.
+    pub fn read(text: &str) -> Option<Self> {
+        let mut spec = Spec::open();
+        let mut named_one = false;
+        let mut last: Option<Named> = None;
 
-    /// Takes every inference as seen, which is what accepting the spec does.
-    pub fn seen(&mut self) {
-        for named in Named::ALL {
-            let part = self.part_mut(named);
-            if part.wants_seeing() {
-                part.settled = Settled::Given;
-                part.others.clear();
+        for line in text.lines() {
+            match Named::ALL
+                .into_iter()
+                .find(|named| starts_the_line(line, named.label()))
+            {
+                Some(named) => {
+                    let said = line[named.label().len() + 1..].trim();
+                    *spec.part_mut(named) = Part::given(said);
+                    named_one = true;
+                    last = Some(named);
+                }
+                // A part that runs to more than a line keeps the rest of it.
+                None => {
+                    if let Some(named) = last
+                        && let Some(said) = spec.part_mut(named).said.as_mut()
+                    {
+                        said.push('\n');
+                        said.push_str(line);
+                    }
+                }
             }
         }
+
+        named_one.then_some(spec)
     }
 
     /// The spec as a run is given it: one part per line, and the empty ones left out.
@@ -270,6 +283,12 @@ impl Spec {
         }
         written.trim_end().to_owned()
     }
+}
+
+/// Whether the line opens with the label and a colon.
+fn starts_the_line(line: &str, label: &str) -> bool {
+    line.strip_prefix(label)
+        .is_some_and(|rest| rest.starts_with(':'))
 }
 
 #[cfg(test)]

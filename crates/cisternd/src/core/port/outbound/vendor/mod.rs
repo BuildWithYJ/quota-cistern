@@ -9,5 +9,5 @@ mod drafter;
 mod limit;
 
 pub use agent::{Agent, Ended, Observed, Outcome, Spent, Work};
-pub use drafter::{Draft, Drafted, Drafter};
+pub use drafter::{Draft, Drafted, Drafter, Proposed};
 pub use limit::{Limit, Reading};
