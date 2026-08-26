@@ -5,6 +5,7 @@
 
 mod configuration;
 mod consumption;
+mod decisions;
 mod policy;
 mod readiness;
 mod session;
