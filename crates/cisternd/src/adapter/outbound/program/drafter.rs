@@ -153,8 +153,9 @@ impl Drafter for ProgramDrafter {
             written(held, drafting),
             super::fill(drafting.again.trim(), &[("amiss", &amiss.join("\n"))])
         );
-        // Asked of the stronger model: the cheaper one has already had its answer taken apart.
-        self.asked(&drafting.stronger, ask.repository, &prompt)
+        // Asked of the cheaper model. It is being told which of its answers did not hold up and
+        // what the repository holds instead, which is a correction rather than a harder question.
+        self.asked(&drafting.cheaper, ask.repository, &prompt)
     }
 }
 

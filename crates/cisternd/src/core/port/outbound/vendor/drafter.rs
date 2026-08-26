@@ -11,7 +11,7 @@ pub struct Draft<'a> {
     pub instruction: &'a str,
     /// What the working tree has changed, body and all, already capped.
     pub changes: &'a str,
-    /// What was committed lately, one line each with what it touched.
+    /// What was committed lately, one line each.
     pub lately: &'a str,
     /// The branch the tree is on, where it is on one.
     pub branch: Option<&'a str>,

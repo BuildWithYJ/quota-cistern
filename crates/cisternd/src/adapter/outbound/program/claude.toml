@@ -169,8 +169,13 @@ program = "claude"
 cheaper = "haiku"
 stronger = "sonnet"
 
-# How far one ask may go. A guard against an ask that goes nowhere, not a task's ceiling.
-turns = "5"
+# How far one ask may go.
+#
+# One. This is a question to answer, not work to do: the instruction, the change, the commits and
+# the file list are all handed over before it starts, so there is nothing left for it to go and
+# look up. More turns than that is an agent loop reading a repository it was already given, which
+# costs what running the task costs and answers no better.
+turns = "1"
 
 # Grouped as `args` above is: a group holding a place nobody filled is dropped whole.
 args = [

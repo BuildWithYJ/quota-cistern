@@ -13,8 +13,13 @@ impl Surroundings for GitSurroundings {
     fn changes(&self, repository: &str, lines: usize) -> String {
         // Against HEAD, staged or not, and with the body rather than the names: what is being
         // done to a file is what says which file was meant.
+        //
+        // Widely, so that what surrounds the change comes with it. A reader that can see the
+        // function the line sits in, and the test below it, does not have to go and read the
+        // file; a reader that goes and reads the file is an agent loop, and one costs what
+        // running the task costs.
         capped(
-            run(repository, &["diff", "HEAD", "--unified=3"]).unwrap_or_default(),
+            run(repository, &["diff", "HEAD", "--unified=40"]).unwrap_or_default(),
             lines,
         )
     }
@@ -23,11 +28,9 @@ impl Surroundings for GitSurroundings {
         let how_many = format!("-{commits}");
         // A repository with no commits at all fails rather than printing nothing, which is the
         // same thing to a reader either way.
-        run(
-            repository,
-            &["log", &how_many, "--oneline", "--stat", "--no-color"],
-        )
-        .unwrap_or_default()
+        // Subjects alone. What each commit touched is another line per file and five times the
+        // reading, and what the repository holds is already listed in full further down.
+        run(repository, &["log", &how_many, "--oneline", "--no-color"]).unwrap_or_default()
     }
 
     fn branch(&self, repository: &str) -> Option<String> {
@@ -152,13 +155,12 @@ mod tests {
     }
 
     #[test]
-    fn what_was_committed_lately_comes_back_with_what_it_touched() {
+    fn what_was_committed_lately_comes_back_by_its_subject() {
         let held = in_a_repository();
 
         let lately = GitSurroundings.lately(at(&held), 10);
 
         assert!(lately.contains("add search"), "{lately}");
-        assert!(lately.contains("src/search.rs"), "{lately}");
     }
 
     /// Half of what an author means, for one command.

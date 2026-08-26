@@ -16,7 +16,7 @@ pub trait Surroundings: Sync {
     /// by the line. Empty when nothing is uncommitted or the repository cannot be read.
     fn changes(&self, repository: &str, lines: usize) -> String;
 
-    /// What has been committed lately, one line each with what it touched.
+    /// What has been committed lately, one line each.
     ///
     /// An instruction that points at "the thing from earlier" points here. Empty when the
     /// repository holds no commits or cannot be read.
