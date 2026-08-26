@@ -151,17 +151,17 @@ impl Drafter for ProgramDrafter {
         let drafting = &self.definition.drafter;
         let prompt = self.asking(&ask);
 
-        let cheap = self.asked(&drafting.cheaper, ask.repository, &prompt);
-        if cheap
-            .as_ref()
-            .is_some_and(|drafted| drafted.place.is_some())
-        {
-            return cheap;
+        // A cheap model that answered is the answer. It was given everything there is, and a
+        // part it left open carrying a question and two or three answers to choose between is
+        // it saying what it could not tell -- which is what the author is there to settle.
+        // Asking a stronger model the same question buys a second answer to it, at another
+        // minute and another ask, and the one thing it cannot buy is what only a person knows.
+        if let Some(cheap) = self.asked(&drafting.cheaper, ask.repository, &prompt) {
+            return Some(cheap);
         }
-        // The cheaper model worked out no place at all. A stronger one may, and only then is it
-        // worth its cost.
+        // Nothing came back at all: not reached, or an answer naming no part. A stronger model
+        // is worth its cost only there.
         self.asked(&drafting.stronger, ask.repository, &prompt)
-            .or(cheap)
     }
 
     fn draft_again(&self, ask: Draft<'_>, held: &Drafted, amiss: &[String]) -> Option<Drafted> {
