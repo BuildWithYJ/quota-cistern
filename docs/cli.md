@@ -169,7 +169,7 @@ task:1 added to backlog
   repo:   ~/work/api
 ```
 
-Answering with an instruction rather than a number registers that instruction instead, read the same way this one was. An empty answer registers nothing and exits 1. Where nobody is at the terminal, the choices are printed and nothing is registered, so a command in a script says what it would have asked. Either way the text that was typed first is kept as the task's `original`, since the run is given something else.
+Answering with an instruction rather than a number registers that instruction instead, read the same way this one was. An empty answer registers nothing and exits 1. Where nobody is at the terminal, the choices are printed and nothing is registered, so a command in a script says what it would have asked. The text that was typed first is kept as the task's `original` where the instruction that registers is not that same text. A number always differs from it, and an answer typed out is read afresh, so repeating what was already there leads back to the same question rather than to a task.
 
 #### `cistern task rm`
 
