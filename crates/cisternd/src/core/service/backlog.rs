@@ -106,19 +106,20 @@ impl<'a> BacklogService<'a> {
 
         // What the repository would not hold up is the model's to answer for rather than the
         // author's: it named a file that is not there, and it is the one that can look again.
-        let amiss: Vec<String> = left
-            .iter()
-            .filter(|one| one.is_the_models())
-            .map(Undecided::left_to_decide)
-            .collect();
+        let theirs: Vec<&Undecided> = left.iter().filter(|one| one.is_the_models()).collect();
+        let amiss: Vec<String> = theirs.iter().map(|one| one.left_to_decide()).collect();
+        let named: Vec<Named> = theirs.iter().filter_map(|one| one.part()).collect();
         if !amiss.is_empty()
             && let Some(again) = self.drafter.draft_again(ask(), &drafted, &amiss)
         {
+            // Part by part, and only where the second answer settles what the first did not. A
+            // model asked to correct one part rewrites all of them, and a second answer that
+            // settles less is not a correction: it is the same question answered again, worse.
             let second = spec_from(&again, given.instruction);
-            let after = self.counted(&second, given.instruction, root);
-            // Taken only where it is better. A second answer that is worse is a second guess.
-            if after.len() < left.len() {
-                spec = second;
+            let mended = mended(&spec, second, &named);
+            let after = self.counted(&mended, given.instruction, root);
+            if after.len() <= left.len() {
+                spec = mended;
                 left = after;
             }
         }
@@ -656,6 +657,35 @@ fn spec_from(drafted: &Drafted, _wrote: &str) -> Spec {
         *spec.part_mut(named) = part;
     }
     spec
+}
+
+/// The first spec with the second's parts where those settle something the first did not.
+///
+/// What is kept is not only the value. A part the first answer left open carries the question it
+/// wrote about it and the answers it offered to choose between, and those are what a person is
+/// shown; a second answer that left the same part open with no question at all would take them
+/// away and leave a blank line.
+fn mended(held: &Spec, second: Spec, amiss: &[Named]) -> Spec {
+    let mut mended = held.clone();
+    for named in Named::ALL {
+        let (was, now) = (held.part(named), second.part(named));
+        let better = match (was.is_open(), now.is_open()) {
+            // It settled what the first could not.
+            (true, false) => true,
+            // Neither settled it, so what is kept is whichever has something to ask.
+            (true, true) => was.asks.is_none() && now.asks.is_some(),
+            // The first settled it, and the repository would not have it. That is the part the
+            // second answer was asked about, so its answer to it is the one to take.
+            (false, false) => amiss.contains(&named),
+            // The first settled it and the repository held it up. Emptying it now would be the
+            // second answer taking away what the first got right.
+            (false, true) => false,
+        };
+        if better {
+            *mended.part_mut(named) = now.clone();
+        }
+    }
+    mended
 }
 
 /// The spec and what it leaves, in the terms the surface showing it is answered in.
@@ -1300,6 +1330,91 @@ mod tests {
             .find(|shown| shown.part == "goal")
             .unwrap();
         assert_eq!(goal.said.as_deref(), Some("stop the double count"));
+    }
+
+    /// The questions the first answer wrote are what a person is shown, so they are not lost.
+    ///
+    /// A model asked to correct one part rewrites all of them, and the second answer here is the
+    /// one that came back against a real repository: prose saying the instruction is too vague,
+    /// and questions for every part with answers to choose between for one of them.
+    #[test]
+    fn asking_again_keeps_the_questions_the_first_answer_wrote() {
+        let tasks = Remembered::default();
+        let asking = |said: &str| {
+            Some(Proposed {
+                said: String::new(),
+                drawn_from: None,
+                others: vec![said.to_owned(), "or this".to_owned()],
+                asks: Some(format!("what about {said}?")),
+            })
+        };
+        let model = Proposing::of(Drafted {
+            // A place that is nowhere, which is the model's to look at again.
+            place: proposing("src/nowhere.rs"),
+            goal: asking("this"),
+            done_when: asking("that"),
+            why: asking("the other"),
+            scope: asking("something"),
+            on_failure: asking("when it fails"),
+        })
+        .then(Drafted {
+            goal: proposing("stop the double count"),
+            ..Drafted::default()
+        });
+        let service = BacklogService::new(
+            &tasks,
+            &IN_A_REPOSITORY,
+            &NO_BRANCH,
+            &NOTHING_AROUND,
+            &GROUNDS,
+            &model,
+        );
+        let mut given = registering("first");
+        given.instruction = "make it stop double-counting";
+
+        let asked = unconfirmed(service.add(given));
+
+        // The one the second answer settled is settled.
+        let goal = asked
+            .parts
+            .iter()
+            .find(|shown| shown.part == "goal")
+            .unwrap();
+        assert_eq!(goal.said.as_deref(), Some("stop the double count"));
+        // The rest keep what the first wrote about them, rather than being emptied.
+        for named in ["done when", "why", "scope", "on failure"] {
+            let shown = asked.parts.iter().find(|part| part.part == named).unwrap();
+            assert!(shown.asks.is_some(), "{named} lost its question");
+            assert_eq!(shown.others.len(), 2, "{named} lost its answers");
+        }
+    }
+
+    /// A part nobody settled is not asked about twice: the model has already said it cannot tell.
+    #[test]
+    fn nothing_is_asked_again_where_the_repository_refused_nothing() {
+        let tasks = Remembered::default();
+        let model = Proposing::of(Drafted {
+            goal: proposing("stop the double count"),
+            place: proposing("src/search.rs"),
+            done_when: proposing("cargo test search"),
+            ..Drafted::default()
+        })
+        .then(Drafted::default());
+        let service = BacklogService::new(
+            &tasks,
+            &IN_A_REPOSITORY,
+            &NO_BRANCH,
+            &NOTHING_AROUND,
+            &GROUNDS,
+            &model,
+        );
+        let mut given = registering("first");
+        given.instruction = "make it stop double-counting";
+
+        unconfirmed(service.add(given));
+
+        // Everything it settled held up, and what it did not settle is the author's.
+        assert_eq!(model.asked.load(Ordering::Relaxed), 1);
     }
 
     /// A model that cannot be reached leaves every part open, and the author is asked all of it.

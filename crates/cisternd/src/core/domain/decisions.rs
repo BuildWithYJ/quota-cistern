@@ -78,12 +78,15 @@ impl Undecided {
     /// Whether it is the model's to answer for rather than the author's.
     ///
     /// A part that names a file which is not there, or a command nothing can run, is a mistake
-    /// the model made and the model can look again. What nobody said anything about at all is
-    /// the author's, and asking a model to invent it is asking it to make the decision the gate
-    /// exists to keep for a person.
+    /// the model made against a repository it can look at again, so it is worth asking again.
+    ///
+    /// A part nobody settled is not. The model was given everything there is and left it empty,
+    /// which is it saying it cannot tell; asking the same question again buys a second answer to
+    /// the same question, and a model asked twice whether it is sure answers whatever it thinks
+    /// is wanted. It is the author who knows, which is why they are asked.
     pub fn is_the_models(&self) -> bool {
         match self {
-            Undecided::Unsettled(named) => *named != Named::OnFailure,
+            Undecided::Unsettled(_) => false,
             Undecided::Echoed(_)
             | Undecided::Nowhere
             | Undecided::Reaches { .. }
