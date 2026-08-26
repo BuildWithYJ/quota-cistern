@@ -202,26 +202,25 @@ asks = "-ASK"
 # What is asked. Everything after the instruction is what the author was looking at when they
 # wrote it: `{changes}` is the change they have open, `{lately}` what they committed before it,
 # `{branch}` the branch they are on, `{files}` what the repository tracks.
+# What is asked.
+#
+# What does not change between one task and the next comes first, and what changes comes last.
+# A vendor holds what it has already read and charges a tenth for reading it again, and it holds
+# it from the front: a prompt that opens with the instruction is one where nothing before the
+# instruction can be held, which is all of it. The file list and the commits are the same for
+# every task added to a repository in a sitting, so they open it.
 prompt = """
 You are writing the specification for a coding task that will run unattended. Nobody will be \
 there to answer questions once it starts, so anything the specification leaves out is something \
 the agent will decide by itself.
 
-What the author typed:
-{instruction}
-
-The change they have open and uncommitted:
-{changes}
-
-What they committed lately:
-{lately}
-
-The branch they are on: {branch}
-
 Files the repository tracks:
 {files}
 
-Work out what they meant, from what they were looking at.
+What was committed lately:
+{lately}
+
+The branch they are on: {branch}
 
 Write every value, every question and every choice in the same language the author typed in. \
 They will read this, and they wrote to you in their own words.
@@ -258,7 +257,15 @@ Answer with these lines and nothing else.
 {scope}: <what may be changed and what may not>
 {scope}{drawn_from}: <why>
 {scope}{asks}: <a question, if you could not work it out>
-{scope}{others}: <two or three answers to choose between>"""
+{scope}{others}: <two or three answers to choose between>
+
+The change they have open and uncommitted:
+{changes}
+
+What the author typed:
+{instruction}
+
+Work out what they meant, from what they were looking at."""
 
 # What is asked the second time, once the repository has been asked about the first answer.
 again = """
