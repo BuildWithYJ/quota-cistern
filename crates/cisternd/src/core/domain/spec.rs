@@ -114,7 +114,7 @@ impl Part {
 pub enum Named {
     Goal,
     Place,
-    Success,
+    DoneWhen,
     OnFailure,
     Why,
     Scope,
@@ -125,7 +125,7 @@ impl Named {
     pub const ALL: [Named; 6] = [
         Named::Goal,
         Named::Place,
-        Named::Success,
+        Named::DoneWhen,
         Named::OnFailure,
         Named::Why,
         Named::Scope,
@@ -138,6 +138,7 @@ impl Named {
     pub fn written(self) -> &'static str {
         match self {
             Named::OnFailure => "on_failure",
+            Named::DoneWhen => "done_when",
             other => other.label(),
         }
     }
@@ -147,7 +148,7 @@ impl Named {
         match self {
             Named::Goal => "goal",
             Named::Place => "place",
-            Named::Success => "success",
+            Named::DoneWhen => "done when",
             Named::OnFailure => "on failure",
             Named::Why => "why",
             Named::Scope => "scope",
@@ -160,7 +161,7 @@ impl Named {
         match self {
             Named::Goal => "what the work is",
             Named::Place => "where the work is",
-            Named::Success => "whether it is done",
+            Named::DoneWhen => "whether it is done",
             Named::OnFailure => "what to do when it fails",
             Named::Why => "what the work is for",
             Named::Scope => "how far to reach",
@@ -183,7 +184,8 @@ impl Display for Named {
 pub struct Spec {
     pub goal: Part,
     pub place: Part,
-    pub success: Part,
+    /// What has to be true, and runnable, for the work to be finished.
+    pub done_when: Part,
     pub on_failure: Part,
     pub why: Part,
     pub scope: Part,
@@ -195,7 +197,7 @@ impl Spec {
         Spec {
             goal: Part::open(),
             place: Part::open(),
-            success: Part::open(),
+            done_when: Part::open(),
             on_failure: Part::open(),
             why: Part::open(),
             scope: Part::open(),
@@ -207,7 +209,7 @@ impl Spec {
         match named {
             Named::Goal => &self.goal,
             Named::Place => &self.place,
-            Named::Success => &self.success,
+            Named::DoneWhen => &self.done_when,
             Named::OnFailure => &self.on_failure,
             Named::Why => &self.why,
             Named::Scope => &self.scope,
@@ -219,7 +221,7 @@ impl Spec {
         match named {
             Named::Goal => &mut self.goal,
             Named::Place => &mut self.place,
-            Named::Success => &mut self.success,
+            Named::DoneWhen => &mut self.done_when,
             Named::OnFailure => &mut self.on_failure,
             Named::Why => &mut self.why,
             Named::Scope => &mut self.scope,

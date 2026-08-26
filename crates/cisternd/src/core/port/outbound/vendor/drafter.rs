@@ -45,7 +45,7 @@ pub struct Proposed {
 pub struct Drafted {
     pub goal: Option<Proposed>,
     pub place: Option<Proposed>,
-    pub success: Option<Proposed>,
+    pub done_when: Option<Proposed>,
     pub on_failure: Option<Proposed>,
     pub why: Option<Proposed>,
     pub scope: Option<Proposed>,

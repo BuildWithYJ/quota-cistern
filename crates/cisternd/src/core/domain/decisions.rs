@@ -71,7 +71,7 @@ impl Undecided {
         match self {
             Undecided::Unsettled(named) | Undecided::Echoed(named) => Some(*named),
             Undecided::Nowhere | Undecided::Reaches { .. } => Some(Named::Place),
-            Undecided::Unverifiable | Undecided::AlreadyDone => Some(Named::Success),
+            Undecided::Unverifiable | Undecided::AlreadyDone => Some(Named::DoneWhen),
         }
     }
 
@@ -164,7 +164,7 @@ pub fn left_to_decide(spec: &Spec, wrote: &str, grounded: Grounded) -> Vec<Undec
         }
     }
 
-    if !spec.success.is_open() {
+    if !spec.done_when.is_open() {
         match (grounded.runnable, grounded.already) {
             (false, _) => left.push(Undecided::Unverifiable),
             (true, true) => left.push(Undecided::AlreadyDone),

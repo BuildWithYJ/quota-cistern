@@ -141,7 +141,7 @@ impl<'a> BacklogService<'a> {
         // Asked before it is run: a command that is not there is the model's mistake, and a
         // command that fails is the task's whole point.
         let ran = spec
-            .success
+            .done_when
             .said
             .as_deref()
             .filter(|success| self.grounding.runnable(root, success))
@@ -636,7 +636,7 @@ fn spec_from(drafted: &Drafted, _wrote: &str) -> Spec {
     for (named, proposed) in [
         (Named::Goal, &drafted.goal),
         (Named::Place, &drafted.place),
-        (Named::Success, &drafted.success),
+        (Named::DoneWhen, &drafted.done_when),
         (Named::OnFailure, &drafted.on_failure),
         (Named::Why, &drafted.why),
         (Named::Scope, &drafted.scope),
@@ -696,7 +696,7 @@ mod tests {
     use super::*;
 
     /// A spec an author has already seen, which is what most of these tests register with.
-    static SEEN: &str = "goal: fix the parser\nplace: src/util.rs\nsuccess: cargo test util\non failure: stop after three attempts\nwhy: it panics\nscope: src/util.rs only";
+    static SEEN: &str = "goal: fix the parser\nplace: src/util.rs\ndone when: cargo test util\non failure: stop after three attempts\nwhy: it panics\nscope: src/util.rs only";
 
     /// A backlog held in memory, so the steps can be checked without a file.
     struct Remembered {
@@ -966,7 +966,7 @@ mod tests {
         [
             "goal: stop the double count",
             "place: src/search.rs",
-            "success: cargo test search",
+            "done when: cargo test search",
             "on failure: stop after three attempts",
             "why: the counter is incremented twice",
             "scope: src/search.rs only",
@@ -1126,12 +1126,12 @@ mod tests {
 
     /// A sentence about what done would look like leaves the agent judging its own work.
     #[test]
-    fn a_success_condition_nothing_can_run_is_a_decision_left() {
+    fn a_way_to_tell_it_is_done_that_nothing_can_run_is_a_decision_left() {
         let tasks = Remembered::default();
         let mut given = registering("first");
         let held = SEEN.replace(
-            "success: cargo test util",
-            "success: the count should match the documents",
+            "done when: cargo test util",
+            "done when: the count should match the documents",
         );
         given.instruction = &held;
 
@@ -1140,7 +1140,7 @@ mod tests {
         assert_eq!(
             asked.undecided,
             vec![Left {
-                part: Some("success".to_owned()),
+                part: Some("done when".to_owned()),
                 kind: "unverifiable".to_owned(),
                 files: None,
                 decides: "whether it is done".to_owned(),
@@ -1150,10 +1150,13 @@ mod tests {
 
     /// A command that passes already says either the work is done or that it does not tell.
     #[test]
-    fn a_success_condition_that_passes_already_is_a_decision_left() {
+    fn a_way_to_tell_it_is_done_that_passes_already_is_a_decision_left() {
         let tasks = Remembered::default();
         let mut given = registering("first");
-        let held = SEEN.replace("success: cargo test util", "success: cargo test passing");
+        let held = SEEN.replace(
+            "done when: cargo test util",
+            "done when: cargo test passing",
+        );
         given.instruction = &held;
 
         let asked = unconfirmed(in_a_repository(&tasks).add(given));
@@ -1161,7 +1164,7 @@ mod tests {
         assert_eq!(
             asked.undecided,
             vec![Left {
-                part: Some("success".to_owned()),
+                part: Some("done when".to_owned()),
                 kind: "already".to_owned(),
                 files: None,
                 decides: "whether there is anything to do".to_owned(),
@@ -1190,7 +1193,7 @@ mod tests {
         let model = Proposing::of(Drafted {
             goal: proposing("stop the double count"),
             place: proposing("src/search.rs"),
-            success: proposing("cargo test search"),
+            done_when: proposing("cargo test search"),
             on_failure: None,
             why: proposing("the counter is incremented twice"),
             scope: proposing("src/search.rs only"),
@@ -1231,13 +1234,13 @@ mod tests {
         let tasks = Remembered::default();
         let model = Proposing::of(Drafted {
             place: proposing("src/serch.rs"),
-            success: proposing("cargo test search"),
+            done_when: proposing("cargo test search"),
             ..Drafted::default()
         })
         .then(Drafted {
             goal: proposing("stop the double count"),
             place: proposing("src/search.rs"),
-            success: proposing("cargo test search"),
+            done_when: proposing("cargo test search"),
             why: proposing("the counter is incremented twice"),
             scope: proposing("src/search.rs only"),
             on_failure: None,
@@ -1272,7 +1275,7 @@ mod tests {
         let model = Proposing::of(Drafted {
             goal: proposing("stop the double count"),
             place: proposing("src/serch.rs"),
-            success: proposing("cargo test search"),
+            done_when: proposing("cargo test search"),
             ..Drafted::default()
         })
         .then(Drafted::default());

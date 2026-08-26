@@ -131,14 +131,14 @@ cistern task add --title <T> --instruction <I> [--branch <B>] [--after <task>] [
 | --- | --- | --- |
 | `goal` | 무슨 일인지 | 무엇을 할지 에이전트가 정함 |
 | `place` | 어디서 하는지 | 어디서 할지 에이전트가 정함 |
-| `success` | 끝났음을 말해 주는 명령 | 자기 작업을 자기가 판정함 |
+| `done when` | 끝났음을 말해 주는 명령 | 자기 작업을 자기가 판정함 |
 | `on failure` | 못 해냈을 때 무엇을 할지 | 우회로를 지어냄 |
 | `why` | 지금 무엇이 잘못됐는지 | 검토자가 견줄 것이 없음 |
 | `scope` | 무엇을 고쳐도 되고 무엇은 안 되는지 | 어디까지 손댈지 에이전트가 정함 |
 
 저자는 지금까지처럼 한 줄을 쓴다. 모델이 저장소를 읽고 — 열어 둔 변경, 최근 커밋, 브랜치, 파일 목록 — 알아낼 수 있는 칸을 채우며, 각 칸에는 무엇을 보고 채웠는지가 함께 붙는다. `why`를 뺀 모든 칸이 정해지기 전에는 아무것도 등록되지 않고, 모델이 알아낸 것은 저자가 보기 전에는 등록되지 않는다.
 
-**무엇을 확인하고, 무엇을 추측하지 않는가.** `place`는 저장소가 추적하는 것과 대조한다. 파일은 하나에 닿고, 디렉터리는 그 안의 것들에 닿고, 추적하지 않는 이름은 아무 데도 닿지 않는다. `success`는 한 번 실행해서 **실패해야** 한다. 이미 통과하는 명령은 일이 끝났거나 그 명령이 끝나지 않았음을 말해 주지 못한다는 뜻이고, 아예 실행할 수 없는 명령은 지어낸 것이다. 셸 없이 실행한다. 명령을 공백으로 나눠 프로그램을 직접 시작하므로 세미콜론이나 리디렉션은 아무 프로그램도 받지 않는 인자일 뿐이다.
+**무엇을 확인하고, 무엇을 추측하지 않는가.** `place`는 저장소가 추적하는 것과 대조한다. 파일은 하나에 닿고, 디렉터리는 그 안의 것들에 닿고, 추적하지 않는 이름은 아무 데도 닿지 않는다. `done when`은 한 번 실행해서 **실패해야** 한다. 이미 통과하는 명령은 일이 끝났거나 그 명령이 끝나지 않았음을 말해 주지 못한다는 뜻이고, 아예 실행할 수 없는 명령은 지어낸 것이다. 셸 없이 실행한다. 명령을 공백으로 나눠 프로그램을 직접 시작하므로 세미콜론이나 리디렉션은 아무 프로그램도 받지 않는 인자일 뿐이다.
 
 확인을 통과하지 못한 칸은 저자에게 가기 전에 모델에게 한 번 되돌아간다.
 
@@ -183,17 +183,17 @@ cistern task add --title <T> --instruction <I> [--branch <B>] [--after <task>] [
 ```console
 $ cistern task add --title "중복 집계" --instruction "이거 중복으로 세는거 고쳐줘"
 
-   1  goal       검색 결과 중복 집계 제거   [inferred]
+   1  goal       검색 결과 중복 집계 제거   
                  - src/search.rs:41,43 에서 카운터가 두 번 증가
-   2  place      src/search.rs   [inferred]
+   2  place      src/search.rs   
                  - 수정 중이고 커밋 안 됨
                  - also: src/index.rs
-   3  success    cargo test search_counts_once   [inferred]
+   3  done when  cargo test search_counts_once   
                  - tests/search.rs:88. 지금 실패 중
    4  on failure -----   [open]
-   5  why        카운터가 41행과 43행에서 두 번 증가   [inferred]
+   5  why        카운터가 41행과 43행에서 두 번 증가   
                  - src/search.rs:41,43
-   6  scope      src/search.rs 만. tests/ 는 손대지 말 것   [inferred]
+   6  scope      src/search.rs 만. tests/ 는 손대지 말 것   
                  - the place
 
   1 decision left for the agent to decide by itself:

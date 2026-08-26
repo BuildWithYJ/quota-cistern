@@ -50,7 +50,7 @@ impl ProgramDrafter {
                 ("files", &files),
                 ("goal", &drafting.goal),
                 ("place", &drafting.place),
-                ("success", &drafting.success),
+                ("done_when", &drafting.done_when),
                 ("on_failure", &drafting.on_failure),
                 ("why", &drafting.why),
                 ("scope", &drafting.scope),
@@ -110,7 +110,7 @@ impl ProgramDrafter {
         Drafted {
             goal: part(&drafting.goal),
             place: part(&drafting.place),
-            success: part(&drafting.success),
+            done_when: part(&drafting.done_when),
             on_failure: part(&drafting.on_failure),
             why: part(&drafting.why),
             scope: part(&drafting.scope),
@@ -193,7 +193,7 @@ fn written(held: &Drafted, drafting: &super::Drafting) -> String {
     [
         (&drafting.goal, &held.goal),
         (&drafting.place, &held.place),
-        (&drafting.success, &held.success),
+        (&drafting.done_when, &held.done_when),
         (&drafting.on_failure, &held.on_failure),
         (&drafting.why, &held.why),
         (&drafting.scope, &held.scope),

@@ -171,11 +171,15 @@ stronger = "sonnet"
 
 # How far one ask may go.
 #
-# One. This is a question to answer, not work to do: the instruction, the change, the commits and
-# the file list are all handed over before it starts, so there is nothing left for it to go and
-# look up. More turns than that is an agent loop reading a repository it was already given, which
-# costs what running the task costs and answers no better.
-turns = "1"
+# Two. This is a question to answer, not work to do: the instruction, the change, the commits and
+# the file list are all handed over before it starts, so there is little left to go and look up.
+# Many turns is an agent loop reading a repository it was already given, which costs what running
+# the task costs and answers no better.
+#
+# Not one. A model that reaches for a file once runs out of turns mid-answer and ends badly, and
+# one turn made that the common case rather than the rare one. What it wrote by then is read
+# either way, so this is room to finish rather than room to explore.
+turns = "2"
 
 # Grouped as `args` above is: a group holding a place nobody filled is dropped whole.
 args = [
@@ -188,7 +192,7 @@ args = [
 # so changing one changes what is asked and what is read together.
 goal = "GOAL"
 place = "PLACE"
-success = "SUCCESS"
+done_when = "DONEWHEN"
 on_failure = "ONFAIL"
 why = "WHY"
 scope = "SCOPE"
@@ -245,10 +249,11 @@ Answer with these lines and nothing else.
 {place}{drawn_from}: <why that one>
 {place}{others}: <other paths it could be, separated by commas>
 {place}{asks}: <a question, if you could not work it out>
-{success}: <a command that can be run in this repository and that fails right now>
-{success}{drawn_from}: <where you found it>
-{success}{asks}: <a question, if you could not find one>
-{success}{others}: <two or three commands to choose between>
+{done_when}: <a command that can be run in this repository, and that fails right now because \
+the work is not done. Not a sentence about what finished would look like: a command>
+{done_when}{drawn_from}: <where you found it, and how you know it fails right now>
+{done_when}{asks}: <a question, if you could not find one>
+{done_when}{others}: <two or three commands to choose between>
 {on_failure}: <leave this empty, always>
 {on_failure}{asks}: <ask what the agent should do when it cannot get there>
 {on_failure}{others}: <two or three answers, every one of which stops. Never offer editing or \

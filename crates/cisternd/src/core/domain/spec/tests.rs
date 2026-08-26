@@ -4,7 +4,7 @@ fn a_spec() -> Spec {
     Spec {
         goal: Part::inferred("remove the double count", "diff:src/search.rs:41-43"),
         place: Part::inferred("src/search.rs", "edited and uncommitted"),
-        success: Part::given("cargo test search_counts_once"),
+        done_when: Part::given("cargo test search_counts_once"),
         on_failure: Part::open(),
         why: Part::inferred("the counter is incremented twice", "src/search.rs:41,43"),
         scope: Part::inferred("src/search.rs only", "the place"),
@@ -55,7 +55,7 @@ fn a_spec_is_written_one_part_to_a_line() {
         spec.written(),
         "goal: remove the double count\n\
          place: src/search.rs\n\
-         success: cargo test search_counts_once\n\
+         done when: cargo test search_counts_once\n\
          on failure: stop after three attempts. do not edit tests/\n\
          why: the counter is incremented twice\n\
          scope: src/search.rs only"
@@ -123,7 +123,7 @@ fn a_part_that_runs_past_one_line_keeps_the_rest_of_it() {
 /// A part nobody wrote is open when it is read back, not filled with an empty string.
 #[test]
 fn a_part_left_out_of_the_text_is_read_as_open() {
-    let read = Spec::read("place: src/util.rs\nsuccess: cargo test").unwrap();
+    let read = Spec::read("place: src/util.rs\ndone when: cargo test").unwrap();
 
     assert!(read.on_failure.is_open());
     assert_eq!(
@@ -142,7 +142,7 @@ fn a_spec_kept_as_a_document_is_read_as_one() {
          stop the double count\n\
          \n\
          - **place**: `src/search.rs`\n\
-         - **success**: cargo test search\n\
+         - **done when**: cargo test search\n\
          \n\
          ### On Failure\n\
          stop after three attempts\n\
@@ -154,7 +154,7 @@ fn a_spec_kept_as_a_document_is_read_as_one() {
 
     assert_eq!(read.goal.said.as_deref(), Some("stop the double count"));
     assert_eq!(read.place.said.as_deref(), Some("src/search.rs"));
-    assert_eq!(read.success.said.as_deref(), Some("cargo test search"));
+    assert_eq!(read.done_when.said.as_deref(), Some("cargo test search"));
     assert_eq!(
         read.on_failure.said.as_deref(),
         Some("stop after three attempts")
