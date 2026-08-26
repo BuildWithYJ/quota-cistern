@@ -9,6 +9,7 @@ mod policy;
 mod readiness;
 mod session;
 mod sizing;
+mod spec;
 mod spending;
 mod supervision;
 mod task;
