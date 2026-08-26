@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/cistern", "crates/cistern-contract", "crates/cisternd"]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/BuildWithYJ/quota-cistern"

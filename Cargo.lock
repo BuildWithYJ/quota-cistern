@@ -99,7 +99,7 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "cistern"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "cistern-contract",
  "clap",
@@ -108,7 +108,7 @@ dependencies = [
 
 [[package]]
 name = "cistern-contract"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "interprocess",
  "nix 0.31.3",
@@ -119,7 +119,7 @@ dependencies = [
 
 [[package]]
 name = "cisternd"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "cistern-contract",
  "ctrlc",
