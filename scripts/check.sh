@@ -42,12 +42,17 @@ step() {
 
 # Markdown is exempt: prose and the translations need more than ASCII.
 #
+# .specify/ is exempt for a different reason. Those files are vendored, and the
+# specify CLI rewrites them on upgrade, so the rule about what we write does not
+# reach them. See ADR 0003.
+#
 # The list comes from the working tree, not from git, so an uncommitted file is still checked.
 sources() {
   find . -type f \
     \( -name '*.rs' -o -name '*.toml' -o -name '*.sh' \
        -o -name '*.yml' -o -name '*.yaml' \) \
-    -not -path './target/*' -not -path './.private/*' -not -path './.git/*'
+    -not -path './target/*' -not -path './.private/*' -not -path './.git/*' \
+    -not -path './.specify/*'
 }
 
 # Comments and documentation are written in English.
