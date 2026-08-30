@@ -162,10 +162,12 @@ cols = 120
 [drafter]
 program = "claude"
 
-# The model asked first, and the one asked only where the first found no place.
+# The model asked, and the one asked only where the first answered nothing at all.
 #
-# The first runs before every task a rule could not ready, so it is the cheap one. Raise the
-# second as stronger names land.
+# The first runs for every task, so it is the cheap one. The second is reached only where nothing
+# came back, and not where the first left a part open: a part left open carrying a question is the
+# model saying what it could not tell, and a stronger one cannot tell it either. Raise both as
+# stronger names land.
 cheaper = "haiku"
 stronger = "sonnet"
 

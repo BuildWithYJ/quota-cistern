@@ -52,10 +52,13 @@ pub struct Definition {
 #[serde(deny_unknown_fields)]
 pub struct Drafting {
     pub program: String,
-    /// The model asked first, and the one asked only where the first found no place.
+    /// The model asked, and the one asked only where the first answered nothing at all.
     ///
-    /// The first runs before every task a rule could not ready, so it is the cheap one. The
-    /// second costs more and earns it only where the first came back with nothing.
+    /// The first runs for every task, so it is the cheap one. The second is reached only where
+    /// nothing came back -- the program could not be run, or what it wrote named no part -- and
+    /// not where the first left a part open. A part left open carrying a question is the model
+    /// saying what it could not tell, and a stronger one cannot tell it either: what is missing
+    /// is what only the author knows.
     pub cheaper: String,
     pub stronger: String,
     /// How far one ask may go. A guard against an ask that goes nowhere, not a task's ceiling.
@@ -63,8 +66,12 @@ pub struct Drafting {
     /// The arguments, grouped as the agent's are, with `{prompt}`, `{model}`, and `{turns}`
     /// standing for what one ask fills in.
     pub args: Vec<Vec<String>>,
-    /// What is asked, with `{instruction}`, `{changed}`, `{files}`, `{place}`, and `{check}`
-    /// standing for what one ask fills in.
+    /// What is asked.
+    ///
+    /// `{instruction}` is what the author typed and `{changes}`, `{lately}`, `{branch}` and
+    /// `{files}` are what they were looking at when they typed it. Each part's word stands for
+    /// itself -- `{goal}`, `{place}`, and the rest -- as do `{drawn_from}`, `{others}` and
+    /// `{asks}`, so that what is asked for is spelled with the same words the answer is read by.
     pub prompt: String,
     /// The words each part of the answer is read by.
     ///
