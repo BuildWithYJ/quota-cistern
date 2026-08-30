@@ -27,7 +27,7 @@ Spec Kit is installed with the Claude Code integration and no extensions, so `.s
 
 `scripts/check.sh` excludes `.specify/` from the ASCII sweep. Those files are vendored and `specify` rewrites them on upgrade, so the rule about what we write does not reach them.
 
-`specs/` is a symlink into `.private/docs/`, and git ignores it. A specification, plan, and task list are drafts and stay unpublished. What survives review reaches `docs/` or `docs/adr/` as prose a person wrote.
+`specs/` is a symlink to `.private/docs/specs/`, and git ignores it, so a feature Spec Kit writes at `specs/NNN-slug` lands at `.private/docs/specs/NNN-slug`. A specification, plan, and task list are drafts and stay unpublished. What survives review reaches `docs/` or `docs/adr/` as prose a person wrote.
 
 `.specify/memory/constitution.md` is filled in, and it is the one file inside `.specify/` we maintain. It names the rules in `CONTRIBUTING.md` and the ADRs rather than restating them, so that there is nothing in it to fall out of step, and it lists the constraints a generated plan is most likely to break.
 

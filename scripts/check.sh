@@ -40,6 +40,8 @@ step() {
   summary="${summary}$(printf '%-*s%s' "$LABEL" "$name" "$result")"$'\n'
 }
 
+# Every file the ASCII check reads: the code files in the working tree.
+#
 # Markdown is exempt: prose and the translations need more than ASCII.
 #
 # .specify/ is exempt for a different reason. Those files are vendored, and the
