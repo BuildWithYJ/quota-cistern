@@ -3,6 +3,16 @@
 # an experiment's write-up belongs in .private/docs/ instead.
 .private/
 
+# Where Spec Kit writes a feature's specification, plan, and task list. The
+# directory is a symlink into .private/docs/, because those three are drafts an
+# agent produced; what survives review reaches docs/ as prose. See ADR 0003.
+/specs
+
+# Claude Code's per-checkout state. The skills under .claude/skills/ are shared;
+# a machine's own settings and notes are not.
+.claude/settings.local.json
+.claude/RESUME.md
+
 # Build output
 target/
 
