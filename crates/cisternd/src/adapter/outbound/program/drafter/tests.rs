@@ -1,3 +1,7 @@
+use std::{fs, os::unix::fs::PermissionsExt};
+
+use tempfile::TempDir;
+
 use super::*;
 
 /// The words the shipped definition reads an answer by.
@@ -153,4 +157,139 @@ fn asking_again_carries_the_first_answer_and_what_did_not_hold_up() {
     assert!(asked.contains("PLACE: src/serch.rs"));
     assert!(asked.contains("the repository tracks no src/serch.rs"));
     assert!(!asked.contains("{amiss}"));
+}
+
+/// A vendor that writes down which model it was asked for, and answers as it was told to.
+///
+/// A shell script rather than a fake behind the trait, because what is under test is the arm
+/// this file chooses: a fake in place of `ProgramDrafter` would be a test of the fake.
+struct Standing {
+    held: TempDir,
+}
+
+impl Standing {
+    /// One that answers with the given lines whatever it is asked.
+    fn answering(with: &str) -> Self {
+        Standing::running(&format!("cat <<'ANSWER'\n{with}\nANSWER"))
+    }
+
+    /// One that runs the given shell, with the model it was asked for in `$MODEL`.
+    fn running(shell: &str) -> Self {
+        let held = TempDir::new().unwrap();
+        let at = held.path().join("vendor");
+        // The arguments arrive as the definition groups them: `-p <prompt> --model <model>
+        // --max-turns <turns>`, so the model asked for is the fourth.
+        fs::write(
+            &at,
+            format!(
+                "#!/bin/sh\nMODEL=\"$4\"\necho \"$MODEL\" >> \"$(dirname \"$0\")/asked\"\n{shell}\n"
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&at, fs::Permissions::from_mode(0o755)).unwrap();
+        Standing { held }
+    }
+
+    /// Somewhere that exists for the program to be run in.
+    fn at(&self) -> &str {
+        self.held.path().to_str().unwrap()
+    }
+
+    /// A drafter that runs it instead of the vendor.
+    fn drafter(&self) -> ProgramDrafter {
+        let mut definition = Definition::of("claude", None).unwrap();
+        definition.drafter.program = self.held.path().join("vendor").display().to_string();
+        ProgramDrafter::new(definition)
+    }
+
+    /// The models it was asked for, in the order they were asked.
+    fn asked(&self) -> Vec<String> {
+        fs::read_to_string(self.held.path().join("asked"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+/// The same, run somewhere that exists, since the program is run in the repository.
+fn asking_in<'a>(instruction: &'a str, repository: &'a str) -> Draft<'a> {
+    Draft {
+        repository,
+        ..asking(instruction, "", &[])
+    }
+}
+
+/// A whole answer, and one that settles nothing but says what it could not.
+const WORKED_OUT: &str = "GOAL: stop the double count\nPLACE: src/search.rs";
+const ASKED_BACK: &str = "GOAL:\nGOAL-ASK: which part of it?\nGOAL-OR: the counter, the loop";
+
+/// The cheap model answered, so nothing else is asked.
+#[test]
+fn a_model_that_answered_is_the_answer() {
+    let standing = Standing::answering(WORKED_OUT);
+
+    let drafted = standing
+        .drafter()
+        .draft(asking_in("make it faster", standing.at()))
+        .expect("it answered");
+
+    assert_eq!(drafted.place.unwrap().said, "src/search.rs");
+    assert_eq!(standing.asked(), vec!["haiku"]);
+}
+
+/// A part left open carrying a question is an answer, and the costly kind to mistake for one.
+///
+/// It is the model saying what it could not tell, which is what the author is there to settle.
+/// A stronger one cannot tell it either, so asking buys a second answer to the same question at
+/// another ask and another minute.
+#[test]
+fn a_part_left_open_with_a_question_is_still_an_answer() {
+    let standing = Standing::answering(ASKED_BACK);
+
+    let drafted = standing
+        .drafter()
+        .draft(asking_in("make it faster", standing.at()))
+        .expect("it answered");
+
+    assert!(drafted.place.is_none());
+    assert_eq!(
+        drafted.goal.unwrap().asks.as_deref(),
+        Some("which part of it?")
+    );
+    assert_eq!(standing.asked(), vec!["haiku"]);
+}
+
+/// An answer naming no part is nothing, and nothing is what the stronger model is for.
+#[test]
+fn a_stronger_model_is_asked_where_nothing_came_back() {
+    let standing = Standing::running(&format!(
+        "case \"$MODEL\" in haiku) echo 'I could not tell.';; *) cat <<'ANSWER'\n{WORKED_OUT}\nANSWER\n;; esac"
+    ));
+
+    let drafted = standing
+        .drafter()
+        .draft(asking_in("make it faster", standing.at()))
+        .expect("the stronger one answered");
+
+    assert_eq!(drafted.place.unwrap().said, "src/search.rs");
+    assert_eq!(standing.asked(), vec!["haiku", "sonnet"]);
+}
+
+/// A correction is a correction, not a harder question, so the cheap model makes it.
+#[test]
+fn asking_again_asks_the_cheap_model() {
+    let standing = Standing::answering(WORKED_OUT);
+    let held = standing.drafter().read(WORKED_OUT);
+
+    standing
+        .drafter()
+        .draft_again(
+            asking_in("make it faster", standing.at()),
+            &held,
+            &["nowhere".to_owned()],
+        )
+        .expect("it answered");
+
+    assert_eq!(standing.asked(), vec!["haiku"]);
 }

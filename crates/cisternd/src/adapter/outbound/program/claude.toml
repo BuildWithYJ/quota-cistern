@@ -162,10 +162,12 @@ cols = 120
 [drafter]
 program = "claude"
 
-# The model asked first, and the one asked only where the first found no place.
+# The model asked, and the one asked only where the first answered nothing at all.
 #
-# The first runs before every task a rule could not ready, so it is the cheap one. Raise the
-# second as stronger names land.
+# The first runs for every task, so it is the cheap one. The second is reached only where nothing
+# came back, and not where the first left a part open: a part left open carrying a question is the
+# model saying what it could not tell, and a stronger one cannot tell it either. Raise both as
+# stronger names land.
 cheaper = "haiku"
 stronger = "sonnet"
 
@@ -238,6 +240,14 @@ value with nothing beside it is a person staring at a blank line with nothing to
 
 Write the answers as the answers themselves, ready to be used as the value of that part. Do not \
 number them, and do not offer "type your own" among them: that one is offered for you.
+
+Write a line only where you have something to put on it. A part you worked out needs its value \
+and where you read it from, and no question and no answers to choose between; a part you could \
+not needs the question and the answers, and no value. Half of these lines are empty either way, \
+and a line you have nothing to write on is a line nobody reads.
+
+The one exception is what to do when it cannot get there. Its value is always empty and its \
+question and answers are always written, because that one is settled by a person every time.
 
 Answer with these lines and nothing else.
 

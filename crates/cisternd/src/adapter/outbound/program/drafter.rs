@@ -4,8 +4,7 @@
 //! An ask, not a run: the model is given the instruction and everything the author was looking at
 //! when they wrote it, and is asked to write the parts of a spec. Every part it writes is checked
 //! against the repository before a run is given anything, so this reads and proposes and nothing
-//! else. A cheaper model answers first; a stronger one is asked only when the cheaper found no
-//! place at all.
+//! else. A cheaper model is asked; a stronger one only where the cheaper answered nothing at all.
 //!
 //! Which program, which two models, what to hand them, and the words each part is read by are all
 //! in the definition. What stays here is the part that is the same whoever the vendor is.
@@ -88,19 +87,28 @@ impl ProgramDrafter {
             .ok()?;
 
         let took = since.elapsed().as_secs();
-        if !done.status.success() {
+        let answer = String::from_utf8_lossy(&done.stdout);
+        let read = self.read(&answer);
+
+        // Read by what it wrote rather than by how it ended. A model that ran out of turns, or
+        // was stopped, has written what it wrote, and that is the answer; one that ended well
+        // and named no part has answered nothing, whatever its status says. What is asked next
+        // turns on this, so the two cases are told apart here and nowhere else.
+        if read == Drafted::default() {
             eprintln!(
-                "cisternd: {model} did not answer after {took}s: {}",
-                String::from_utf8_lossy(&done.stderr).trim()
+                "cisternd: {model} named no part after {took}s (ended {}): {}{}",
+                done.status,
+                String::from_utf8_lossy(&done.stderr).trim(),
+                answer.trim()
             );
             return None;
         }
-        let answer = String::from_utf8_lossy(&done.stdout);
         eprintln!(
-            "cisternd: {model} answered in {took}s with:\n{}",
+            "cisternd: {model} answered in {took}s (ended {}) with:\n{}",
+            done.status,
             answer.trim()
         );
-        Some(self.read(&answer))
+        Some(read)
     }
 
     /// Reads a spec out of the model's lines, by the words the definition names.
@@ -151,17 +159,17 @@ impl Drafter for ProgramDrafter {
         let drafting = &self.definition.drafter;
         let prompt = self.asking(&ask);
 
-        let cheap = self.asked(&drafting.cheaper, ask.repository, &prompt);
-        if cheap
-            .as_ref()
-            .is_some_and(|drafted| drafted.place.is_some())
-        {
-            return cheap;
+        // A cheap model that answered is the answer. It was given everything there is, and a
+        // part it left open carrying a question and two or three answers to choose between is
+        // it saying what it could not tell -- which is what the author is there to settle.
+        // Asking a stronger model the same question buys a second answer to it, at another
+        // minute and another ask, and the one thing it cannot buy is what only a person knows.
+        if let Some(cheap) = self.asked(&drafting.cheaper, ask.repository, &prompt) {
+            return Some(cheap);
         }
-        // The cheaper model worked out no place at all. A stronger one may, and only then is it
-        // worth its cost.
+        // Nothing came back at all: not reached, or an answer naming no part. A stronger model
+        // is worth its cost only there.
         self.asked(&drafting.stronger, ask.repository, &prompt)
-            .or(cheap)
     }
 
     fn draft_again(&self, ask: Draft<'_>, held: &Drafted, amiss: &[String]) -> Option<Drafted> {
@@ -210,7 +218,13 @@ fn written(held: &Drafted, drafting: &super::Drafting) -> String {
 /// the line `PLACE-FROM` that follows it.
 fn field(answer: &str, key: &str) -> Option<String> {
     for line in answer.lines() {
-        let (named, rest) = line.trim().split_once(':')?;
+        // A line that names nothing is passed over rather than stopping the reading. A model
+        // says what it is about to do before it does it, and one that wrote a sentence, or a
+        // blank line, or a fence around its answer would otherwise have everything after it go
+        // unread -- which reads, at the other end, as a model that answered nothing at all.
+        let Some((named, rest)) = line.trim().split_once(':') else {
+            continue;
+        };
         if named.trim() != key {
             continue;
         }
